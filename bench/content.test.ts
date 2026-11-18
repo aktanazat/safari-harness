@@ -136,6 +136,46 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "snapshot", answer: { value: { snapshot: '[1] label "Accept terms"\n  [2] checkbox "Accept terms"\n[3] label "Share data"\n  [4] checkbox "Share data"\n[5] checkbox "Newsletter"' } } }],
   },
   {
+    name: "a radio drawn transparent inside the label a person clicks prints under it with its state, so a query for radios finds every one of a group",
+    page: "labelled-controls.html",
+    steps: [{
+      op: "snapshot",
+      args: [{ query: "radio" }],
+      answer: {
+        value: {
+          snapshot: [
+            '[1] radio "Email address" {value="0"}',
+            '[2] radio "Mobile number" {checked, value="1"}',
+            '[3] radio "Add mobile number or email" {value="2"}',
+            '[4] radio "One time" {checked, value="once"}',
+            '[5] radio "Repeating"',
+            '[6] radio "Standard"',
+            '[7] radio "Instant" {checked}',
+          ].join("\n"),
+        },
+      },
+    }],
+  },
+  {
+    name: "a box named by a label elsewhere that opens a list prints the choice it shows as its value, on its own line",
+    page: "labelled-controls.html",
+    steps: [{ op: "snapshot", args: [{ query: "Sell in|Order type" }], answer: { value: { snapshot: '[1] label "Sell in"\n[2] combobox "Sell in" {value="Dollars"}\nOrder type\n[3] button "Order type" {value="Market order"}' } } }],
+  },
+  {
+    name: "a combobox wrapping its input and its list shows no choice of its own, not its options' text run together",
+    page: "labelled-controls.html",
+    steps: [{ op: "snapshot", args: [{ query: "Fruit" }], answer: { value: { snapshot: 'Fruit\n[1] combobox "Fruit" {expanded}\n[2] textbox "Fruit"' } } }],
+  },
+  {
+    name: "a click on the ref of a radio its label draws clicks that label and checks the radio, in one call",
+    page: "labelled-controls.html",
+    steps: [
+      { op: "snapshot", args: [{ query: "radio" }] }, // [1] radio "Email address"
+      { op: "click", args: ["1"], answer: { value: { ok: true } } },
+      { op: "eval", args: ["document.getElementById('radio_0').checked"], answer: { value: { ok: true, result: true } } },
+    ],
+  },
+  {
     name: "a radio named only by its group keeps its value, which alone tells it from the others",
     page: "radio-values.html",
     steps: [{ op: "snapshot", answer: { value: { snapshot: 'Size\n[1] radio "size" {value="s"}\n[2] radio "size" {value="m"}\n[3] radio "Pro plan"' } } }],
@@ -203,6 +243,25 @@ benchRows("content.js in WebKit", [
       { op: "snapshot" }, // [1] Digit 1 of 6
       { op: "type", args: ["1", "402913", { secret: true }], answer: { value: { ok: true, kept: true } } },
       { op: "click", args: ["Submit"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Code accepted") } } },
+    ],
+  },
+  {
+    name: "a code field marked one-time-code and drawn transparent over its digit boxes is found and filled",
+    page: "code-overlay.html",
+    steps: [
+      { op: "eval", args: ["window.__safariHarnessProbe.code()"], answer: { value: { ok: true, result: { found: true } } } },
+      { op: "fillCode", args: ["", "402913"], answer: { value: { ok: true, filled: ["code"] } } },
+      { op: "click", args: ["Verify"] },
+      { op: "extract", answer: { value: { text: expect.stringContaining("Code accepted") } } },
+    ],
+  },
+  {
+    name: "a shown code field is filled in place of a marked one faded out before it",
+    page: "code-faded-panel.html",
+    steps: [
+      { op: "fillCode", args: ["", "402913"], answer: { value: { ok: true, filled: ["code"] } } },
+      { op: "click", args: ["Verify"] },
       { op: "extract", answer: { value: { text: expect.stringContaining("Code accepted") } } },
     ],
   },
@@ -782,6 +841,15 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "snapshot", args: [{ query: "USCIS told\u200B many people" }], answer: { value: { snapshot: expect.stringContaining("USCIS") } } }],
   },
   {
+    name: "a snapshot query that keeps no line of a page with lines says the page has them, apart from a page that drew nothing",
+    page: "modal.html",
+    steps: [
+      { op: "snapshot", args: [{ query: "words" }], answer: { value: { nodes: 0, hint: 'no line has "words"; the page has 7 other lines: query keeps only lines holding these words' } } },
+      { load: "empty.html" },
+      { op: "snapshot", args: [{ query: "words" }], answer: { value: { nodes: 0, hint: expect.stringContaining("drawn nothing yet") } } },
+    ],
+  },
+  {
     name: "an extract query ignores invisible mail padding in both the page and query",
     page: "padded.html",
     steps: [{ op: "extract", args: [{ query: "USCIS told\u2060 many people" }], answer: { value: { text: expect.stringContaining("USCIS") } } }],
@@ -878,6 +946,35 @@ benchRows("content.js in WebKit", [
     name: "a click's receipt carries the lines it brought up, and none the page showed before",
     page: "refusal.html",
     steps: [{ op: "click", args: ["Next"], answer: { value: { receipt: { said: ["Maximum number of attempts reached. Try again later."] } } } }],
+  },
+  {
+    name: "a click's receipt carries the requests that failed and the errors the page threw before it",
+    page: "no-op-review.html",
+    steps: [{ op: "click", args: ["Review transfer"], answer: { value: { receipt: { changed: 1, requests: [], errors: [], earlier: {
+      requests: [{ method: "GET", url: expect.stringMatching(/\/missing\/unified\/$/), error: expect.any(String) }],
+      errors: ["unhandled rejection: Unsuccessful HTTP response"],
+    } } } } }],
+  },
+  {
+    name: "a click's earlier failures outlast a page's polling past the request log, and leave out requests the page cancelled",
+    page: "no-op-review-busy.html",
+    steps: [
+      { op: "wait", args: [null, { text: "polled" }] },
+      { op: "click", args: ["Review transfer"], answer: { value: { receipt: { changed: 1, earlier: {
+        requests: [{ method: "GET", url: expect.stringMatching(/\/missing\/unified\/$/), error: expect.any(String) }],
+      } } } } },
+    ],
+  },
+  {
+    name: "an eval whose fetch got no answer names the request, and how many more failed, in place of Safari's bare Load failed",
+    page: "blank.html",
+    steps: [
+      { op: "eval", args: ["(async () => { await fetch('data:text/plain,ok'); await Promise.allSettled([fetch('http://127.0.0.1:9/b.js')]); return (await fetch('http://127.0.0.1:9/a.js')).text(); })()"], answer: { error: "Load failed for http://127.0.0.1:9/a.js and 1 more" } },
+      { op: "eval", args: ["fetch('data:text/plain,ok').then((r) => r.status)"], answer: { value: { ok: true, result: 200 } } },
+      // a failure the code caught is not the one that failed it, and a fetch
+      // the harness did not hand the code goes unnamed
+      { op: "eval", args: ["(async () => { try { await fetch('http://127.0.0.1:9/a.js'); } catch {} await window.fetch('http://127.0.0.1:9/b.js'); })()"], answer: { error: "Load failed" } },
+    ],
   },
   {
     name: "a changed wait counts a reply that came between two waits",
@@ -1029,12 +1126,32 @@ benchRows("content.js in WebKit", [
     steps: [{ op: "extract", answer: { value: { text: expect.stringMatching(/^Billing\s+Max plan, renews Oct 1\.\s+Close$/), note: expect.any(String) } } }],
   },
   {
+    name: "extract reads the page behind a consent dialog open over it, and names the dialog in its note",
+    page: "consent-modal.html",
+    steps: [{ op: "extract", answer: { value: { text: expect.stringMatching(/^Your accounts\s+Cash account: interest paid monthly\.$/), note: expect.stringContaining('dialog "Web tracking consent preferences" is open over the page; this is the page behind it') } } }],
+  },
+  {
+    name: "extract reads a dialog of cookie switches the agent opened, like any other dialog over the page",
+    page: "privacy-settings.html",
+    steps: [{ op: "extract", answer: { value: { text: expect.stringContaining("Analytics cookies"), note: expect.stringContaining('selector "body" reads the page behind it') } } }],
+  },
+  {
     name: "a root or selector of dialog reads the dialog open over the page, a div, and neither a closed dialog element nor the page behind it",
     page: "slate-dialog.html",
     steps: [
       { op: "snapshot", args: [{ root: "dialog" }], answer: { value: { snapshot: expect.stringMatching(/^(?![\s\S]*(fund|expire))[\s\S]*Parent\/Guardian Details 2027[\s\S]*Save/) } } },
       { op: "extract", args: [{ selector: "dialog" }], answer: { value: { text: expect.stringMatching(/^(?![\s\S]*(fund|expire))[\s\S]*Parent\/Guardian Details 2027[\s\S]*Occupation/) } } },
     ],
+  },
+  {
+    name: "a root of [role=dialog] reads the dialog open over the page, not the first one left in it",
+    page: "two-dialogs.html",
+    steps: [{ op: "snapshot", args: [{ root: "[role=dialog]" }], answer: { value: { snapshot: expect.stringMatching(/^(?![\s\S]*Pick a plan)[\s\S]*Your card is charged today/) } } }],
+  },
+  {
+    name: "a snapshot marks a date field's type and says how long a value it cuts is",
+    page: "typed-fields.html",
+    steps: [{ op: "snapshot", answer: { value: { snapshot: expect.stringMatching(/type=date, value="2027-01-04"[\s\S]*value="I grew up repairing radios with my grand…" \(127 chars\)/) } } }],
   },
   {
     name: "a root named as a click's answer names a dialog reads that dialog beneath a second one, which a root of dialog reads",
@@ -1213,6 +1330,34 @@ benchRows("content.js in WebKit", [
       { op: "eval", args: ["document.getElementById('newtab').click(), true"], answer: { value: { ok: true, result: true } } },
       { sent: true, answer: { value: [{ load: 1, message: { __safariHarnessStart: 1 } }, { load: 1, message: { __safariHarnessReady: 1 } }, { load: 1, message: { __safariHarnessPopup: 1 } }] } },
     ],
+  },
+  // In the 11-16 work sessions 9 shots right after an eval that reloaded
+  // its page failed, the page reloading under them.
+  {
+    name: "an eval whose code sends the page elsewhere says a load is coming",
+    page: "blank.html",
+    steps: [{ op: "eval", args: ["(location.href = 'empty.html', 1)"], answer: { value: { ok: true, result: 1, expect: "load" } } }],
+  },
+  {
+    name: "an eval whose awaited code sends the page elsewhere says a load is coming",
+    page: "blank.html",
+    steps: [{ op: "eval", args: ["Promise.resolve().then(() => { location.href = 'empty.html'; return 2; })"], answer: { value: { ok: true, result: 2, expect: "load" } } }],
+  },
+  {
+    name: "an eval that reloads its page says a load is coming",
+    page: "blank.html",
+    steps: [{ op: "eval", args: ["(location.reload(), 3)"], answer: { value: { ok: true, result: 3, expect: "load" } } }],
+  },
+  {
+    name: "an eval that only sets a handler that reloads the page says no load is coming",
+    page: "blank.html",
+    steps: [{ op: "eval", args: ["(document.body.onclick = () => location.reload(), 4)"], answer: { value: expect.not.objectContaining({ expect: expect.anything() }) } }],
+  },
+  {
+    name: "an eval that reloads an embedded frame says no load of the tab is coming",
+    page: "click-safety-frame-parent.html",
+    frames: 1,
+    steps: [{ op: "eval", frame: "click-safety-frame-child.html", args: ["(location.reload(), 5)"], answer: { value: expect.not.objectContaining({ expect: expect.anything() }) } }],
   },
   {
     name: "the harness's click on a link that opens a tab announces it once",

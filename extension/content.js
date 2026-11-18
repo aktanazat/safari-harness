@@ -282,6 +282,18 @@
     return TEXT_NAMED_TAGS.test(el.tagName) || NAME_FROM_CONTENT.has(el.getAttribute("role"));
   }
 
+  // A box named by a label elsewhere that opens a list of choices shows
+  // the one picked as its own text, which is its value, as a select's
+  // picked option is: Robinhood's "Sell in" box printed "Dollars" on a line
+  // of its own, which a query for the box left out, and on 11-17 an agent
+  // opened the list to learn the choice. A box that holds its field or
+  // list (ARIA 1.1's combobox around an input and its listbox) shows no
+  // choice of its own: its text is the options'.
+  function showsChoice(el, role) {
+    return !/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName) && (role === "combobox" || el.getAttribute("aria-haspopup") === "listbox")
+      && !el.querySelector("input, select, textarea, [role=listbox], [role=option], [role=textbox]");
+  }
+
   function accessibleName(el) {
     const own = ownName(el);
     if (own !== null) return own;
@@ -359,8 +371,12 @@
     if (el.getAttribute("aria-selected") === "true" || el.selected === true) s.push("selected");
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
       if (el.getRootNode().activeElement === el) s.push("focused");
+      // A typed field's kind tells the format it takes, and a value cut at
+      // 40 says how long it is: on 11-16 agents read .value and .type with
+      // eval 12 times to check a date or a typed essay.
+      if (/^(date|time|datetime-local|month|week|number)$/.test(el.type)) s.push(`type=${el.type}`);
       const v = /^(submit|reset|button|image)$/.test(el.type) ? "" : el.value; // a button's value is its name
-      if (v) s.push(secretField(el) || holdsCode(el, v) ? "filled" : `value="${v.length > 40 ? v.slice(0, 40) + "…" : v}"`);
+      if (v) s.push(secretField(el) || holdsCode(el, v) ? "filled" : `value="${v.length > 40 ? `${v.slice(0, 40)}…" (${v.length} chars)` : `${v}"`}`);
     }
     if (el.tagName === "SELECT" && el.options.length) {
       const sel = el.selectedOptions[0];
@@ -858,7 +874,7 @@
   // another frame's, which relayOp then asks.
   async function pressDone(ref, mark, ms) {
     const p = presses.get(mark);
-    if (!p) return missing(ref);
+    if (!p) return { error: missing(ref).error };
     presses.delete(mark);
     const came = await Promise.race([p.heard.then(() => true), sleep(ms).then(() => false)]);
     p.el.classList.remove(mark);
@@ -938,10 +954,11 @@
       // source and style rules as its text.
       if (/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(el.tagName)) return;
       const style = (el.ownerDocument.defaultView || window).getComputedStyle(el);
+      const clear = transparent(el, style);
       // showHidden keeps what the page hides (a collapsed menu, a closed
       // dialog), for reading; such an element cannot be clicked until shown.
       if (!opts.showHidden) {
-        if (style.display === "none" || transparent(el, style)) return;
+        if (style.display === "none" || (clear && !standIn(el) && !labelDraws(el))) return;
         if (style.position === "fixed" && (el.getClientRects().length === 0 || putAway(el.getBoundingClientRect(), el.ownerDocument.defaultView || window))) return;
       }
       // A child of a hidden element can show itself with visibility: visible
@@ -959,14 +976,18 @@
         node = { el, role: role || el.tagName.toLowerCase(), actionable, name: ownName(el), kids: [] };
         parent.kids.push(node);
         seen ||= actionable && !boxed;
-        // A field with no box of its own (appearance: none, 0 by 0) is one
-        // its label draws.
-        if (actionable && !boxed && el.labels?.length) {
+        // A field with no box of its own (appearance: none, 0 by 0), or
+        // one drawn transparent, is one its label draws.
+        if (actionable && !boxed && !clear && el.labels?.length) {
           const r = el.getBoundingClientRect();
           if (r.width && r.height) fields.set(el, node);
         }
         if (node.name === null && namedByContent(el)) {
           node.text = [];
+          named = [...named, node];
+        } else if (node.name && showsChoice(el, role)) {
+          node.text = [];
+          node.choice = true;
           named = [...named, node];
         }
       } else if ((el.tagName === "UL" || el.tagName === "OL") && inItem) {
@@ -1014,7 +1035,11 @@
         }
       }
       if (node.el !== el) return;
-      if (node.text) {
+      if (node.choice) {
+        const full = norm(node.text.join(""));
+        if (full) node.choice = full.length > 40 ? full.slice(0, 40) + "…" : full;
+        delete node.text;
+      } else if (node.text) {
         const full = norm(node.text.join(""));
         const cap = /^H[1-6]$/.test(el.tagName) ? TEXT_MAX : NAME_MAX;
         if (full) {
@@ -1053,10 +1078,15 @@
     // lines keep theirs, which the query may have matched, and so does a
     // read for a file or a script (everyAddress), searched line by line.
     const gave = new Map();
+    // Lines the query left out: a read that keeps none says whether the
+    // page had any. On 11-17 three opens with snapshot "words", the guide's
+    // stand-in taken as the words, answered "(0 nodes)" on full pages, and
+    // each was read again as if the page had not drawn.
+    let dropped = 0;
     const push = (depth, text, n, lead = "") => {
       // an embedded frame's line stays, whatever the query: the extension
       // puts the frame's own matching lines in its place
-      if (query && !query(lead + text) && !text.includes(FRAME_MARK)) return;
+      if (query && !query(lead + text) && !text.includes(FRAME_MARK)) { dropped++; return; }
       if (lines.length >= maxLines) { truncated = true; return; }
       const ref = n && `${prefix}${refOf(n.el)}`;
       if (ref && !query && !opts.everyAddress && hrefOf(n) && !gave.has(hrefOf(n))) gave.set(hrefOf(n), ref);
@@ -1069,6 +1099,7 @@
     // stated name or title can run to a whole commit message: one line of it.
     const head = (n) => {
       const st = stateOf(n.el);
+      if (typeof n.choice === "string") st.push(`value="${n.choice}"`);
       const i = st.findIndex((s) => s.startsWith("url="));
       const url = i >= 0 ? st.splice(i, 1)[0].slice(4) : "";
       const first = url && gave.get(hrefOf(n));
@@ -1145,7 +1176,7 @@
         if (typeof c !== "object") {
           let { items, next } = textItems(kids, i);
           i = next;
-          if (node.fromText && !node.long) continue; // already the name
+          if ((node.fromText && !node.long) || node.choice) continue; // already the name, or the choice it shows
           // text a stated name already carries (aria-label ".cargo, (Directory)" over ".cargo")
           if (node.name && !node.fromText) items = items.filter((t) => !node.name.toLowerCase().includes(t.toLowerCase()));
           // short neighbours share a line ("£51.77 · In stock"); table rows and long text keep their own
@@ -1160,7 +1191,7 @@
         i++;
         if (c.group) { render(c, depth + 1); continue; }
         if (!c.actionable && !c.name && (c.role === "form" || c.role === "region")) { render(c, depth); continue; }
-        if (sameAsField(c)) { render(c, depth); continue; }
+        if (sameAsField(c) || (c.role === "label" && !c.name && !hittable(c.el))) { render(c, depth); continue; }
         if (!c.actionable && c.role === "img" && node.actionable) continue;
         if (c.actionable && c.fromPic && hrefOf(c) && textHrefs.has(hrefOf(c))) continue;
         const ek = elementKids(c);
@@ -1181,7 +1212,7 @@
       }
     };
     withCensus(() => render(top, 0));
-    return { url: location.href, title: document.title, nodes: lines.length, truncated, snapshot: lines.join("\n"), fingerprints: printed, last: refSeq, ...(unlinked ? { unlinked } : {}), ...(query && !lines.length ? regexHint(opts.query) : {}), seen };
+    return { url: location.href, title: document.title, nodes: lines.length, truncated, snapshot: lines.join("\n"), fingerprints: printed, last: refSeq, ...(unlinked ? { unlinked } : {}), ...(query && !lines.length ? queryMissed(opts.query, dropped) : {}), seen };
   }
 
   // A page still drawing can show for a moment nothing a person sees: a
@@ -1207,7 +1238,8 @@
   // it, and the read says so.
   const DRAW_WAIT_MS = 2000;
   const FLUTTER_UNDRAWN = "Flutter builds this page's controls only while its tab draws, and a hidden tab you did not open does not: show it for a moment (wait with front: true and ms: 1000), then snapshot again";
-  const UNDRAWN_PAGE = "the page has drawn nothing yet: wait for text you expect (wait with text), then snapshot again";
+  // a Safari prompt over the tab keeps a page blank too (PROMPT in tools.ts)
+  const UNDRAWN_PAGE = "the page has drawn nothing yet: wait for text you expect (wait with text), then snapshot again; if a Safari prompt is over the tab (camera, microphone, location), only the user can answer it: handoff";
   // A page that hit an error may draw nothing however long a wait looks for
   // its text: on 10-09 an agent waited 25 s on one whose script had thrown,
   // then read an empty console (S99PartB). A blank read names the errors
@@ -1367,6 +1399,50 @@
     return el.getClientRects().length > 0 && isVisible(el);
   }
 
+  // A box on the page a person can hit: a 0-by-0 label still has a client
+  // rect, so shown alone passes it.
+  function hittable(el) {
+    return shown(el) && [...el.getClientRects()].some((r) => r.width >= 1 && r.height >= 1);
+  }
+
+  // The box that draws a checkbox or radio no one sees and takes its click:
+  // LinkedIn's notification settings keep each switch's input transparent
+  // and 0 by 0, its label empty, and toggle it from the 52-by-32 box that
+  // holds them. On 11-16 its snapshots printed 25 empty labels and no
+  // switch, and a click on a label found no box. The first ancestor with a
+  // box counts when the hand starts there (not a row's hand it inherits),
+  // it holds no words (a row's title), and it holds no other control. An
+  // input refused for any reason but being unseen (disabled, inert) has
+  // none, so its refusal stands. One a label draws (labelDraws) has that
+  // label, when the label holds no other control: a click on the radio's
+  // ref the snapshot prints is the label's click, not a refusal naming it.
+  const STAND_IN_CONTROLS = "input, select, textarea, button, a[href], [role=button], [role=link], [role=switch], [role=checkbox], [role=radio]";
+  function standIn(el) {
+    if (labelDraws(el)) {
+      const label = el.parentElement.closest("label");
+      return !hittable(el) && [...label.querySelectorAll(STAND_IN_CONTROLS)].every((c) => c === el) ? label : null;
+    }
+    if (!el.matches("input[type=checkbox], input[type=radio]") || hittable(el) || [...el.labels].some(hittable) || clickBlocked(el)?.reason !== "hidden") return null;
+    for (let box = parentOf(el), up = 0; box && up < 3; box = parentOf(box), up++) {
+      if (!hittable(box)) continue;
+      if (!handStarts(box, (box.ownerDocument.defaultView || window).getComputedStyle(box), false)) return null;
+      return !box.textContent.trim() && [...box.querySelectorAll(STAND_IN_CONTROLS)].every((c) => c === el) ? box : null;
+    }
+    return null;
+  }
+
+  // A checkbox or radio drawn transparent inside a label a person sees: the
+  // label draws it and takes its click, and the snapshot prints it under
+  // the label with its state, as it does one cut to a pixel. On 11-17 Bank
+  // of America's Zelle contact choice printed three labels and no radio,
+  // and which one was checked took an eval over input. One laid over a
+  // label outside it (Wikipedia's menu checkbox) stays unprinted: the
+  // label's line is the one to click.
+  function labelDraws(el) {
+    const label = el.parentElement?.closest("label");
+    return /^(checkbox|radio)$/.test(getExplicitRole(el)) && el.tagName === "INPUT" && label?.control === el && hittable(label);
+  }
+
   // The dialog open over the page: the last shown, when several are.
   function openDialog() {
     return deepQueryAll(DIALOG_BOXES).filter(shown).at(-1) ?? null;
@@ -1410,10 +1486,14 @@
   // divs, so the CSS "dialog" matched nothing and the name was not CSS
   // (09-30). A ref from the latest snapshot, bracketed as it prints or not,
   // is its element: root "[23]" failed as CSS (01a10ea8, 10-05). Any other
-  // selector is CSS.
+  // selector is CSS, but the CSS for a dialog ([role=dialog], dialog[open],
+  // [aria-modal=true]) is the dialog open over the page too: on 11-17 root
+  // "[role=dialog]" read a plan dialog left in the page, not the one a
+  // click had just opened.
+  const DIALOG_CSS = /^(?:dialog(?:\[open\])?|\[(?:role=["']?(?:alert)?dialog["']?|aria-modal=["']?true["']?)\])$/;
   function rootFor(selector) {
     const want = selector.trim();
-    if (want === "dialog") return openDialog() ?? deepQuery(selector);
+    if (DIALOG_CSS.test(want.replace(/\s+/g, ""))) return openDialog() ?? deepQuery(selector);
     const ref = /^\[?(\d+)\]?$/.exec(want);
     if (ref) return resolve(ref[1]);
     if (!/^[\w-]+ ".*"$/s.test(want)) return deepQuery(selector);
@@ -1448,10 +1528,18 @@
     return keepLabel ? found : fieldOf(found);
   }
 
+  // A ref or text that names nothing sent nothing, as keptFor in
+  // background.js relies on, so its answer says so (failures.ts). A lookup
+  // of a mark after real input went (typeField, sendButton, pressDone)
+  // drops that: the input was sent. An empty target is named as one: in
+  // the 11-16 sessions agents grepped refs out of snapshots 126 times,
+  // and a grep that found nothing sent "".
+  const EMPTY_TARGET = "the target is empty (a grep for its ref found nothing?): pass the control's visible text or a CSS selector, as a ref";
   function missing(target) {
     const key = String(target).trim();
+    if (!key) return { error: EMPTY_TARGET, failure: UNSENT };
     if (changedNow?.ref === key) return { error: `that control changed since the snapshot: it was ${changedNow.was}, now ${changedNow.now}; re-run snapshot`, failure: UNSENT };
-    return { error: /^\d+$/.test(key) ? `stale ref ${target}; re-run snapshot` : `nothing on the page matches ${target}` };
+    return { error: /^\d+$/.test(key) ? `stale ref ${target}; re-run snapshot` : `nothing on the page matches ${target}`, failure: UNSENT };
   }
 
   function centerOf(el) {
@@ -1569,7 +1657,7 @@
 
   function click(ref, el = resolve(ref, true)) {
     if (!el) return { ...missing(ref), failure: UNSENT };
-    return clickElement(el);
+    return clickElement(standIn(el) ?? el);
   }
 
   // Only a refusal before the first event may be tried again. Scroll-driven
@@ -1586,7 +1674,13 @@
     const el = resolve(ref, true);
     const fp = el && (fingerprints.get(String(ref).trim()) ?? candidateOf(el));
     const once = () => expectedClick(el, opts, prior) ?? afterward(() => withOutcome(() => click(ref, el)), opts);
+    lastCover = null;
     const first = once();
+    const cover = first?.reason === "covered" && first.failure?.effect === "none" ? lastCover : null;
+    if (cover && closeControls(cover.hit, cover.target, true).length) {
+      if (opts?.dismiss) return dismissThen(cover, once);
+      return { ...first, error: `${first.error}; click again with dismiss: true to close it and click in one call`, failure: { ...first.failure, next: "click again with dismiss: true, or click a close control first" } };
+    }
     if (!first?.unseen || first.failure?.effect !== "none") return first;
     return whenPage(() => !clickPoint(el, false).error, UNSEEN_MS).then(() => {
       if (changedSince(String(ref).trim(), el, fp)) return { ...missing(ref), failure: UNSENT };
@@ -1594,10 +1688,36 @@
     });
   }
 
+  // dismiss: a click a cover refuses clicks the close control of the
+  // dialog, or the fixed or sticky box, holding the cover (closeControls
+  // with auto: "Close", "No thanks", "Not now", "×" only; never "Skip",
+  // "Cancel", or a choice such as "Decline"), waits for the cover to go,
+  // and clicks the target again. On 11-17 Bank of America's "Welcome to
+  // Online Banking" dialog over Pay & Transfer cost three calls: the
+  // refused click, a click on its "No thanks", and the click again. Once
+  // the close control took its click the page has changed, so a later
+  // refusal is no longer one with no effect.
+  const DISMISS_MS = 2000;
+  const DISMISSED = { code: "effect_unknown", effect: "possibly_effected", retryable: false, next: "the cover's close control was clicked: snapshot the page before clicking again" };
+  // { target, hit }: the cover clickPoint last refused a click for
+  let lastCover = null;
+  function dismissThen(cover, again) {
+    const closer = closeControls(cover.hit, cover.target, true)[0];
+    const dismissed = `${named(cover.hit)} with its ${named(closer)}`;
+    const closed = withOutcome(() => clickElement(closer));
+    if (closed.error) return { ...closed, error: `that target is covered by ${named(cover.hit)}, and its close control ${named(closer)} refused the click: ${closed.error}` };
+    if (closed.expect === "load" || closed.expect === "tab") return { error: `closing ${dismissed} ${closed.expect === "load" ? "loaded another page" : "opened a tab"}; the target was not clicked`, failure: DISMISSED };
+    const free = () => clickPoint(cover.target, false).reason !== "covered";
+    return (free() ? Promise.resolve(true) : whenPage(free, DISMISS_MS)).then((gone) => {
+      if (!gone) return { error: `closed ${dismissed}, but the target is still covered by ${lastCover ? named(lastCover.hit) : "something"} after ${DISMISS_MS / 1000} s; the target was not clicked`, failure: DISMISSED };
+      return Promise.resolve(again()).then((res) => (res?.error ? { ...res, error: `closed ${dismissed}, then ${res.error}`, failure: DISMISSED } : { ...res, dismissed }));
+    });
+  }
+
   function hiddenClick(el, cause, node = el) {
     // A styled checkbox's hidden input is not its pointer target. Name the
     // associated label, but leave its hit-test to a separate, explicit click.
-    const labels = el.matches("input[type=checkbox], input[type=radio]") ? [...el.labels].filter((label) => shown(label) && !clickBlocked(label)) : [];
+    const labels = el.matches("input[type=checkbox], input[type=radio]") ? [...el.labels].filter((label) => hittable(label) && !clickBlocked(label)) : [];
     if (labels.length === 1) return { error: `that control is not visible (${cause}); click its label [${ensureRef(labels[0])}] instead`, reason: "label", next: "click the visible label instead" };
     // A snapshot keeps a transparent control that is fading in. Clicking it
     // must still wait for ink; Safari can freeze that fade in a hidden tab.
@@ -1647,15 +1767,20 @@
     return el.localName === "label" && !!el.control && insideTarget(el.control, hit);
   }
 
-  // A cover named with its way out: up to three shown controls in the
-  // dialog, or the fixed or sticky box, that holds the cover, or in the
-  // cover itself, whose whole name says to close it ("Close", "Not now",
-  // "×"); "Cancel subscription" or "Decline" is a choice, not a way out. A
-  // box that holds the target too is the page's own, whose Cancel is no way
-  // out.
+  // A cover's way out: up to three shown controls in the dialog, or the
+  // fixed or sticky box, that holds the cover, or in the cover itself,
+  // whose whole name says to close it ("Close", "Not now", "×"); "Cancel
+  // subscription" or "Decline" is a choice, not a way out. A box that holds
+  // the target too is the page's own, whose Cancel is no way out.
+  // auto: the ones dismiss may click itself: only in a dialog, fixed or
+  // sticky box, as an inline editor's Cancel or a tag's × over the target
+  // would lose an edit or an item; and only a name that does nothing but
+  // close, as "Skip" or "Cancel" in "Turn on two-step verification" is
+  // the dialog's question answered.
   const DISMISS = /^\s*(?:(?:close|dismiss|cancel|hide|skip|no,? thanks|not now)(?:\s+(?:dialog|modal|popup|banner|window|panel|overlay|this))?\s*[.!]?|[x×✕✖])\s*$/i;
-  function coveredBy(hit, target, again = "") {
-    let box = hit;
+  const CLOSE_ONLY = /^\s*(?:(?:close|dismiss|no,? thanks|not now)(?:\s+(?:dialog|modal|popup|banner|window|panel|overlay|this))?\s*[.!]?|[x×✕✖])\s*$/i;
+  function closeControls(hit, target, auto = false) {
+    let box = null;
     for (let node = hit; node && !insideTarget(node, target); node = node.assignedSlot ?? parentOf(node)) {
       const { position } = (node.ownerDocument.defaultView || window).getComputedStyle(node);
       if (node.matches(DIALOG_BOXES) || position === "fixed" || position === "sticky") {
@@ -1663,9 +1788,17 @@
         break;
       }
     }
-    const ways = insideTarget(box, target) ? [] : [box, ...deepElements(box)]
-      .filter((el) => isInteractive(el) && shown(el) && DISMISS.test(accessibleName(el)))
-      .slice(0, 3).map((el) => `[${ensureRef(el)}] ${named(el)}`);
+    if (auto && !box) return [];
+    box ??= hit;
+    const names = auto ? CLOSE_ONLY : DISMISS;
+    return insideTarget(box, target) ? [] : [box, ...deepElements(box)]
+      .filter((el) => isInteractive(el) && shown(el) && names.test(accessibleName(el)))
+      .slice(0, 3);
+  }
+
+  // A cover named with its way out (closeControls).
+  function coveredBy(hit, target, again = "") {
+    const ways = closeControls(hit, target).map((el) => `[${ensureRef(el)}] ${named(el)}`);
     if (!ways.length) return `${named(hit)}; dismiss the cover before clicking${again}`;
     return `${named(hit)}; its close control${ways.length > 1 ? "s are" : " is"} ${ways.join(", ")}`;
   }
@@ -1776,7 +1909,8 @@
         const hit = deepPoint(x, y, el.ownerDocument);
         const on = hit && (insideTarget(el, hit) ? hit : ownControl(el, hit) ? el : null);
         if (on) {
-          const stopped = clickBlocked(on);
+          // the box's own transparent input laid over it takes the click
+          const stopped = clickBlocked(standIn(on) === el ? el : on);
           if (!stopped) {
             const coveredFrame = frameCover(el.ownerDocument, x, y, scroll);
             if (coveredFrame) return coveredFrame;
@@ -1788,7 +1922,11 @@
       }
     }
     if (targetStyle.pointerEvents === "none") return { error: "that target does not receive pointer events; click its visible interactive control instead", reason: "pointer_events", next: "click the visible interactive control instead" };
-    if (cover) return { error: `that target is covered by ${coveredBy(cover, el)}`, reason: "covered", next: "dismiss the cover before clicking" };
+    if (cover) {
+      // the cover clickShown's dismiss closes
+      lastCover = { target: el, hit: cover };
+      return { error: `that target is covered by ${coveredBy(cover, el)}`, reason: "covered", next: "dismiss the cover before clicking" };
+    }
     if (points) return { error: "that target has a visible box but Safari returned no hit-test target; wait for the page to draw before clicking", reason: "unpainted", next: "wait for the page to draw before clicking", unseen: true };
     return { error: scroll ? "that target has no visible clickable area after scrolling; open or expand its container before clicking" : "that target has no visible clickable area; scroll it into view or open its container before clicking", reason: boxes ? "clipped" : "no_box", next: scroll ? "open or expand the target's container before clicking" : "scroll the target into view or open its container before clicking", unseen: true };
   }
@@ -1800,7 +1938,7 @@
     let checks = 0;
     const clicked = fireClick(point.hit, point.x, point.y, () => {
       checks += 1;
-      const blocked = clickBlocked(el) || clickBlocked(point.hit);
+      const blocked = clickBlocked(el) || (standIn(point.hit) === el ? null : clickBlocked(point.hit));
       if (blocked) return blocked;
       const hit = deepPoint(point.x, point.y, el.ownerDocument);
       if (!hit || !(insideTarget(el, hit) || ownControl(el, hit))) return { error: hit ? `that target became covered by ${coveredBy(hit, el, " again")}` : "that target became covered; dismiss the cover before clicking again", reason: "covered", next: "check what changed and dismiss the cover before clicking again" };
@@ -1815,16 +1953,16 @@
     const target = resolve(ref, kind === "click");
     const guard = kind === "click" ? expectedClick(target, opts, prior) : null;
     if (guard) return guard;
-    const el = kind === "select" ? fieldOf(target) : target;
+    const el = kind === "select" ? fieldOf(target) : kind === "click" && target ? standIn(target) ?? target : target;
     if (!el) return missing(ref);
     const point = clickPoint(el);
-    if (point.error) return point.recovery === "present" ? refused(el, point) : point;
+    if (point.error) return refused(el, point);
     let { x, y } = point;
     for (let doc = el.ownerDocument; doc !== document;) {
       const frame = doc.defaultView?.frameElement;
-      if (!frame) return { error: "the target's frame changed; re-run snapshot" };
+      if (!frame) return { error: "the target's frame changed; re-run snapshot", failure: UNSENT };
       const parentPoint = framePoint(frame, { x, y });
-      if (parentPoint.error) return parentPoint;
+      if (parentPoint.error) return refused(el, parentPoint);
       ({ x, y } = parentPoint);
       doc = frame.ownerDocument;
     }
@@ -1997,17 +2135,20 @@
 
   // select takes a <select>, a label of one, or a combobox, resolved before
   // the first await (answer). A null choice lists the options.
+  // A refusal before the click point is checked, or by it, sent nothing:
+  // on 11-16 a select a cover refused held its identical retry as "may
+  // already have happened", and the agent set the list with eval instead.
   function selectIn(ref, choice, opts) {
     const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
-    if (el.matches(":disabled")) return { error: "that list is disabled, so the page would ignore a choice made in it" };
+    if (el.matches(":disabled")) return { error: "that list is disabled, so the page would ignore a choice made in it", failure: UNSENT };
     if (choice !== null) {
       const point = clickPoint(el);
-      if (point.error) return point;
+      if (point.error) return refused(el, point);
     }
     if (el.tagName === "SELECT") return choice === null ? optionList(optionsOf(el)) : afterward(() => withOutcome(() => selectOption(el, choice)), opts);
     if (getExplicitRole(el) === "combobox") return comboOption(el, choice, opts);
-    return { error: "not a <select> or combobox; click it, then click the option in a fresh snapshot" };
+    return { error: "not a <select> or combobox; click it, then click the option in a fresh snapshot", failure: UNSENT };
   }
 
   // files: [{ name, type, data (base64) }]. File inputs are usually hidden
@@ -2019,13 +2160,13 @@
       const el = resolve(ref);
       if (!el) return missing(ref);
       input = el.matches("input[type=file]") ? el : deepQueryAll("input[type=file]", el)[0];
-      if (!input) return { error: "no file input at that ref; retry without a ref to use the page's only file input" };
+      if (!input) return { error: "no file input at that ref; retry without a ref to use the page's only file input", failure: UNSENT };
     } else {
       const all = deepQueryAll("input[type=file]");
-      if (all.length !== 1) return { error: `page has ${all.length} file inputs; pass the ref of the upload area` };
+      if (all.length !== 1) return { error: `page has ${all.length} file inputs; pass the ref of the upload area`, failure: UNSENT };
       input = all[0];
     }
-    if (files.length > 1 && !input.multiple) return { error: "this input takes one file" };
+    if (files.length > 1 && !input.multiple) return { error: "this input takes one file", failure: UNSENT };
     const dt = new DataTransfer();
     for (const f of files) {
       const bytes = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0));
@@ -2657,9 +2798,9 @@
   async function typeText(ref, text, opts = {}) {
     const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
-    if (el.matches(":disabled")) return { error: "that field is disabled, so the page would ignore text typed into it" };
+    if (el.matches(":disabled")) return { error: "that field is disabled, so the page would ignore text typed into it", failure: UNSENT };
     el.scrollIntoView({ block: "center", behavior: "instant" });
-    if (!(await focusField(el))) return untaken("the field");
+    if (!(await focusField(el))) return { ...untaken("the field"), failure: UNSENT };
     lastTyped = el;
     lookBeforeTyping(opts.secret ? null : text);
     const before = el.isContentEditable ? "" : String(el.value || "");
@@ -2722,7 +2863,7 @@
     const el = ref === null ? focusedNow() : fieldOf(resolve(ref));
     if (!el && ref !== null) return missing(ref);
     if (!el || !(el.isContentEditable || el.localName === "textarea" || (el.localName === "input" && TEXT_INPUTS.has(el.type)))) return { field: false };
-    if (el.matches(":disabled")) return { error: "that field is disabled, so the page would ignore text typed into it" };
+    if (el.matches(":disabled")) return { error: "that field is disabled, so the page would ignore text typed into it", failure: UNSENT };
     lookBeforeTyping(text);
     el.setAttribute("autocorrect", "off");
     el.focus();
@@ -2745,7 +2886,7 @@
   // does not hold is another frame's, which relayOp then asks.
   async function typeField(ref, mark, text, sent) {
     const field = realFields.get(mark);
-    if (!field) return missing(ref);
+    if (!field) return { error: missing(ref).error };
     const { el, before, boxes } = field;
     el.classList.remove(mark);
     boxes.forEach((b, i) => b.classList.remove(`${mark}_${i}`));
@@ -2772,7 +2913,7 @@
   const SEND = /(^|[^a-z])(send|submit)/i;
   function sendButton(ref, mark) {
     const field = realFields.get(mark);
-    if (!field) return missing(ref);
+    if (!field) return { error: missing(ref).error };
     const up = (n) => n.parentElement ?? (n.getRootNode() instanceof ShadowRoot ? n.getRootNode().host : null);
     const named = (b) => [accessibleName(b), b.title, b.id, b.getAttribute("data-testid"), b.getAttribute("class")].filter(Boolean).join(" ");
     let box = up(field.el);
@@ -2850,16 +2991,23 @@
   }
 
   // A verification-code field: the one marked one-time-code, a row of code
-  // boxes (one digit each), or one named like a code.
+  // boxes (one digit each), or one named like a code. Last, a marked one
+  // drawn transparent with a box of its own: SoFi's code step (11-17) draws
+  // six boxes under one unnamed input at opacity 0, and code answered that
+  // no field was there. A shown field wins over it, so a faded panel left
+  // in the page is never filled in place of the one shown.
   function codeFields() {
     const usable = (el) => !el.disabled && !el.readOnly && shown(el);
-    const inputs = deepQueryAll(CODE_INPUTS).filter(usable);
+    const all = deepQueryAll(CODE_INPUTS);
+    const inputs = all.filter(usable);
     const marked = inputs.find((el) => el.getAttribute("autocomplete") === "one-time-code");
     if (marked) return [marked];
     const boxes = codeBoxes();
     if (boxes.length) return boxes;
     const named = inputs.find((el) => /otp|one.?time|totp|2fa|mfa|verif|security.?code|auth.?code|\bcode\b/i.test(`${el.name} ${el.id} ${el.getAttribute("aria-label") ?? ""} ${el.placeholder}`));
-    return named ? [named] : [];
+    if (named) return [named];
+    const drawnOver = all.find((el) => el.getAttribute("autocomplete") === "one-time-code" && !el.disabled && !el.readOnly && el.ownerDocument.defaultView.getComputedStyle(el).visibility !== "hidden" && [...el.getClientRects()].some((r) => r.width >= 1 && r.height >= 1));
+    return drawnOver ? [drawnOver] : [];
   }
 
   // The ways a sign-in offers to send its code, when it asks for one before
@@ -3845,17 +3993,31 @@
   // region, or its only article, unless that holds little of the page's
   // text (Amazon's Prime page put only the account's name in it, 09-29);
   // else the whole body (the first of many articles is a card, not the
-  // content). A root other than the main region comes with a note.
+  // content). A root other than the main region comes with a note. A
+  // consent prompt is no content: a map read of a savings site (11-17)
+  // returned only its "Web tracking consent preferences" dialog, so it is
+  // read past, and the note names it. A prompt asks to accept or decline:
+  // a dialog of switches the agent opened (privacy settings), one with a
+  // field to fill (a sign-in that links its cookie policy), or one that
+  // only names a cookie (a cart's) is read as any dialog is.
+  const CONSENT = /\bcookie|\bconsent\b|privacy (?:choices|preferences|settings)/i;
+  const CONSENT_ANSWER = /^(?:accept|reject|decline|allow|deny|agree|i agree|got it|ok(?:ay)?)\b/i;
+  const consentPrompt = (box) => CONSENT.test(`${accessibleName(box)} ${norm(box.innerText ?? "").slice(0, 300)}`)
+    && [...box.querySelectorAll("button, [role=button], input[type=button], input[type=submit], a[href]")].some((b) => CONSENT_ANSWER.test(norm(accessibleName(b) || b.textContent || "")))
+    && !box.querySelector("textarea, select, input:not([type=hidden], [type=button], [type=submit]), [role=switch], [role=checkbox]");
   function contentRoot() {
     const box = openDialog();
-    if (box && (norm(box.innerText ?? "") || framesIn(box).length)) return { root: box, note: `this is the ${named(box)} open over the page; extract with selector "body" reads the page behind it` };
+    const read = box && (norm(box.innerText ?? "") || framesIn(box).length);
+    const consent = read && consentPrompt(box);
+    if (read && !consent) return { root: box, note: `this is the ${named(box)} open over the page; extract with selector "body" reads the page behind it` };
+    const behind = consent ? `the ${named(box)} is open over the page; this is the page behind it; extract with selector "dialog" reads the prompt` : undefined;
     const articles = document.querySelectorAll("article");
     const main = document.querySelector("main, [role=main]") ?? (articles.length === 1 ? articles[0] : null);
-    if (!main) return { root: document.body };
+    if (!main) return { root: document.body, ...(behind ? { note: behind } : {}) };
     const inMain = norm(main.innerText ?? "").length;
-    const inBody = norm(document.body.innerText ?? "").length;
-    if (inBody - inMain >= 200 && (inMain < 200 || inMain * 10 < inBody)) return { root: document.body, note: "the main region holds little of the page's text, so this is the whole page" };
-    return { root: main };
+    const inBody = norm(document.body.innerText ?? "").length - (consent ? norm(box.innerText ?? "").length : 0);
+    if (inBody - inMain >= 200 && (inMain < 200 || inMain * 10 < inBody)) return { root: document.body, note: [behind, "the main region holds little of the page's text, so this is the whole page"].filter(Boolean).join("; ") };
+    return { root: main, ...(behind ? { note: behind } : {}) };
   }
 
   // The embedded frames shown in root that have a copy of this script of
@@ -4571,6 +4733,15 @@
   // page's (09-29).
   const regexHint = (query) => (/\\|\^|\(\?|\.\*|\[.*\]|\$$/.test(query) ? { hint: 'the query is plain text, not a regex: "a|b" keeps lines containing a or b, case aside' } : {});
 
+  // A snapshot whose query kept no line on a page that has lines says so,
+  // so its "0 nodes" is not read as a page still drawing.
+  const queryMissed = (query, dropped) => {
+    const regex = regexHint(query).hint;
+    const missed = dropped ? `no line has "${query}"; the page has ${dropped} other line${dropped === 1 ? "" : "s"}: query keeps only lines holding these words` : undefined;
+    const hint = [missed, regex].filter(Boolean).join("; ");
+    return hint ? { hint } : {};
+  };
+
   // ---------- tables as rows ----------
   // extract with as: "table" reads the page's data as rows instead of text:
   // each table (a <table>, or an element with the ARIA table or grid role),
@@ -4907,10 +5078,16 @@
   }
 
   // What the page's world saw since `since`: the requests the page made,
-  // those still out, and the errors it did not catch.
-  function hear(since) {
-    return askPage("__sh_receipt_ask", "__sh_receipt_answer", { since });
+  // those still out, and the errors it did not catch; with recent, also
+  // those that failed or were thrown in the recent ms before.
+  function hear(since, recent) {
+    return askPage("__sh_receipt_ask", "__sh_receipt_answer", { since, recent });
   }
+
+  // How far back an action's receipt looks for what failed before it
+  // (recent in daemon/receipt.ts): long enough to reach from opening a
+  // dialog to its last button.
+  const RECENT_MS = 120_000;
 
   // One response's whole text, as the page's world kept it: that of the
   // request at key.url that the log wrote at key.t (net's body).
@@ -5068,7 +5245,7 @@
         tally(observer.takeRecords().filter(madeByPage));
         observer.disconnect();
         if (away) return resolve({ ...res, expect: "load" });
-        const heard = hear(start);
+        const heard = hear(start, RECENT_MS);
         const now = focusedNow();
         const box = deepQueryAll(DIALOG_BOXES).find((b) => isVisible(b) && !boxes.includes(b));
         resolve({
@@ -5088,6 +5265,7 @@
             requests: heard?.requests ?? null,
             pending: heard?.pending ?? null,
             errors: heard?.errors ?? [],
+            ...(heard?.earlier ? { earlier: heard.earlier } : {}),
           },
         });
       };
@@ -5866,21 +6044,68 @@
     },
     data: pageData,
     tabInfo,
+    // Safari fails a fetch that got no answer with only "Load failed",
+    // which says not which: on 11-17 an eval fetching a page's script
+    // bundles failed whole so, one cross-origin bundle refused. The code's
+    // fetch notes the address of each such error, and the error that failed
+    // the eval is named by its own; one the harness did not see is left as
+    // it is.
     eval: (src) => {
       let run;
       try {
         // eslint-disable-next-line no-new-func
-        run = new Function("sh", `return (${src})`);
+        run = new Function("sh", "fetch", `return (${src})`);
       } catch (e) {
         // bad code is the caller's to fix; any other refusal is the page's policy
         if (e instanceof SyntaxError) throw e;
         return { error: EVAL_BLOCKED };
       }
-      const result = run(SH);
-      if (result && typeof result.then === "function") {
-        return result.then((v) => ({ ok: true, result: safeClone(v) }));
+      const LOAD_FAILED = /^(?:TypeError: )?Load failed$/;
+      const unanswered = new WeakMap(); // error -> its request's address
+      let failed = 0;
+      const fetching = (input, init) => fetch(input, init).catch((e) => {
+        if (LOAD_FAILED.test(String(e?.message))) {
+          failed++;
+          try { unanswered.set(e, new URL(input instanceof Request ? input.url : String(input), document.baseURI).href); } catch {}
+        }
+        throw e;
+      });
+      // Code that sends the page elsewhere (location.reload(), a new
+      // location.href) answers expect "load", as an action does, so act in
+      // background.js waits for that page and reports it as navigated: in
+      // the 11-16 work sessions 9 shots right after such an eval failed, the
+      // page reloading under them. WebKit fires no navigate event for
+      // location.reload(), and none before the code returns (bench,
+      // 11-17), so code that calls it is read as leaving; act waits 3 s at
+      // most for a load that does not come. Only a call before any
+      // function in the code counts: one in a handler (onclick = () =>
+      // location.reload()) runs later, if ever. An embedded frame's load
+      // is no load of the tab act watches, so a frame's eval never says so.
+      const top = window === window.top;
+      const reload = src.search(/\blocation\s*\.\s*reload\s*\(/);
+      let leaves = top && reload >= 0 && !/=>|\bfunction\b/.test(src.slice(0, reload));
+      const onNav = (e) => { if (top && !e.destination.sameDocument) leaves = true; };
+      navigation.addEventListener("navigate", onNav);
+      const answer = (v) => {
+        navigation.removeEventListener("navigate", onNav);
+        return { ok: true, result: safeClone(v), ...(leaves ? { expect: "load" } : {}) };
+      };
+      let result;
+      try {
+        result = run(SH, fetching);
+      } catch (e) {
+        navigation.removeEventListener("navigate", onNav);
+        throw e;
       }
-      return { ok: true, result: safeClone(result) };
+      if (result && typeof result.then === "function") {
+        return result.then(answer, (e) => {
+          navigation.removeEventListener("navigate", onNav);
+          const url = e !== null && typeof e === "object" ? unanswered.get(e) : undefined;
+          if (url === undefined) throw e;
+          throw new Error(`Load failed for ${url}${failed > 1 ? ` and ${failed - 1} more` : ""}`);
+        });
+      }
+      return answer(result);
     },
     wait: waitFor,
     waitStop: (id = null) => { if (pendingWait && (id === null || pendingWait.id === id)) pendingWait.done(false); return { ok: true }; },

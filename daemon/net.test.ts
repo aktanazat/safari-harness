@@ -89,6 +89,26 @@ test("a list read for part of a url holds only those requests, each with the ind
   for (const e of entries) expect(await callTool("net", { tab: 1, body: e.index })).toMatchObject({ t: e.t });
 });
 
+// On 11-17 a read with no filter answered 52 KB of body starts when the
+// agent wanted the addresses.
+test("urls lists one line per request with no bodies, and url takes either of a|b or a /regex/", async () => {
+  expect(await callTool("net", { tab: 1, urls: true })).toEqual({
+    requests: [
+      "0 POST 200 https://portal.example/case",
+      "1 GET 200 https://widget.example/feed",
+      "2 GET 200 https://portal.example/export",
+      "3 GET 200 https://portal.example/events",
+      "4 POST 200 https://portal.example/case",
+    ],
+  });
+  expect(await callTool("net", { tab: 1, url: "export|feed", urls: true })).toEqual({ requests: ["1 GET 200 https://widget.example/feed", "2 GET 200 https://portal.example/export"] });
+  const { entries } = (await callTool("net", { tab: 1, url: "/ev[e]nts$/" })) as { entries: { index: number }[] };
+  expect(entries.map((e) => e.index)).toEqual([3]);
+  // a path with no pattern in it is a part, not /feed/ as a regex
+  expect(await callTool("net", { tab: 1, url: "/feed/", urls: true })).toEqual({ requests: [] });
+  expect(await callTool("net", { tab: 2, urls: true })).not.toHaveProperty("readers");
+});
+
 test("a read offers as readers only the page's own JSON GETs request_catalog save accepts: address, method, and whole body", async () => {
   expect(await callTool("net", { tab: 2 })).toMatchObject({
     readers: [{ request: 1, observedAt: 45, path: "/rows" }],

@@ -31,7 +31,7 @@ import { note } from "./journal.ts";
 import { alive, currentOwner, watchOwner } from "./owner.ts";
 import { rexTabOf, rexTitle, showRexTab, type RexTab } from "./rex.ts";
 import { closeManagedWindow, inspectUntrackedWindows, managedWindows, spaceById, spaceEnded, type ManagedWindow } from "./spaces.ts";
-import { closeTabsOf, consoleRead, netRead, recentlyClosedTabs, recentTabs, resolveTab, restoreClosedTab, screenshot, tabsOpenedBy, tabsOwnedBy, TOOLS, type RecentTab, type TabInfo } from "./tools.ts";
+import { closeTabsOf, codeFrom, consoleRead, netRead, recentlyClosedTabs, recentTabs, resolveTab, restoreClosedTab, screenshot, tabsOpenedBy, tabsOwnedBy, TOOLS, type RecentTab, type TabInfo } from "./tools.ts";
 import { localRequest } from "./requests.ts";
 import { unsecret } from "./redact.ts";
 import { SAVED_CHARS } from "./save.ts";
@@ -640,8 +640,17 @@ function siteKey(tool: string, args: Record<string, unknown>, origin: string): s
 // A refusal sends nothing, but names an earlier identical action whose
 // effect is unknown, and says so as effect_unknown does: possibly
 // effected, not to be repeated until read. On 11-04 one said effect none
-// beside "may already have happened" (MineSessionD-7).
-const ALREADY = "that action may already have happened; this call was not sent";
+// beside "may already have happened" (MineSessionD-7). On 11-17 an agent
+// read "this call was not sent" without its why, so the refusal says it.
+const ALREADY = "the same action failed after it was sent and may already have happened, so this call was not sent";
+
+// eval and fetch take read: true for code or a request that only reads,
+// which the harness cannot tell by itself; such a call holds nothing. On
+// 11-17 an eval that only read script bundles was refused this way.
+const READS_AGAIN: Record<string, string> = {
+  eval: "if its code only reads, send it again with read: true",
+  fetch: "if the request only reads, send it again with read: true",
+};
 
 function checkAction(agent: Agent, tool: string, args: Record<string, unknown>, origin?: string) {
   if (agent.inspectionOnly && !inspectionAllowed(tool, args)) throw new HarnessError("blocked", "this task may only inspect its current pages; the user must allow actions from its task controls", { next: "continue reading current pages, or wait for the user to allow actions" });
@@ -657,13 +666,23 @@ function checkAction(agent: Agent, tool: string, args: Record<string, unknown>, 
   if (effectful && view?.native?.size) {
     throw new HarnessError("effect_unknown", "native input has not reported completion; reading the page cannot release unfinished input", { next: "wait for input to finish; if its client has exited, stop any remaining input helper and restart the agent before starting another task" });
   }
+  const reads = Object.hasOwn(READS_AGAIN, tool) ? `${READS_AGAIN[tool]}; otherwise ` : "";
   if (effectful && key !== undefined && (view?.all || view?.retries.has(key))) {
-    throw new HarnessError("effect_unknown", `${ALREADY}; snapshot or read this tab before repeating it`, { next: "snapshot or extract this tab and check whether the action already happened" });
+    throw new HarnessError("effect_unknown", `${ALREADY}; ${reads}only a snapshot or extract of this tab releases it, and only if it has no query, root, selector or ref and is not cut short (an extract whose whole text was saved counts)`, { next: `${reads}snapshot or extract this tab with no query, root, selector or ref, not cut short, and check whether the action already happened` });
   }
   if (site !== undefined && agent.sites.has(site)) {
-    throw new HarnessError("effect_unknown", `${ALREADY}, from another tab on ${origin}; read a tab there whole (snapshot or extract) before repeating it`, { next: `snapshot or extract a tab on ${origin} (tabs lists them) and check whether the action already happened` });
+    throw new HarnessError("effect_unknown", `${ALREADY}, from another tab on ${origin}; ${reads}only a snapshot or extract of any tab on ${origin} releases it, and only if it has no query, root, selector or ref and is not cut short (an extract whose whole text was saved counts)`, { next: `${reads}snapshot or extract a tab on ${origin} with no query, root, selector or ref, not cut short, and check whether the action already happened (tabs lists them)` });
   }
   return { tab, effectful, key, site };
+}
+
+// eval {file} is compared by the code the file holds when sent: on 11-17
+// an agent rewrote its file after an eval that failed, and the new code
+// was refused as a repeat of the old, since only the path was compared.
+async function withCode(tool: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (tool !== "eval" || args.file === undefined) return args;
+  const { file, ...rest } = args;
+  return codeFrom(file).then((expression) => ({ ...rest, expression }), () => args);
 }
 
 // An uncertain action holds its tab, and a site-wide one its site too.
@@ -677,7 +696,7 @@ function holdUncertain(agent: Agent, tab: number, key: string, site: string | un
 async function execute<T>(agent: Agent, tool: string, args: Record<string, unknown>, run: () => Promise<T>, dispatched: boolean, delegated: () => boolean = () => false): Promise<T> {
   const rawTab = tabOf(args.tab).tab;
   const origin = Object.hasOwn(SITE_WIDE, tool) && affectsPage(tool, args) ? await siteOf(tool, args, rawTab === undefined ? undefined : followTab(rawTab)) : undefined;
-  const { tab, effectful, key, site } = checkAction(agent, tool, args, origin);
+  const { tab, effectful, key, site } = checkAction(agent, tool, await withCode(tool, args), origin);
   const revision = agent.revision;
   try {
     const value = await run();

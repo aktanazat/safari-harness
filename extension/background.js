@@ -34,6 +34,7 @@ async function getPort() {
 // safaridriver launched for WebDriver, with 4002 (automation.ts): that
 // copy sees none of the user's windows, so it stops trying for good.
 let automationCopy = false;
+let reloadAsked = false;
 
 // Each socket's handlers act on that socket alone. They once used the
 // latest one: an old socket closing after its replacement opened dropped
@@ -77,8 +78,15 @@ function connect() {
       // for a minute, or when safari extension reload asks (bridge.ts):
       // Safari unloads it and loads it again, as turning it off and on in
       // Safari Settings does, but asks for no password (10-13). Nothing
-      // answers it: this page goes with the reload.
-      if (msg.op === "reload") return api.runtime.reload();
+      // answers it: this page goes with the reload. Once asked, a stalled
+      // Safari runs it when it is free; a second ask would unload the page
+      // that first reload brings up, mid-adopt (11-16: three asks in two
+      // minutes to one page).
+      if (msg.op === "reload") {
+        if (reloadAsked) return;
+        reloadAsked = true;
+        return api.runtime.reload();
+      }
       const answer = (obj) => sendOn(sock, obj, msg);
       const asked = Date.now();
       handle(msg).then((value) => {
@@ -1954,14 +1962,22 @@ async function handle(msg) {
       else regrouping.delete(id);
       return { ok: true };
     }
-    // A tab an agent opened for the user leaves the agent's window, which
-    // goes with its tab group, for one of his own; only while it is still
-    // in that window.
-    case "tabs.detach": {
-      const [tabId, windowId] = args;
-      if ((await api.tabs.get(tabId)).windowId !== await resolveWindow(windowId)) return { ok: false };
-      await api.windows.create({ tabId, focused: false });
-      return { ok: true };
+    // A tab kept for the user leaves the agent's window, which sits on the
+    // Agents display he does not look at (daemon/place.ts), for the end of
+    // the window he had in front last, taking no focus. Only a normal,
+    // shown window as private as the tab takes it: Safari refuses to move a
+    // tab into a popup or across private browsing. With no such window, it
+    // goes to a new one. Answers where it went.
+    case "tabs.toHis": {
+      const [tabId] = args;
+      const until = Date.now() + LIST_MS;
+      if (adopted) await bounded(adopted.catch(() => {}), "adopt", until);
+      const [tab, open] = await Promise.all([api.tabs.get(tabId), bounded(api.windows.getAll({ windowTypes: ["normal"] }), "windows.getAll", until), bounded(listsChanged, "window lists", until)]);
+      const fits = new Set(open.filter((w) => !windowLists.agentWindows.includes(w.id) && w.state !== "minimized" && !!w.incognito === !!tab.incognito).map((w) => w.id));
+      const his = [...windowLists.focusOrder, ...fits].find((id) => fits.has(id));
+      if (his === undefined) return { windowId: (await api.windows.create({ tabId, focused: false })).id };
+      await api.tabs.move(tabId, { windowId: his, index: -1 });
+      return { windowId: his };
     }
     case "ping":
       return "pong";
@@ -2097,7 +2113,7 @@ async function goneText(tabId) {
     return s < 120 ? `${s} s` : s < 7200 ? `${Math.round(s / 60)} minutes` : `${Math.round(s / 3600)} hours`;
   };
   const why = !Number.isSafeInteger(tabId) ? ""
-    : closed?.how === "harness" ? `: the harness closed it ${ago(closed.at)} ago, as its agent's turn or task ended or after 20 minutes unused; to hold a tab of yours past your turn, open it with keep`
+    : closed?.how === "harness" ? `: the harness closed it ${ago(closed.at)} ago, as its agent's turn or task ended, after it sat unused, or past its agent's limit of open tabs; to hold a tab of yours past your turn, open it with keep`
     : closed?.how === "window" ? `: it closed with its window ${ago(closed.at)} ago`
     : closed ? `: the user or its own page closed it ${ago(closed.at)} ago`
     : `: Safari has had no tab ${tabId} in the ${ago(since)} since the extension started, so it closed before then (Safari quit or crashed, or the extension reloaded), or that id was never a tab's`;
@@ -2192,8 +2208,11 @@ async function adopt() {
   const { tabAliases: tabs = {}, windowAliases: windows = {} } = await api.storage.local.get(["tabAliases", "windowAliases"]);
   const open = await api.tabs.query({});
   // A page that never answers (stuck loading, or a dialog holds it) held
-  // adopt, and every list and close behind it: each mark gets MARK_MS.
-  const marks = await Promise.all(open.map((t) => bounded(api.scripting.executeScript({
+  // adopt, and every list and close behind it: each mark gets MARK_MS. A
+  // mark that answers later still maps (lateMark): its script has already
+  // put the new id in the page, so no later read finds the old one. On
+  // 11-16 a reload in a storm mapped 21 owned tabs and left 45 behind.
+  const reads = open.map((t) => api.scripting.executeScript({
     target: { tabId: t.id, frameIds: [0] },
     func: (tab, win) => {
       const was = { tab: window.__safariHarnessTab, window: window.__safariHarnessWindow };
@@ -2202,8 +2221,15 @@ async function adopt() {
       return was;
     },
     args: [t.id, t.windowId],
-  }), "adopt", Date.now() + MARK_MS).then(([r]) => r && r.result, () => undefined)));
+  }).then(([r]) => r && r.result, () => undefined));
+  const until = Date.now() + MARK_MS;
+  const late = {};
+  const marks = await Promise.all(reads.map((read) => bounded(read, "adopt", until).catch(() => late)));
   for (const [i, t] of open.entries()) {
+    if (marks[i] === late) {
+      reads[i].then((was) => lateMark(was?.tab, t.id, open));
+      continue;
+    }
     alias(tabs, marks[i]?.tab, t.id);
     alias(windows, marks[i]?.window, t.windowId);
   }
@@ -2221,6 +2247,16 @@ async function adopt() {
   const ids = { tabs, windows };
   sendIds(ids);
   return ids;
+}
+
+// A page's old tab id that adopt read after it stopped waiting.
+async function lateMark(was, now, open) {
+  if (typeof was !== "number" || was === now || open.some((t) => t.id === was)) return;
+  adopted?.then((a) => alias(a.tabs, was, now), () => {});
+  send({ op: "tab", kind: "renumbered", tabs: { [was]: now } });
+  const { tabAliases = {} } = await api.storage.local.get("tabAliases").catch(() => ({}));
+  alias(tabAliases, was, now);
+  await api.storage.local.set({ tabAliases }).catch(() => {});
 }
 
 // The daemon keeps tab ids too (tools.ts), and agents hold them: it is told

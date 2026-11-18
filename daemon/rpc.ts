@@ -7,9 +7,11 @@
 // agent it works for (owner.ts), except one bound for another Mac, whose
 // daemon cannot see this Mac's processes. A process that works for itself
 // says so (ownCalls), as does one that works for an agent another process
-// found (the pairing's, pair.ts). A call the daemon never took, refused
-// while it restarts or answered 503 while it finishes its calls in flight
-// first, is made again, once, as soon as a daemon answers again.
+// found (the pairing's, pair.ts), and one whose SAFARI_OWNER names a lease
+// works for that lease (lease.ts), on this Mac or another. A call the
+// daemon never took, refused while it restarts or answered 503 while it
+// finishes its calls in flight first, is made again, once, as soon as a
+// daemon answers again.
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync } from "node:fs";
@@ -19,6 +21,7 @@ import { ownerOf } from "./owner.ts";
 import { HarnessError, readFailure } from "./failures.ts";
 import { affectsPage, withQueued } from "./lanes.ts";
 import { sessionTask } from "./session-task.ts";
+import { holdLease, ownerKey } from "./lease.ts";
 
 export function daemonHttp(): string {
   return process.env.SAFARI_HARNESS_HTTP ?? "http://127.0.0.1:37334";
@@ -70,7 +73,14 @@ export function ownCalls(pid = process.pid): void {
 // The agent a call made now works for, as the daemon finds it (main.ts).
 export async function agentOf(): Promise<number | undefined> {
   const asked = asker.getStore();
-  return asked === undefined && ownsCalls !== undefined ? ownsCalls : ownerOf(asked ?? process.pid);
+  if (asked === undefined && ownsCalls !== undefined) return ownsCalls;
+  return (asked === undefined ? await leaseOf() : undefined) ?? ownerOf(asked ?? process.pid);
+}
+
+// The lease this process's calls work for, if SAFARI_OWNER names one.
+function leaseOf(): Promise<number | undefined> {
+  const key = ownerKey();
+  return key === undefined ? Promise.resolve(undefined) : holdLease(key);
 }
 
 export function callFor<T>(pid: number, fn: () => T): T {
@@ -164,7 +174,10 @@ export async function rpc(tool: string, args: Record<string, unknown> = {}, mode
   const base = daemonHttp();
   const asked = asker.getStore();
   const task = currentTask();
-  const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : (asked ?? ownsCalls ?? process.pid), ...(task === undefined ? {} : { task }), ...(ownsCalls !== undefined && asked === undefined ? { own: true } : {}), ...(model ? { model } : {}), ...(takesNews() ? {} : { news: false }), ...(verbatimCalls.getStore() ? { verbatim: true } : {}) });
+  const lease = asked === undefined && ownsCalls === undefined ? await leaseOf() : undefined;
+  const own = lease !== undefined || (ownsCalls !== undefined && asked === undefined);
+  const caller = lease ?? (process.env.SAFARI_HARNESS_REMOTE ? undefined : (asked ?? ownsCalls ?? process.pid));
+  const body = JSON.stringify({ tool, args, caller, ...(task === undefined ? {} : { task }), ...(own ? { own: true } : {}), ...(model ? { model } : {}), ...(takesNews() ? {} : { news: false }), ...(verbatimCalls.getStore() ? { verbatim: true } : {}) });
   const effectful = affectsPage(tool, args);
   const sent = Date.now();
   let res = await attempt(base, body, effectful);

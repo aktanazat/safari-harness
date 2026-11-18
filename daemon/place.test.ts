@@ -28,13 +28,15 @@ const ABOVE = { frame: { x: -538, y: -1440, width: 2560, height: 1440 }, visible
 // opens every agent window.
 const HIS = { id: 1, safari: true, ...MAIN.visible };
 const SAFARI_PUT = { x: -538, y: -1440 };
+// The virtual display agent-display adds right of the main one, for agents.
+const AGENTS = { id: 26, name: "Agents", frame: { x: 1512, y: 0, width: 2560, height: 1440 }, visible: { x: 1512, y: 0, width: 2560, height: 1440 } };
 const UNPAINTED = "screenshot privacy: the protected page did not paint";
 
 const shared = (a: Rect, b: Rect) =>
   Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
 
 // Windows front to back; tabs, each in a window; owners, each window's agent.
-function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number, number>, moves?: Rect[], moveOffset = 0) {
+function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number, number>, moves?: Rect[], moveOffset = 0, screens = [MAIN, ABOVE]) {
   const urlOf = (tab: number) => `https://page.example/${tab}`;
   const windowOf = (tab: number) => windows.find((w) => w.id === tabs[tab])!;
   connect({
@@ -55,7 +57,7 @@ function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number
         const bounds = args[1] as { left: number; top: number } | undefined;
         if (bounds) {
           moves?.push({ ...w });
-          const on = [MAIN, ABOVE].reduce((a, b) => (shared(w, b.frame) > shared(w, a.frame) ? b : a)).frame;
+          const on = screens.reduce((a, b) => (shared(w, b.frame) > shared(w, a.frame) ? b : a)).frame;
           Object.assign(w, { x: on.x + bounds.left, y: on.y + bounds.top + (moves?.length === 1 ? moveOffset : 0) });
         }
         return reply({ value: { width: w.width, height: w.height, state: "normal" } });
@@ -71,7 +73,7 @@ function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number
   });
   spyOn(front, "input").mockImplementation(async (args) => {
     if (args[0] !== "windows") throw new Error(`no input ${args[0]} here`);
-    return { windows: windows.map(({ id: _, ...w }) => ({ ...w })), screens: [MAIN, ABOVE] };
+    return { windows: windows.map(({ id: _, ...w }) => ({ ...w })), screens };
   });
   spyOn(spaces, "windowOwners").mockImplementation(() => new Map(Object.entries(owners).map(([w, owner]) => [Number(w), owner])));
   return windows;
@@ -135,4 +137,59 @@ test("opening an agent window leaves it behind the user's windows where Safari p
   expect(opened).toEqual({ id: space.window, safari: true, ...SAFARI_PUT, width: space.size.width, height: space.size.height });
   expect(moves).toEqual([]);
   expect(byId(windows, 2)).toEqual(older);
+});
+
+test("on a Mac with an Agents display, a new agent window opens there, clear of the agent window already there", async () => {
+  const there = { id: 2, safari: true, x: AGENTS.visible.x, y: AGENTS.visible.y, width: 1000, height: 780 };
+  const windows = mac([{ ...HIS }, { ...there }], { 11: 1, 21: 2 }, { 2: 8 }, undefined, 0, [MAIN, ABOVE, AGENTS]);
+  // Isolate this window from other tests' module records.
+  const fresh = (await import(`./spaces.ts?agents`)) as typeof spaces;
+  const space = await runAs(process.pid, () => fresh.spaceWindow("agents"));
+  const opened = byId(windows, space.window);
+  expect(shared(opened, AGENTS.frame)).toBe(opened.width * opened.height);
+  expect(shared(opened, there)).toBe(0);
+  expect([byId(windows, 1), byId(windows, 2)]).toEqual([HIS, there]);
+});
+
+const onAgents = (w: Rect) => shared(w, AGENTS.frame) === w.width * w.height;
+
+test("an agent window opened while the Agents display was down goes there once a sweep finds the display back", async () => {
+  const screens = [MAIN, ABOVE];
+  const windows = mac([{ ...HIS }], { 11: 1 }, {}, undefined, 0, screens);
+  const fresh = (await import(`./spaces.ts?down`)) as typeof spaces;
+  const space = await runAs(process.pid, () => fresh.spaceWindow("down"));
+  const before = onAgents(byId(windows, space.window));
+  screens.push(AGENTS);
+  await fresh.sweep();
+  expect([before, onAgents(byId(windows, space.window))]).toEqual([false, true]);
+});
+
+test("an agent window the user moves off the Agents display stays where he put it, through an activate and its turn's end", async () => {
+  const windows = mac([{ ...HIS }], { 11: 1 }, {}, undefined, 0, [MAIN, ABOVE, AGENTS]);
+  const fresh = (await import(`./spaces.ts?moved`)) as typeof spaces;
+  const space = await runAs(process.pid, () => fresh.spaceWindow("moved"));
+  Object.assign(byId(windows, space.window), { x: 100, y: 100 });
+  await fresh.sweep();
+  runAs(process.pid, () => fresh.showing(space.window));
+  fresh.unshow(process.pid, undefined);
+  await fresh.sweep();
+  expect(byId(windows, space.window)).toMatchObject({ x: 100, y: 100 });
+});
+
+// omp's tasks: a lead's [session, agent], and a helper's with its lead.
+const LEAD = JSON.stringify(["s", "Main"]);
+const HELPER = JSON.stringify(["s", "Helper", "Main"]);
+
+test("a window activate showed stays on his screen through another task's turn end, and goes back at the end of its own", async () => {
+  const windows = mac([{ ...HIS }], { 11: 1 }, {}, undefined, 0, [MAIN, ABOVE, AGENTS]);
+  const fresh = (await import(`./spaces.ts?shown`)) as typeof spaces;
+  const space = await runAs(process.pid, () => fresh.spaceWindow("shown"), LEAD);
+  runAs(process.pid, () => fresh.showing(space.window), LEAD);
+  Object.assign(byId(windows, space.window), { x: 100, y: 100 });
+  fresh.unshow(process.pid, HELPER);
+  await fresh.sweep();
+  const afterHelper = onAgents(byId(windows, space.window));
+  fresh.unshow(process.pid, LEAD);
+  await fresh.sweep();
+  expect([afterHelper, onAgents(byId(windows, space.window))]).toEqual([false, true]);
 });

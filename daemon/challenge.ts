@@ -119,11 +119,14 @@ const RULES: Rule[] = [
   // together from one address.
   { kind: "other", where: "block", text: /\bblocked: automated browser detected\b/i },
   // A short page asking the reader to prove they are a person, from a vendor
-  // no rule above knows.
+  // no rule above knows. On 11-14 JSTOR's read "is verifying your browser..."
+  // under the title "Client Challenge", and was saved as the article
+  // (RSI#916).
   {
     kind: "other",
     where: "page",
-    text: /\b(verify|verifying|confirm) (that )?you(['’]re| are) (a )?human\b|\bare you (a )?(human|robot)\b|\brobot or human\b|\bnot a (ro)?bot\b|\bchecking (if the site connection is secure|your browser)\b/i,
+    title: /^client challenge$/i,
+    text: /\b(verify|verifying|confirm) (that )?you(['’]re| are) (a )?human\b|\bare you (a )?(human|robot)\b|\brobot or human\b|\bnot a (ro)?bot\b|\bchecking (if the site connection is secure|your browser)\b|\bis verifying your browser\b/i,
   },
 ];
 

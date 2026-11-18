@@ -12,7 +12,8 @@ const server = Bun.serve({
   async fetch(req) {
     const { tool, args }: { tool: string; args: Record<string, unknown> } = await req.json();
     calls.push({ tool, args });
-    return Response.json({ ok: true, value: "done" });
+    // type lists tabs first, to refuse a send from Slack's own page (input.ts).
+    return Response.json({ ok: true, value: tool === "tabs" ? { tabs: [] } : "done" });
   },
 });
 afterAll(() => server.stop(true));
@@ -71,6 +72,14 @@ test("an unsupported flag is rejected before any call", async () => {
   const result = await safari(["learn", "geico.com", "--fcat", "The quote asks for the address twice"]);
   expect(result.code).toBe(2);
   expect(result.err).not.toBe("");
+  expect(calls).toEqual([]);
+});
+
+// From 11-11 to 11-12 `safari repl --close-all >/dev/null 2>&1` ran 7 times,
+// and repl dropped the flag it did not know.
+test("repl refuses a flag it does not know, naming the near one and its flags", async () => {
+  calls.length = 0;
+  expect(await safari(["repl", "--close-all"])).toEqual({ err: "error: repl takes no --close-all; did you mean --close? (flags: --session --list --close --file --host --json --quiet; safari repl --list lists the sessions running, safari repl --close <name> ends one)", code: 2 });
   expect(calls).toEqual([]);
 });
 
@@ -140,5 +149,22 @@ test("a tool's flag that takes no value leaves the flag or word after it to the 
     { tool: "close", args: { window: 3, confirm: true } },
     { tool: "map", args: { urls: ["https://a.example/", "https://b.example/"], what: "snapshot", everyAddress: true } },
     { tool: "close", args: { tab: 7, confirm: true } },
+  ]);
+});
+
+// On 11-16 an eval agent's `type --tab N --ref 1 "Eval Agent"` looked for
+// "Eval Agent" on the page, and `map --urls '[…]'` failed "map needs
+// urls": both forms are the ones their --help offers.
+test("a parameter given as its flag leaves the command's words to the next parameter", async () => {
+  calls.length = 0;
+  // type marks its field first (input.ts); this daemon answers no mark, so
+  // the call it asked for is the observation.
+  await safari(["type", "--tab", "7", "--ref", "1", "Eval Agent"]);
+  expect(await safari(["select", "--tab", "7", "--ref", "4", "Medium"])).toEqual({ err: "", code: 0 });
+  expect(await safari(["map", "--urls", '["https://a.example/","https://b.example/"]'])).toEqual({ err: "", code: 0 });
+  expect(calls.filter((c) => ["type_mark", "select", "map"].includes(c.tool))).toEqual([
+    { tool: "type_mark", args: { ref: "1", text: "Eval Agent", append: false } },
+    { tool: "select", args: { tab: 7, ref: "4", option: "Medium" } },
+    { tool: "map", args: { urls: ["https://a.example/", "https://b.example/"] } },
   ]);
 });

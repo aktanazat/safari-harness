@@ -1,0 +1,24 @@
+<!doctype html>
+<title>Switches their boxes draw: the guarded cases</title>
+<!-- A Material-style checkbox: its transparent input spread over the box
+     that shows the hand, so the input takes the click. A disabled switch
+     its box would toggle anyway. A row that opens an item and holds a
+     checkbox with no box of its own. -->
+<style>
+  .mui { position: relative; display: inline-block; width: 42px; height: 42px; cursor: pointer; }
+  .mui input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: inherit; }
+  .switch { position: relative; display: inline-block; width: 52px; height: 32px; cursor: pointer; background: #ccc; }
+  .switch input, .tick input { position: absolute; width: 0; height: 0; margin: 0; opacity: 0; }
+  .switch span { position: absolute; left: 2px; top: 2px; width: 28px; height: 28px; background: white; }
+  .row { cursor: pointer; padding: 8px; }
+  .tick { height: 0; }
+</style>
+<span class="mui"><input type="checkbox" id="select-row" aria-label="Select row"><svg width="24" height="24"><rect width="24" height="24" fill="#888"></rect></svg></span>
+<div class="switch" id="push-box"><input type="checkbox" role="switch" id="push" aria-label="Push" disabled><span></span></div>
+<ul><li class="row" id="item"><div class="tick"><input type="checkbox" id="item-check" aria-label="Select item"></div><span>Quarterly report</span></li></ul>
+<script>
+  const push = document.getElementById("push");
+  document.getElementById("push-box").addEventListener("click", () => { push.checked = !push.checked; });
+  const item = document.getElementById("item");
+  item.addEventListener("click", () => { item.dataset.opened = "yes"; });
+</script>

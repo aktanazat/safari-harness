@@ -3,7 +3,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { join } from "node:path";
 import type { Invoke } from "../call.ts";
 import { PACE_TOOL } from "../pace.ts";
-import { SiteKit } from "./kit.ts";
+import { HarnessError } from "../failures.ts";
+import { draftOrSend, SiteKit } from "./kit.ts";
 import { slack } from "./slack.ts";
 
 // Safari as the slack global sees it: app.slack.com's store holds one
@@ -33,7 +34,8 @@ afterAll(() => {
 // A method's answer is an object, or a list answered one per call in turn.
 // goneAfter names a method whose next call reaches Slack and then fails as
 // the extension answers when the tab closed before the answer came back.
-function safari(methods: Record<string, object | object[]>, files: Served[], opts: { goneAfter?: string } = {}) {
+// failOnce names a method whose first call fails with that error.
+function safari(methods: Record<string, object | object[]>, files: Served[], opts: { goneAfter?: string; failOnce?: { method: string; error: Error } } = {}) {
   const asked: string[] = [];
   // Each web-API call with the params the page would send, and whether it
   // went as a read the daemon may ask twice.
@@ -41,6 +43,7 @@ function safari(methods: Record<string, object | object[]>, files: Served[], opt
   const fetched: { url: string; at: number }[] = [];
   let tabs = 0;
   let goneAfter = opts.goneAfter;
+  let failOnce = opts.failOnce;
   const send: Invoke = async (tool, args) => {
     if (tool === "open") return { id: ++tabs };
     if (tool === "pace") return PACE_TOOL.run(args);
@@ -51,6 +54,11 @@ function safari(methods: Record<string, object | object[]>, files: Served[], opt
       calls.push({ method, params: JSON.parse(/Object\.entries\((\{.*?\})\)\) body\.set/s.exec(String(args.expression))?.[1] ?? "{}"), read: args.read === true });
       const answers = methods[method];
       const answer = Array.isArray(answers) ? answers.shift() : answers;
+      if (failOnce?.method === method) {
+        const { error } = failOnce;
+        failOnce = undefined;
+        throw error;
+      }
       if (goneAfter === method) {
         goneAfter = undefined;
         throw new Error("that tab is gone: the user or its own page closed it 0 s ago; find it with tabs, or open it again");
@@ -249,6 +257,45 @@ test("a draft's id approves only that draft's text, channel and sender, once, an
   expect(s.calls).toEqual([{ method: "chat.postMessage", params: { channel: "C1", text: "the text the owner saw" }, read: false }]);
 });
 
+// On 11-16 an upload's first request, a read, got no answer and the daemon
+// said nothing was sent (effect none), yet the draft was spent; the agent
+// then posted through Slack's composer, which no draft guards.
+const UNANSWERED = () => new HarnessError("command_failed", "Load failed: a request got no answer", { effect: "none" });
+
+test("an approved upload whose first request got no answer can be approved again", async () => {
+  writeFileSync(join(dir, "report.html"), "<p>new</p>");
+  const s = safari({ "files.getUploadURLExternal": { upload_url: `${upload.url}upload`, file_id: "F_NEW" }, "files.completeUploadExternal": { files: [{ id: "F_NEW" }] } }, [], { failOnce: { method: "files.getUploadURLExternal", error: UNANSWERED() } });
+  const c = await s.client();
+  const draft = await waited(c.upload("C1", "report.html"));
+  s.kit.run++;
+  await expect(waited(c.upload("C1", "report.html", { approved: draft.draftId }))).rejects.toThrow("can be approved again");
+  s.kit.run++;
+  expect(await waited(c.upload("C1", "report.html", { approved: draft.draftId }))).toMatchObject({ status: "sent", result: { file: "F_NEW" } });
+});
+
+// A write whose answer was lost may have gone through: the daemon calls it
+// possibly effected (failures.ts), and its draft stays spent.
+test("an approved post whose answer was lost is not approved again", async () => {
+  const s = safari({ "chat.postMessage": { ts: "1.0", channel: "C1" } }, [], { failOnce: { method: "chat.postMessage", error: new HarnessError("effect_unknown", "Load failed") } });
+  const c = await s.client();
+  const draft = await waited(c.postMessage("C1", "hello"));
+  s.kit.run++;
+  await expect(waited(c.postMessage("C1", "hello", { approved: draft.draftId }))).rejects.toThrow("Load failed");
+  s.kit.run++;
+  await expect(waited(c.postMessage("C1", "hello", { approved: draft.draftId }))).rejects.toThrow("approved once already");
+});
+
+test("a file replace whose second file failed after the first one's bytes went up is not approved again", async () => {
+  writeFileSync(join(dir, "a.html"), "<p>a</p>");
+  writeFileSync(join(dir, "b.html"), "<p>b</p>");
+  const s = safari({ "conversations.history": POSTED, "files.getUploadURLExternal": [{ upload_url: `${upload.url}upload`, file_id: "F_A" }, { upload_url: "http://127.0.0.1:1/upload", file_id: "F_B" }] }, []);
+  const c = await s.client();
+  const update = (ok?: string) => c.update("C1", "7.0", null, { files: ["a.html", "b.html"], approved: ok });
+  await expect(approved(s.kit, update)).rejects.toThrow("could not reach 127.0.0.1:1");
+  s.kit.run++;
+  await expect(waited(update(s.kit.drafts.keys().next().value))).rejects.toThrow("approved once already");
+});
+
 // Audit SH-24: the extension says a tab is gone after the request left it
 // too, and the kit sent a post again in a new tab: two posts.
 test("an approved post whose tab vanished after the request ran is not sent again", async () => {
@@ -299,4 +346,49 @@ test("a call whose tab was opened again fresh after the turn ended runs there", 
   expect(await waited(kit.listWorkspaces())).toEqual([TEAM]);
   await waited(kit.listWorkspaces());
   expect(evalTabs).toEqual([1, 2, 2]);
+});
+
+// On 11-17 getClient("openfunnel") found no workspace, though Safari held
+// one named "OpenFunnel" (its domain is another word).
+test("getClient finds a workspace by its name, case aside", async () => {
+  const named = { ...TEAM, teamId: "T2", name: "OpenFunnel", domain: "openfunnel-hq", url: "https://openfunnel-hq.slack.com/" };
+  const send: Invoke = async (tool, args) => {
+    if (tool === "open") return { id: 1 };
+    if (tool === "pace") return PACE_TOOL.run(args);
+    if (tool !== "eval") throw new Error(`no ${tool} in this Safari`);
+    return { result: { lastActiveTeamId: TEAM.teamId, teams: [TEAM, named] } };
+  };
+  const kit = slack(new SiteKit(send, undefined, dir));
+  expect(await waited(kit.getClient("openfunnel"))).toBeDefined();
+  await expect(waited(kit.getClient("nobody"))).rejects.toThrow('no workspace "nobody"');
+});
+
+// On 11-16 a Slack upload refused before it left (CORS, effect none) used
+// its approved draft up, and the retry needed a new draft and the owner's
+// yes again. One that may have gone out, or whose earlier step went
+// through (Gmail's Send clicked, then a wait that met a restarting
+// daemon), still sends once.
+test("an approved send that failed before anything left can go again with the same draft; one that may have gone out cannot", async () => {
+  const kit = new SiteKit(async () => ({}), undefined, dir);
+  let fail: HarnessError | undefined = new HarnessError("command_failed", "Load failed (CORS)", { effect: "none" });
+  let clicks = false;
+  const post = (approved?: string) => draftOrSend(kit, { site: "slack", action: "post", to: "C1", text: "hello", approved, send: async () => {
+    if (clicks) await kit.invoke("click", { tab: 1, ref: "1" });
+    if (fail) throw fail;
+    return "ok";
+  } });
+  const draft = (await post()) as { draftId: string };
+  kit.run++;
+  await expect(post(draft.draftId)).rejects.toThrow("Load failed (CORS)");
+  fail = undefined;
+  expect(await post(draft.draftId)).toMatchObject({ status: "sent", result: "ok" });
+  for (const [failure, click] of [[new HarnessError("effect_unknown", "the tab closed while the post was out"), false], [new HarnessError("unavailable", "the daemon is restarting; try again in 2 s", { effect: "none" }), true]] as const) {
+    const next = (await post()) as { draftId: string };
+    kit.run++;
+    fail = failure;
+    clicks = click;
+    await expect(post(next.draftId)).rejects.toThrow(failure.message);
+    fail = undefined;
+    await expect(post(next.draftId)).rejects.toThrow("approved once already");
+  }
 });

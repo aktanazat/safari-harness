@@ -90,11 +90,58 @@ test("an action's read that finds nothing reads again once the page goes quiet",
   expect(sent.filter((op) => op === "snapshot")).toHaveLength(2);
 });
 
+// In the 11-16 sessions 99 actions were followed by a shell sleep and a
+// read. Safari here has a search whose results come with a request the
+// click started, still out when the click answers, and drawn once the
+// daemon waits for the page to go quiet.
+test("an action's read waits for a request the action started and still has out", async () => {
+  const sent: string[] = [];
+  let drawn = false;
+  const receipt = { added: 1, removed: 0, changed: 0, url: null, focus: null, states: [], dialog: null, page: "https://shop.example/search", requests: [], pending: [{ method: "GET", url: "https://shop.example/api/search?q=boots" }], errors: [] };
+  connect({
+    send(data: string) {
+      const { id, op, args } = JSON.parse(data);
+      if (op === "relay") sent.push(args[1]);
+      if (op === "relay" && args[1] === "wait") drawn = true;
+      const page = drawn ? { nodes: 2, snapshot: '[1] button "Search"\n[2] link "Boots"' } : { nodes: 1, snapshot: '[1] button "Search"' };
+      const value = op !== "relay" ? [] : args[1] === "snapshot" ? { url: "https://shop.example/search", title: "Search", truncated: false, ...page } : args[1] === "wait" ? { found: true } : { ok: true, receipt };
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value })));
+    },
+    close() {},
+  });
+  const got = await callTool("click", { tab: 7, ref: "Search", snapshot: true });
+  expect(got).toMatchObject({ page: { snapshot: '[1] button "Search"\n[2] link "Boots"' } });
+  expect(got).not.toHaveProperty("next");
+  expect(sent.filter((op) => ["click", "wait", "snapshot"].includes(op))).toEqual(["click", "wait", "snapshot"]);
+});
+
 test("invalid action snapshot options refuse before the page receives an action", async () => {
   const sent = cartSafari();
   await expect(callTool("click", { tab: 7, ref: "Next", snapshot: { selector: "main" } })).rejects.toBeInstanceOf(Error);
   await expect(callTool("wait", { tab: 7, text: "Total", snapshot: 3 })).rejects.toBeInstanceOf(Error);
   expect(sent).toEqual([]);
+});
+
+// On 11-16 open {snapshot: "words"} on a Hugging Face upload page answered
+// "(0 nodes)" and nothing more (LOCK#1893); the placeholder "words" was
+// given so 15 times. Safari here keeps the lines of that page's upload
+// form (LOCK#1898) that hold the snapshot's query.
+test("a snapshot whose words match no line says so, alone or after an action", async () => {
+  const lines = ['[59] button "Upload file(s)"', '[64] textbox "Upload eval-v2.jsonl"', '[69] button "Commit changes to main"'];
+  connect({
+    send(data: string) {
+      const { id, op, args } = JSON.parse(data);
+      const query: string | undefined = op === "relay" && args[1] === "snapshot" ? args[2][0].query : undefined;
+      const kept = lines.filter((l) => query === undefined || l.includes(query));
+      const value = op !== "relay" ? [] : args[1] === "snapshot" ? { url: "https://huggingface.co/datasets/o/d/upload/main", title: "Hugging Face", nodes: kept.length, truncated: false, snapshot: kept.join("\n") } : args[1] === "wait" ? { found: true } : { ok: true };
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value })));
+    },
+    close() {},
+  });
+  const none = 'no line of the page holds "words": a query keeps only the lines with its words; snapshot: true, or a snapshot with no query, reads the whole page';
+  expect(await callTool("snapshot", { tab: 9, query: "words" })).toMatchObject({ nodes: 0, note: none });
+  expect(await callTool("click", { tab: 9, ref: "Upload file(s)", snapshot: "words" })).toMatchObject({ page: { nodes: 0, note: none } });
+  expect(await callTool("snapshot", { tab: 9, query: "Commit" })).not.toHaveProperty("note");
 });
 
 // From 10-07 to 10-12 agents gave snapshot interactive seven times, as the

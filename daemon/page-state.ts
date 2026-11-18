@@ -34,6 +34,12 @@ const LOGIN_REQUIRED = /^(?:(?:please )?(?:sign[ -]?in|log[ -]?in) to (?:continu
 const LOGIN_ACTION = /^(?:(?:sign[ -]?in|log[ -]?in|continue)(?: with .+)?|next)\s*[.!]?$/i;
 const PAY = /^(?:(?:subscribe|become a (?:subscriber|member)) to (?:continue(?: reading)?|read (?:more|on|this (?:article|story)|the (?:full|rest of (?:this|the)) (?:article|story)))|(?:this (?:article|story|content) is (?:only |exclusively )?(?:for|available to) (?:our )?(?:subscribers|members))|(?:you(?:'ve| have) reached (?:your|the) (?:free |monthly )?(?:article|reading) limit)|(?:your free (?:article|reading) limit (?:has been|is) reached))\s*[.!]?$/i;
 const PAY_ACTION = /^(?:subscribe(?: now| today)?|start (?:your |a )?(?:free )?(?:trial|subscription)|become a (?:subscriber|member)|choose (?:a |your )?plan|unlock (?:this |the )?(?:article|story))\s*[.!]?$/i;
+// A journal's offer of the article it holds back, as Oxford Academic's
+// abstract page for an article with no abstract read on 11-14 (RSI#869):
+// "Purchase content", "The Transplant Effect - 24 Hours access", "Rental",
+// "You do not currently have access to this article." Two of them make a
+// paywall: "Get access" alone is a product's button too.
+const ACCESS = /^(?:get access|purchase (?:access|content|this article|short-term access)|rent this article|rental|.+ - \d+ hours? access|you do not (?:currently )?have access to this (?:article|content|chapter|book))\s*[.!]?$/i;
 const REGION = /^(?:sorry[,!.]?\s*)?(?:(?:this|our) (?:site|website|service|content|video|page) (?:is )?(?:not available|unavailable|blocked|not accessible) (?:in|from) (?:your|this) (?:country|region|location)|(?:not available|unavailable) in your (?:country|region|location)|we (?:are unable to|cannot) (?:provide|offer) (?:this (?:service|content)|access) in your (?:country|region))\s*[.!]?$/i;
 const CONSENT = /^(?:before you continue(?: to .+)?|we value your privacy|your privacy choices|privacy (?:and|&) cookie preferences|cookie (?:consent|preferences)|consent required)\s*[.!]?$/i;
 const CHOICE = /^(?:accept all(?: cookies)?|agree|i agree|manage (?:options|preferences|cookies)|more options|customi[sz]e(?: cookies)?)\s*[.!]?$/i;
@@ -41,11 +47,39 @@ const CHOICE = /^(?:accept all(?: cookies)?|agree|i agree|manage (?:options|pref
 // ref; the harness never clicks it.
 const REJECT = /^(?:reject (?:all|optional)(?: cookies)?|i disagree|disagree|only necessary(?: cookies)?)\s*[.!]?$/i;
 const ERROR = /^(?:(?:error\s*)?(?:400|401|403|404|408|410|429|451|500|502|503|504)(?:\s*[-:–—]?\s*(?:bad request|unauthorized|forbidden|not found|request timeout|gone|too many requests|unavailable for legal reasons|internal server error|bad gateway|service unavailable|gateway timeout))?|(?:page|file) not found|something went wrong|access denied|forbidden|service unavailable|internal server error|bad gateway|failed to open page|error page)\s*[.!]?$/i;
+// A site that has stopped answering this browser for a while. On 11-13
+// UKG's docs answered "You’ve been rate limited … by our firewall!" to a
+// map's eval of each page after the first (LOCK#1363), and on 11-14
+// Harvard's repository "WEB FIREWALL · 429 / The service is under heavy
+// load" (RSI#747); both counted as read.
+const RATE = /^(?:you(?:'ve| have) been rate[ -]limited|(?:you(?: are|'re) being )?rate[ -]limited|rate limit(?: exceeded| reached)|too many requests|(?:web )?firewall\s*[·:|–—-]\s*429|(?:error\s*)?429(?:\s*[-:–—]?\s*too many requests)?|the service is under heavy load)\s*[.!]?$/i;
+const RATE_LIMITED = "the site rate-limited this browser; wait a few minutes before reading it again, then read its pages one at a time.";
 // A title part that names the page missing. Safari gives a page read no
 // HTTP status (27.0.1's navigation timing has no responseStatus), so the
 // title is the page's own word for it: "Page not found · GitHub".
 const NOT_FOUND = /^(?:(?:error )?404(?: error)?|(?:404 )?(?:page |file )?not found|this page could not be found)[.!]?$/i;
-const LOADING = /^(?:loading(?: (?:content|page|results))?|please wait|signing in|redirecting)\s*[.!…]*$/i;
+// A page still on its way. On 11-13 ServiceNow's docs read "Loading
+// application..." (LOCK#1312), and on 11-11 a Slack link "Launching
+// <workspace> / You will be redirected in a few moments." (LOCK#563); both
+// were judged content and counted as read. "Loading" with words of its own
+// counts only with its trailing dots, and a redirect only when it says how
+// soon: "Loading Docker images faster" and "You will be redirected to a
+// third-party website" are a page's words.
+const LOADING = /^(?:loading(?: (?:content|page|results))?|loading(?: [\w-]+){1,2}(?=\s*(?:\.{3}|…)\s*$)|please wait|signing in|redirecting(?: to .+)?|you will be redirected in .+)\s*[.!…]*$/i;
+// The address of a sign-in page: its host, or the first step of its path,
+// as a docs page on signing in sits under its section (/guides/auth,
+// /reference/login). On 11-13 SAP's accounts.sap.com/oauth2/authorize
+// asked for "Email, User ID or Login Name", a field no rule knew, and was
+// read as content (LOCK#1284); on 11-15 and 11-16 billing pages led to
+// sign-in pages whose only actions were "Continue with Google" and the
+// like (LOCK#1865, #1875-1880).
+const SIGN_IN_HOST = /^(?:accounts|auth|login|signin|sso)\./i;
+const SIGN_IN_PATH = /^\/(?:signin|sign-in|login|log-in|auth|sso|authorize|oauth2)(?:\/|$)/i;
+// A sign-in page's own button: one through another account.
+const SIGN_IN_WITH = /^(?:(?:sign[ -]?in|log[ -]?in|continue) with .+|single sign-on\b.*)$/i;
+// A title part that names a sign-in page: "Exa Login", "Login · Nimble",
+// "SAP Business Accelerator Hub: Sign In", "Sign in to GitHub".
+const SIGN_IN_TITLE = /^(?:(?:[\w.&'-]+ ){0,3}(?:sign[ -]?in|log[ -]?in)|(?:sign[ -]?in|log[ -]?in) to [\w.&'-]+(?: [\w.&'-]+)?)$/i;
 const OUTLINE = /^(?:\[([\w:.-]+)\]\s*)?(h[1-6]|heading|form|dialog|alertdialog|button|link|textbox|label|checkbox|radio|combobox|main|article|navigation|banner)(?:\s+|$)(?:\[[\w:.-]+\]\s*)?/i;
 type Line = { label: string; role: string; indent: number; ref?: string };
 
@@ -61,16 +95,22 @@ function linesOf(text: string): Line[] {
   return lines;
 }
 
+function titleParts(title: string): string[] {
+  return title.replace(/’/g, "'").split(/\s*[·|:•–—]\s*|\s+-\s+/).map((part) => part.trim());
+}
+
 function notFound(title: string): boolean {
-  return title.split(/\s*[·|:•–—]\s*|\s+-\s+/).some((part) => NOT_FOUND.test(part.trim()));
+  return titleParts(title).some((part) => NOT_FOUND.test(part));
 }
 
 // Whether the page runs as prose, as an article does; a wall or a missing
 // page says one short thing. A cookie notice or a copyright line is not its
 // prose: on 10-24 MDN's not-found page read with "Portions of this content
-// are ©1998–2026 by individual mozilla.org contributors. Content …".
+// are ©1998–2026 by individual mozilla.org contributors. Content …". Nor is
+// a line of JSON: on 11-16 Exa's sign-in page showed a sample answer beside
+// its buttons (LOCK#1875).
 function proseHeavy(lines: Line[]): boolean {
-  const prose = lines.filter((line) => line.role === "" && line.label.length >= 100 && !line.label.includes("©")
+  const prose = lines.filter((line) => line.role === "" && line.label.length >= 100 && !line.label.includes("©") && !/^"[^"]+"\s*:/.test(line.label)
     && !/^(?:we use (?:cookies|data)|by (?:clicking|continuing|signing)|cookies (?:and|are)|to (?:learn more|find out more)|our (?:privacy|cookie) policy)\b/i.test(line.label));
   return prose.some((line) => line.label.length >= 280 || /[.!?]["”']?\s+[A-Z]/.test(line.label)) || prose.length >= 2;
 }
@@ -87,13 +127,22 @@ function wallKind(lines: Line[], title: string, url: string): PageKind | undefin
   if (heading(REGION)) return "region_block";
   if (heading(CONSENT) && /\b(?:cookies?|consent|privacy)\b/i.test(labels.join(" "))
     && new Set(labels.filter((label) => CHOICE.test(label) || REJECT.test(label)).map((label) => label.toLowerCase())).size >= 2) return "consent";
-  if (heading(PAY) && action(PAY_ACTION)) return "paywall";
+  if ((heading(PAY) && action(PAY_ACTION)) || new Set(labels.filter((label) => ACCESS.test(label)).map((label) => label.toLowerCase())).size >= 2) return "paywall";
   const field = lines.some((line) => /^(?:email(?: address)?(?: or (?:phone(?: number)?|username))?|password|username|phone(?: number)?)(?:\s*[:*])?$/i.test(line.label)
     && (line.role === "" || line.role === "textbox" || line.role === "label"));
   const loginRoute = /\/(?:signin|sign-in|login|log-in|auth|sso)(?:\/|$)/i.test(URL.parse(url)?.pathname ?? "");
   if (heading(LOGIN) && ((field && (action(LOGIN_ACTION) || loginRoute || LOGIN.test(titleHead)))
     || (heading(LOGIN_REQUIRED) && action(LOGIN_ACTION)))) return "login_wall";
-  if (heading(ERROR) && (ERROR.test(titleHead) || labels.length <= 2)) return "error";
+  // A sign-in page whose field no rule knows, or that has only buttons
+  // ("Continue with Google"): its address and its title or buttons say so.
+  const address = URL.parse(url);
+  if (address !== null && (SIGN_IN_HOST.test(address.hostname) || SIGN_IN_PATH.test(address.pathname))
+    && (titleParts(title).some((part) => SIGN_IN_TITLE.test(part))
+      || (action(SIGN_IN_WITH) && labels.some((label) => /\b(?:sign[ -]?in|log[ -]?in)\b/i.test(label))))) return "login_wall";
+  // A heading that gives a status code and its name is the server's own
+  // page whatever its title: on 11-14 a robots.txt answered "503 Service
+  // Unavailable" under the title "Site not available" (LOCK#1717).
+  if (heading(ERROR) && (ERROR.test(titleHead) || labels.length <= 2 || (primary !== undefined && /^(?:error\s*)?\d{3}\s*[-:–—]?\s*[a-z]/i.test(primary.label)))) return "error";
   return undefined;
 }
 
@@ -110,7 +159,7 @@ export function classifyPage(facts: PageFacts): PageState {
   if (status !== undefined && Number.isInteger(status)) {
     if (status === 401) return state("login_wall");
     if (status === 402) return state("paywall");
-    if (status === 429) return { kind: "error", next: "respect the site's wait limit before reading this address again." };
+    if (status === 429) return { kind: "error", next: RATE_LIMITED };
     if (status >= 400 && status <= 599) {
       if (facts.partial !== true && facts.truncated !== true && facts.text && wallKind(linesOf(facts.text), facts.title, facts.url) === "region_block") return state("region_block");
       return state("error");
@@ -126,6 +175,10 @@ export function classifyPage(facts: PageFacts): PageState {
   for (const control of facts.controls ?? []) lines.push({ ...control, indent: 0 });
   if (lines.length === 0) return state("unjudged");
   if (lines.every((line) => LOADING.test(line.label))) return state("loading");
+  // A rate limit says so first, or in its title, and its next line may be
+  // a whole sentence ("Your requests have been rate limited by our
+  // firewall! This should almost never happen …"), which reads as prose.
+  if (text.length <= 600 && (RATE.test(lines[0].label) || titleParts(facts.title).some((part) => RATE.test(part)))) return { kind: "error", next: RATE_LIMITED };
   for (let index = 0; index < lines.length; index++) {
     if (lines[index].role !== "dialog" && lines[index].role !== "alertdialog") continue;
     let end = index + 1;
@@ -137,6 +190,11 @@ export function classifyPage(facts: PageFacts): PageState {
   const wall = wallKind(lines, facts.title, facts.url);
   if (wall) return walled(wall, lines);
   if (notFound(facts.title) && !proseHeavy(lines)) return state("error");
+  // A short page that says it is on its way, among a few menu lines: on
+  // 11-16 Type Network's font page read "Fonts Stories / Show filters /
+  // Loading styles... / About Type Network …" (BERK#185).
+  if (text.length <= 300 && lines.every((line) => line.label.length < 100)
+    && lines.some((line) => line.role !== "button" && line.role !== "link" && LOADING.test(line.label))) return state("loading");
   if (lines.every((line) => LOGIN.test(line.label) || PAY_ACTION.test(line.label) || CONSENT.test(line.label) || ERROR.test(line.label)
     || /^(?:main|article|error|unavailable|access restricted|verify (?:you are|you're) human)\s*[.!?]?$/i.test(line.label))) return state("unjudged");
   return state("content");

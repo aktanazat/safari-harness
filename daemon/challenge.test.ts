@@ -46,6 +46,12 @@ test("a short page asking the reader to prove they are human is a check even fro
   expect(classify(tab("https://shop.example.com/", "Shop", {}, { url: "https://ads.example.net/", text: words }))).toBeUndefined();
 });
 
+// On 11-14 JSTOR's check was saved as the article it stood in for (RSI#916).
+test("JSTOR's Client Challenge is a check, by its title alone or by its words", () => {
+  expect(classify(tab("https://www.jstor.org/stable/2111584", "Client Challenge"))).toEqual({ kind: "other", where: "page" });
+  expect(classify(tab("https://www.jstor.org/stable/2111584", "", { text: "is verifying your browser..." }))).toEqual({ kind: "other", where: "page" });
+});
+
 test("a box counts until its token is in, and then the page around it is passed too", () => {
   const form = { text: "Sign up. Please verify you are human.", frames: [ANCHOR] };
   expect(classify(tab("https://shop.example.com/signup", "Sign up", form))).toEqual({ kind: "recaptcha", where: "box" });

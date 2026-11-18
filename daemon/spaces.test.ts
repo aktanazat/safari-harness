@@ -9,7 +9,7 @@ import { changeQueue, files, readQueue } from "./groups.ts";
 import { recent } from "./journal.ts";
 import { tracksOwner } from "./mission.ts";
 import { alive, runAs } from "./owner.ts";
-import { closeManagedWindow, loadSpaces, managedWindows, spaceEnded, spaceTool, turnEnded } from "./spaces.ts";
+import { closeManagedWindow, loadSpaces, managedWindows, spaceEnded, spaceNote, spaceTool, turnEnded } from "./spaces.ts";
 import type * as Spaces from "./spaces.ts";
 import { callTool, endTurn, openTab } from "./tools.ts";
 
@@ -73,11 +73,10 @@ function safari() {
       closed.push(now);
       return { ok: true, ...(windowId === undefined ? {} : { windowId }) };
     },
-    // windows.create({tabId}), while the tab is still in that window
-    "tabs.detach": ([id, windowId]) => {
-      const t = tabs.get(id as number);
-      if (t && t.windowId === windowId) t.windowId = next++;
-      return { ok: true };
+    // to the window the user had in front last, his window 1
+    "tabs.toHis": ([id]) => {
+      tabs.get(id as number)!.windowId = 1;
+      return { windowId: 1 };
     },
     "windows.regrouping": ([id, on]) => {
       if (on) regrouping.add(id as number);
@@ -480,23 +479,46 @@ test("a copied marker URL does not authorize adopting or deleting an unknown gro
 
 // 09-30: the windows of agents the user had stopped stayed open, each with
 // only its page, for two minutes after their tabs had closed.
-test("when an agent's turn ends its window closes with its tabs, unless it holds a tab it kept; a working agent's stays", async () => {
+test("when an agent's turn ends its window closes with its tabs, and a tab it kept, gone to the user's window, stays; a working agent's stays", async () => {
   const s = safari();
   const [keeper, working, done] = [agent(), agent(), agent()];
-  const open = (who: { pid: number }, keep = false) => runAs(who.pid, () => callTool("open", { url: "https://turn.example/", background: true, keep })) as Promise<{ windowId: number }>;
+  const open = (who: { pid: number }, keep = false) => runAs(who.pid, () => callTool("open", { url: "https://turn.example/", background: true, keep })) as Promise<{ id: number; windowId: number }>;
   // One sweep looks at the windows in the order they opened: done's last,
   // so the others have been looked at once its page closes.
-  const windows = [await open(keeper, true), await open(working), await open(done)].map((t) => t.windowId);
-  const pages = windows.map((w) => pageIn(s.tabs, w)!.id);
-  endTurn(keeper.pid);
+  const opened = [await open(keeper, true), await open(working), await open(done)];
+  const pages = opened.map((t) => pageIn(s.tabs, t.windowId)!.id);
+  const kept = s.tabs.get(opened[0].id)!;
+  const before = kept.windowId;
+  await endTurn(keeper.pid);
+  expect([before, kept.windowId]).toEqual([opened[0].windowId, 1]);
   endTurn(done.pid);
-  await until(() => s.closed.includes(pages[2]), 8000);
-  expect(pages.map((id) => s.closed.includes(id))).toEqual([false, false, true]);
+  await until(() => s.closed.includes(pages[0]) && s.closed.includes(pages[2]), 8000);
+  expect(pages.map((id) => s.closed.includes(id))).toEqual([true, false, true]);
   for (const p of [keeper, working, done]) p.kill();
   // The files after this one reuse these tab ids: the working agent's tab
   // closes at its cleanup.
   await endTurn(working.pid);
 }, 15_000);
+
+// 11-17: agent windows sit on the Agents display, which the user does not
+// look at, so a page kept for him there went unseen.
+test("a tab kept with keep stays in its agent's window through a helper's turn end, and goes to the user's window at the end of its own", async () => {
+  const s = safari();
+  const a = agent();
+  const [lead, helper] = [JSON.stringify(["s", "Main"]), JSON.stringify(["s", "Helper", "Main"])];
+  try {
+    const t = await runAs(a.pid, () => callTool("open", { url: "https://kept.example/", background: true }), lead) as { id: number; windowId: number };
+    await runAs(a.pid, () => callTool("keep", { tab: t.id }), lead);
+    const kept = s.tabs.get(t.id)!;
+    await endTurn(a.pid, undefined, helper);
+    const afterHelper = kept.windowId;
+    await endTurn(a.pid, undefined, lead);
+    expect([afterHelper, kept.windowId]).toEqual([t.windowId, 1]);
+  } finally {
+    a.kill();
+    await a.exited;
+  }
+});
 
 test("an agent whose window the user closed gets a new one on its next open", async () => {
   const s = safari();
@@ -1220,9 +1242,9 @@ test("a tab the harness closes, by a close call or as its turn ends, leaves its 
     const open = async (url: string) => s.tabs.get(((await runAs(a.pid, () => callTool("open", { url, background: true }))) as { id: number }).id)!;
     try {
       const t = await open("https://printed.example/");
-      // a tab kept for the user holds the window open past the turn's end
-      const kept = await open("https://kept.example/");
-      await runAs(a.pid, () => callTool("keep", { tab: kept.id }));
+      // a tab of the user's in the window holds it open past the turn's end
+      const his = { id: next++, url: "https://his.example/2", windowId: t.windowId, active: false };
+      s.tabs.set(his.id, his);
       const window = named(pageIn(s.tabs, t.windowId)!);
       expect((await looks()).some((w) => w.id === window.id)).toBe(false);
       await close(a.pid, t.id);
@@ -1623,3 +1645,18 @@ test("a sweep whose Safari quit after it looked never starts Safari again", asyn
   await endTurn(a.pid);
   expect(s.tabs.has(t.id)).toBe(false);
 }, 20_000);
+
+// On 11-16 and 11-17, 31 CLI opens, each an agent of its own, repeated one
+// day-old reason for windows staying plain.
+test("a window's reason for staying plain goes to one agent an hour, not to every agent", () => {
+  const window = (owner: number) => ({ key: "k", id: "w", window: 1, size: { width: 1, height: 1 }, name: `agent ${owner}`, group: "plain", why: "tab groups are off: fixture reason", owner }) as Spaces.Space;
+  const start = Date.now();
+  try {
+    expect(spaceNote(window(990001)).why).toBe("tab groups are off: fixture reason");
+    expect(spaceNote(window(990002)).why).toBeUndefined();
+    setSystemTime(new Date(start + 61 * 60_000));
+    expect(spaceNote(window(990003)).why).toBe("tab groups are off: fixture reason");
+  } finally {
+    setSystemTime();
+  }
+});

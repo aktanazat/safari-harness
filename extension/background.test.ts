@@ -103,14 +103,15 @@ class Clock {
 // see as window there; a world made before this load of the extension keeps
 // messaging that reaches no one (live false). ran lists the requests its
 // copy of content.js ran, and does answers each; a held document (a dialog
-// open on it) answers nothing, and a stuck one (a frame stuck loading) runs
-// no script.
+// open on it) answers nothing, a stuck one (a frame stuck loading) runs
+// no script, and a slow one (a Safari in a storm) runs each slowMs late.
 class Doc {
   readonly world: Record<string, unknown> = { document: { querySelectorAll: () => [] }, __safariHarnessFrame: crypto.randomUUID().replaceAll("-", ""), innerWidth: 800, innerHeight: 600 };
   readonly listeners: ((m: Msg) => Promise<Reply> | undefined)[] = [];
   readonly ran: string[] = [];
   held = false;
   stuck = false;
+  slowMs = 0;
   // Safari lets the extension put no script in a blank tab, and says so.
   shut = false;
   // What Safari gives as the tab's title while it shows this document.
@@ -330,6 +331,11 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
           if (!doc || (doc.shut && target.allFrames)) continue;
           if (doc.shut) throw new Error(refused);
           if (doc.stuck) return never();
+          if (doc.slowMs > 0) {
+            const { promise, resolve } = Promise.withResolvers<void>();
+            clock.setTimeout(resolve, doc.slowMs);
+            await promise;
+          }
           if (files) {
             copyIn(tab, doc, true, frameId);
             results.push({ frameId, result: null });
@@ -766,6 +772,19 @@ test("an action whose page navigates while it runs is not sent again", async () 
   expect(next.ran).toEqual([]);
 });
 
+// In the 11-16 work sessions 9 shots right after an eval that reloaded
+// its page failed, the page reloading under them.
+test("an eval whose code starts a load answers once that page is in, as navigated", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/");
+  const next = new Doc("https://example.com/");
+  tab.doc.does = () => ({ ok: true, result: "ok", expect: "load" });
+  const answer = b.ask(tab, "eval", ["(location.reload(), 'ok')"]);
+  await b.clock.advance(100);
+  b.navigate(tab, next);
+  expect((await answer).value).toEqual({ ok: true, result: "ok", navigated: { url: "https://example.com/", title: "" } });
+});
+
 // A gather clicks Load more and scrolls as it reads: asked again of the
 // page it went to, it would gather that page too, and harvest's answer
 // would come back as an action's.
@@ -1105,6 +1124,16 @@ test("a stale ref, a cover's close controls, or a heal in an embedded frame name
   expect((await b.ask(tab, "click", ["f5:3"])).error).toBe("stale ref f5:3; re-run snapshot");
   frame.does = () => ({ error: 'that target is covered by dialog "Offer"; its close controls are [7] button "Close", [8] link "No thanks"', failure: { code: "stale_view", effect: "none" } });
   expect((await b.ask(tab, "click", ["f5:3"])).error).toBe('that target is covered by dialog "Offer"; its close controls are [f5:7] button "Close", [f5:8] link "No thanks"');
+});
+
+test("a frame click its parent page refuses before any event says nothing was sent", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/");
+  const frame = b.frame(tab, 5, "https://example.com/embedded");
+  frame.does = (op) => op === "clickProbe" ? { frame: frame.world.__safariHarnessFrame, x: 10, y: 20 } : { ok: true };
+  tab.doc.does = (op) => op === "assertFrameClickable" ? { found: true, blocker: "that frame is covered by dialog \"Offer\"" } : { url: tab.doc.url };
+  expect(await b.ask(tab, "click", ["f5:3"])).toMatchObject({ error: 'that frame is covered by dialog "Offer"', failure: { code: "stale_view", effect: "none" } });
+  expect(frame.ran).toEqual(["clickProbe"]);
 });
 
 // On 10-07 Akyl's audit agents reloaded a page with goto and clicked a ref
@@ -1494,6 +1523,26 @@ test("a reloaded extension tells the daemon each tab's new id while Safari refus
   await b.reloaded();
   await b.clock.advance(0);
   expect(b.told.filter((m) => m.kind === "renumbered")).toEqual([{ op: "tab", kind: "renumbered", tabs: { 3: tab.id } }]);
+});
+
+// 11-16 20:06: a reload while Safari answered slowly mapped 21 owned tabs;
+// adopt gave up on the rest, whose marks its own late script then wrote
+// over, and 33 s on the daemon let 45 of its agents' tabs go for good.
+test("a page that answers the reload's id read late still gets its new id to the daemon", async () => {
+  const b = await start();
+  const quick = b.openFromBefore("https://example.com/", 3);
+  const slow = b.openFromBefore("https://example.org/", 4);
+  slow.doc.slowMs = 5000;
+  await b.reloaded();
+  await b.clock.advance(3000);
+  expect(b.told.filter((m) => m.kind === "renumbered")).toEqual([{ op: "tab", kind: "renumbered", tabs: { 3: quick.id } }]);
+  await b.clock.advance(3000);
+  expect(b.told.filter((m) => m.kind === "renumbered").at(-1)).toEqual({ op: "tab", kind: "renumbered", tabs: { 4: slow.id } });
+  b.told.length = 0;
+  b.drop();
+  b.reconnect();
+  await b.clock.advance(0);
+  expect(b.told.filter((m) => m.kind === "renumbered")).toEqual([{ op: "tab", kind: "renumbered", tabs: { 3: quick.id, 4: slow.id } }]);
 });
 
 // 09-29: a closing socket's close event came after the extension had

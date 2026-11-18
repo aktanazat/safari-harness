@@ -22,9 +22,10 @@ import { CALLER_TOOLS } from "../daemon/caller.ts";
 import { invoke } from "../daemon/call.ts";
 import { closestParam, missFor, nameIn, nearest, paramFor } from "../daemon/guard.ts";
 import { connectionRefused, daemonHttp, deployingFor, rpc } from "../daemon/rpc.ts";
-import { alertHealth, isAway } from "../daemon/phone.ts";
+import { alertHealth } from "../daemon/phone.ts";
 import { ownerOf } from "../daemon/owner.ts";
 import { connectHost, hostHealth, listHosts, readHostConfig, setDefaultHost } from "../daemon/host.ts";
+import { endLease, holdLease, ownerKey } from "../daemon/lease.ts";
 import type { AgentEvent } from "../daemon/agent.ts";
 import type { SessionRecord } from "../daemon/sessions.ts";
 import type { JournalEvent } from "../daemon/journal.ts";
@@ -74,17 +75,20 @@ const USAGE = `safari — drive Safari from the terminal
   safari focus <tab>                         activate a tab
   safari snapshot --tab N [--query text] [--root sel] [--diff | --updates [--since revision]]
                                              page outline with [ref]s; recoverable updates
-  safari click <ref> --tab N                 click by snapshot ref
+  safari click <ref|text|sel> --tab N        click a snapshot ref, the control's visible
+                                             text ("Continue"), or a CSS selector: no
+                                             need to grep a ref out of a snapshot
   safari clickat <x> <y> --tab N             click by coordinates
-  safari type <ref> <text> --tab N           type by ref; '{{code}}' in text types the
+  safari type <ref|text|sel> <text> --tab N  type into a field; '{{code}}' in text types the
                                              code texted or mailed to him (--secret mail: Gmail only;
                                              --secret passwords: his saved one;
                                              --secret env --env VAR: this call's variable VAR)
-  safari press <key> [--ref R] --tab N       press a key
-  safari select <ref> [option] --tab N       choose a dropdown option; none lists them
+  safari press <key> [--ref R] --tab N       press a key (R: ref, text, or selector)
+  safari select <ref|text|sel> [option] --tab N
+                                             choose a dropdown option; none lists them
   safari refill --tab N                      put back the form fields a click sent on
                                              before the page emptied them (an error, a sign-in)
-  safari hover <ref> --tab N                 hover an element
+  safari hover <ref|text|sel> --tab N        hover an element
   safari upload <file>... [--ref R] --tab N
                                              attach files to a file input
   safari upload --find <words> --tab N       list the user's files that match, to pick
@@ -93,14 +97,19 @@ const USAGE = `safari — drive Safari from the terminal
   safari scroll <dy> --tab N [--to top|bottom]
                                              scroll by dy, or all the way to the page's top or bottom
 
-  Page commands need --tab N, the id open printed, or --tab front for the
-  tab the user has in front. Tabs a command opens close when omp's turn
-  ends, once the program that ran safari exits, or after 20 minutes
-  unused; --keep on open, or safari keep <tab>, leaves one open for him.
+  Page commands need --tab N, the id open printed, --tab latest for your
+  tab opened or named last, or --tab front for the tab the user has in
+  front. Tabs a command opens close when omp's turn ends, once the
+  program that ran safari exits, after 2 minutes unused, or past 4 open
+  tabs per agent session; --keep on open, or safari keep <tab>, leaves
+  one open for him. Commands over ssh or from a script outside an agent
+  keep one set of tabs with a unique SAFARI_OWNER=<key> or --owner <key>.
 
   Actions (open goto back forward reload click clickat type press select
   refill hover upload) and wait take --snapshot to print the page after them too,
-  or --snapshot=<words> for only its lines that have those words.
+  or --snapshot=<words> for only its lines that have those words. That read
+  waits for requests the action started (3 s at most); never sleep between an
+  action and a read: use --snapshot, or safari wait --text "<words>" --tab N.
 
   Reads (snapshot eval extract fetch read) take --save to write the whole output
   to a new file in ~/.local/share/safari-harness/saved, or --save=<file>
@@ -123,7 +132,7 @@ const USAGE = `safari — drive Safari from the terminal
   safari data --tab N [--pick path] [--max bytes]
                                              the page's own data as JSON (JSON-LD, Next.js, ...)
   safari info --tab N                        url/title/scroll
-  safari wait <ms> --tab N                   until the page goes quiet, ms at most
+  safari wait [ms] --tab N                   until the page goes quiet, ms (10000) at most
   safari wait [--selector s] [--text t] [--ms timeout | --timeout secs] --tab N [--front]
                                              wait until it is on the page; --front
                                              holds the tab on screen meanwhile
@@ -172,8 +181,10 @@ const USAGE = `safari — drive Safari from the terminal
   safari map <url>... [--what extract|snapshot|eval|fetch] [--save[=dir]]
                                              read up to 20 pages at once, each in a
                                              background tab that closes after
-                                             (--expression js, --as table, --concurrency 4,
-                                             --max-bytes N characters of each page,
+                                             (--expression js or --file path, --read for a
+                                             script that only measures, --as table,
+                                             --concurrency 4, --max-bytes N characters of
+                                             each page shown (--save keeps all),
                                              --wait '{"text":"Price"}' before each read,
                                              --follow '{"match":"a.item"}' to read the
                                              pages a listing links to, --fresh to read
@@ -188,8 +199,6 @@ const USAGE = `safari — drive Safari from the terminal
                                              your address, name, email, phone from your Contacts card
   safari fill login [--bitwarden] [--user name] --tab N
                                              a saved login (Apple Passwords, or Bitwarden); you never see it
-  safari passwords approvals-phone           at the Mac: set up Face ID on your iPhone to
-                                             approve agents' steps while you are away
   safari call <tool> '<json args>'           any tool by name, as MCP calls it
   safari <tool> [--<param> value ...]        the same, with each parameter as a flag
                                              (safari passwords logins --tab N: a first word is do)
@@ -225,6 +234,11 @@ const USAGE = `safari — drive Safari from the terminal
 
   safari host [list] | use <ssh-host|local> | status [host]
                                              drive another Mac's Safari through ssh
+  safari owner [--end]                       with SAFARI_OWNER=<key> (or --owner <key> on
+                                             any command), calls in separate processes or
+                                             over ssh share tabs that outlive each one;
+                                             they close after 30 min without a call, or
+                                             at --end; prints the lease's pid
   safari mcp                                 run the MCP stdio server (thin client)
   safari routine add <name> --at HH:MM|--every MIN [--on YYYY-MM-DD] [--model m | --session id] "<task>"
   safari routine list | history <name> | run <name> [--dry] | pause|resume|remove <name>
@@ -257,6 +271,7 @@ const USAGE = `safari — drive Safari from the terminal
   safari playbooks save --tab N --selector '#results[data-ready="yes"]'
                       [--output '{"rows":"tr.item","fields":{"title":".title"}}']
                       [--applied '{"param":"q","in":"hash","prefix":"search/"}']
+                      [--applied '{"param":"q","in":"query","key":"q"}']
                       [--result-selector '#results']
                                              verify new results; optionally return rows
   safari playbooks list | cancel --tab N
@@ -267,6 +282,7 @@ const USAGE = `safari — drive Safari from the terminal
 
   safari guide sites                         sites with a usage guide
   safari guide <site|host>                   one site's guide and learned notes (e.g. slack, x.com)
+  safari guide <name> --query "a|b"          only the parts that hold the words
   safari guide repl                          the REPL's API and recipes
   safari learn <site> "<fact>"               save a fact about a site for later agents
                                              (at most 300 characters; never a secret)
@@ -302,6 +318,11 @@ const USAGE = `safari — drive Safari from the terminal
 `;
 
 const json = process.argv.includes("--json");
+
+// --owner <key> names the lease this command's calls work for, as
+// SAFARI_OWNER does (lease.ts).
+const ownerFlag = flag("owner", process.argv);
+if (ownerFlag !== undefined) process.env.SAFARI_OWNER = ownerFlag;
 
 // -q, or --quiet, on any command: nothing printed when it works, and one
 // line on stderr when it misses or fails. From 10-01 to 10-04 a 99point
@@ -363,9 +384,12 @@ function printRaw(result: unknown): void {
 
 // open --id: the tab's id alone, for T=$(safari open <url> --id). Agents
 // scraped it with grep -oE '[0-9]+' | head -1 48 times (S99PartA), which
-// takes the first number an error names too.
+// takes the first number an error names too. Its note and hint go to
+// stderr: on 11-16 a script opened two Proton pages, got one tab's id
+// twice (the second open reused the first's tab), and closed both at once.
 function printId(result: unknown): void {
-  const { id, file } = result as { id?: unknown; file?: unknown };
+  const { id, file, note, hint } = result as { id?: unknown; file?: unknown; note?: unknown; hint?: unknown };
+  for (const [k, v] of Object.entries({ note, hint })) if (typeof v === "string") console.error(`${k}: ${v}`);
   if (id !== undefined) show(String(id));
   else if (file !== undefined) {
     say("miss: the address is a file, not a page, so no tab holds it; run open without --id to read it");
@@ -397,7 +421,7 @@ function fileFlags(argv: string[]): string[] | undefined {
 function tabArg(argv: string[]): Record<string, unknown> {
   const t = flag("tab", argv);
   if (t === undefined) return {};
-  return { tab: t === "front" ? t : Number(t) };
+  return { tab: t === "front" || t === "latest" ? t : Number(t) };
 }
 
 // --save writes a read's whole output to a new file in the saved folder;
@@ -448,7 +472,7 @@ const toolsOf = (tool: string): Record<string, Tool> => (Object.hasOwn(TOOLS, to
 
 // Flags every command takes, and those a command reads beside its tool's
 // parameters (open --bg, snapshot --max).
-const COMMON_FLAGS = ["json", "host", "help", "tab", "save", "snapshot", "quiet"];
+const COMMON_FLAGS = ["json", "host", "help", "tab", "save", "snapshot", "quiet", "owner"];
 const COMMAND_FLAGS: Record<string, string[]> = { tabs: ["site"], open: ["bg", "id"], snapshot: ["max"], shot: ["full"], shots: ["full"], eval: ["file", "timeout", "raw"], wait: ["timeout"], window: ["size"], run: ["steps-file"] };
 // A parameter a command takes under another flag: tabs's host is --site,
 // since --host names another Mac. Its help said --host (10-04, 01a10737).
@@ -671,7 +695,17 @@ async function hostCommand(argv: string[]) {
   fail("usage: safari host [list] | use <ssh-host|local> | status [host]", 2);
 }
 
+// The flags repl reads. From 11-11 to 11-12 `safari repl --close-all` ran 7
+// times and did nothing it said: repl dropped a flag it did not know.
+const REPL_FLAGS = ["session", "list", "close", "file", "host", "json", "quiet"];
+
 async function replCommand(argv: string[]) {
+  for (const [i, arg] of argv.entries()) {
+    const given = arg.slice(2).split("=")[0];
+    if (!arg.startsWith("--") || isFlagValue(i, argv) || REPL_FLAGS.includes(given)) continue;
+    const near = closestParam(given, REPL_FLAGS);
+    fail(`repl takes no --${given}${near ? `; did you mean --${near}?` : ""} (flags: ${REPL_FLAGS.map((f) => `--${f}`).join(" ")}; safari repl --list lists the sessions running, safari repl --close <name> ends one)`, 2);
+  }
   const { closeSession, listSessions, runInSession } = await import("../daemon/repl-host.ts");
   const { ReplSession } = await import("../daemon/repl.ts");
   const session = flag("session", argv);
@@ -757,30 +791,6 @@ async function daemonJson<T>(path: string, init?: RequestInit): Promise<T> {
 // are not.
 const EXTENSION_EVENTS: Record<string, true> = { start: true, stop: true, connect: true, disconnect: true, restarted: true, timeout: true, slow: true, stuck: true, unstuck: true, reload: true };
 
-// passwords approvals-phone: the approvals passkey on his iPhone, made at
-// the Mac (phone-approvals.ts), never through a tool a model calls. His
-// phone gets the link; this waits until he has set it up there, cancelled,
-// or the link ended.
-async function approvalsPhone(): Promise<void> {
-  if (await isAway()) fail("set up Face ID approvals at the Mac, with your iPhone at hand");
-  const opened = await rpc("approval_phone_setup");
-  if (!opened || typeof opened !== "object" || !("id" in opened) || typeof opened.id !== "string") fail("the daemon's answer named no setup request");
-  const id = opened.id;
-  if (!("alerted" in opened) || opened.alerted !== true) {
-    await rpc("approval_phone_close", { id });
-    fail(`the setup link did not reach your phone: ${"why" in opened ? String(opened.why) : "no reason given"}`);
-  }
-  console.log("a link went to your phone: open it in Safari on your iPhone, and tap Set up with Face ID");
-  for (;;) {
-    await Bun.sleep(2000);
-    const answer = await rpc("approval_phone_state", { id });
-    const state = answer && typeof answer === "object" && "state" in answer ? answer.state : undefined;
-    if (state === "approved") return console.log("set up: while you are away from the Mac, agents' approvals come to your iPhone");
-    if (state === "denied") return console.log("cancelled on your iPhone: nothing was set up");
-    if (state === "expired") fail("the link ended before Face ID was set up: run safari passwords approvals-phone again");
-  }
-}
-
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2).filter((a) => a !== "-q");
   if (!cmd || cmd === "--help") { console.log(USAGE); process.exit(cmd ? 0 : 1); }
@@ -810,10 +820,14 @@ async function main() {
     // Every word names the guide: guide reference two lanes read only its
     // first word, and printed the whole reference.
     const which = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest)).join(" ") || undefined;
-    const { guide, noGuide } = await import("../daemon/guides.ts");
+    const { guide, narrow, noGuide } = await import("../daemon/guides.ts");
     const text = await guide(which);
     if (text === null) fail(noGuide(which ?? ""));
-    console.log(text);
+    const query = flag("query", rest);
+    if (query === undefined) return console.log(text);
+    const part = narrow(text, query);
+    if (part === null) fail(`no part of ${which ?? "the card"} holds ${query}; its headings: ${text.split("\n").filter((l) => /^#{1,6} /.test(l)).join(" · ")}`);
+    console.log(part);
     return;
   }
 
@@ -896,6 +910,13 @@ async function main() {
   // Everything below talks to a daemon: this Mac's, or --host's.
   const host = await connectHost(flag("host", rest));
 
+  if (cmd === "owner") {
+    const key = ownerKey();
+    if (key === undefined) fail("usage: SAFARI_OWNER=<key> safari owner [--end], or safari owner --owner <key> [--end]", 2);
+    if (hasFlag("end", rest)) return print({ owner: key, pid: (await endLease(key)) ?? null });
+    return print({ owner: key, pid: await holdLease(key) });
+  }
+
   // replay prints one result whether or not it went through (--json: one
   // line, which watch.ts reads) and exits 0 only when every step did.
   if (cmd === "replay") {
@@ -938,7 +959,7 @@ async function main() {
     const missed = Object.entries(e?.timeouts ?? {}).filter(([, n]) => n > 0).map(([op, n]) => `${op} ${n} in a row`).join(", ");
     const answered = typeof e?.sinceAnswerMs === "number" ? `, last answered ${Math.round(e.sinceAnswerMs / 1000)} s ago` : "";
     console.log(!e || e.connected === false ? "extension disconnected: Safari is closed, or Safari Harness is off in Safari Settings > Extensions"
-      : e.stuck ? `extension stuck: connected, but its calls time out (${missed})${answered}; ${e.reloadIgnored ? "Safari ignored its reload: quit Safari and open it again, or turn Safari Harness Bridge off and on in Safari Settings > Extensions" : "run: safari extension reload"}`
+      : e.stuck ? `extension stuck: connected, but its calls time out (${missed})${answered}; ${e.reloadIgnored ? "Safari ignored its reload: quit Safari and open it again, or turn Safari Harness Bridge off and on in Safari Settings > Extensions" : "the next call that needs it reloads it by itself; if that call fails too, quit Safari and open it again"}`
       : `extension connected${e.connectedAt ? ` since ${at(e.connectedAt)}` : ""}${answered}${missed ? `; timed out: ${missed}` : ""}`);
     console.log(!alerts.on ? `${alerts.why}: handoff, ask, and watch routines cannot reach the user's phone; tell him in your chat`
       : alerts.lastFailed !== undefined && alerts.lastAt !== undefined ? `phone alerts on, but the last one, at ${at(alerts.lastAt)}, failed: ${alerts.lastFailed}`
@@ -988,8 +1009,6 @@ async function main() {
   }
 
   if (cmd === "mint") return mintCommand(rest, host);
-
-  if (cmd === "passwords" && rest.find((a, i) => !a.startsWith("--") && !isFlagValue(i, rest)) === "approvals-phone") return approvalsPhone();
 
   if (cmd === "do") {
     const task = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest)).join(" ");
@@ -1054,7 +1073,9 @@ async function main() {
     }
     case "goto": args.url = positional[0]; break;
     case "back": case "forward": case "reload": args.do = cmd; break;
-    case "close": case "focus": case "keep": if (positional[0] !== undefined) args.tab = Number(positional[0]); break;
+    // activate too, as focus: on 11-17 `safari activate 12842` failed "tab
+    // must be a number"
+    case "close": case "focus": case "activate": case "keep": if (positional[0] !== undefined) args.tab = Number(positional[0]); break;
     case "snapshot": {
       const root = flag("root", rest);
       if (root) args.root = root;
@@ -1067,7 +1088,16 @@ async function main() {
     }
     case "click": args.ref = positional[0]; break;
     case "clickat": args.x = Number(positional[0]); args.y = Number(positional[1]); break;
-    case "type": args.ref = positional[0]; args.text = positional.slice(1).join(" ").replace(/^"|"$/g, ""); args.append = hasFlag("append", rest); break;
+    case "type": {
+      // --ref is the first word given as a flag: on 11-16 `type --tab N
+      // --ref 1 "Eval Agent"` looked for "Eval Agent" on the page.
+      const ref = flag("ref", rest);
+      const words = ref === undefined ? positional.slice(1) : positional;
+      args.ref = ref ?? positional[0];
+      args.text = words.join(" ").replace(/^"|"$/g, "");
+      args.append = hasFlag("append", rest);
+      break;
+    }
     case "press": {
       args.key = positional[0];
       const ref = flag("ref", rest);
@@ -1075,8 +1105,10 @@ async function main() {
       break;
     }
     case "select": {
-      args.ref = positional[0];
-      if (positional.length > 1) args.option = positional.slice(1).join(" ");
+      const ref = flag("ref", rest);
+      const words = ref === undefined ? positional.slice(1) : positional;
+      args.ref = ref ?? positional[0];
+      if (words.length) args.option = words.join(" ");
       break;
     }
     case "hover": args.ref = positional[0]; break;
@@ -1166,7 +1198,9 @@ async function main() {
       if (positional[1] !== undefined) args.text = positional.slice(1).join(" ");
       break;
     case "fetch": case "read": args.url = positional[0]; break;
-    case "map": args.urls = positional; break;
+    // No words leave the urls to --urls '[…]', as map --help offers: on
+    // 11-16 that form failed "map needs urls".
+    case "map": if (positional.length) args.urls = positional; break;
     case "pdf": {
       // On 10-29 `pdf --do read --url` failed "tab is required": do was
       // save before the flags were read.
@@ -1175,6 +1209,14 @@ async function main() {
       break;
     }
     case "window": {
+      // --css-width N --height N: the page's CSS width (window's cssWidth)
+      const css = flag("css-width", rest);
+      if (css !== undefined) {
+        const height = flag("height", rest) ?? /^\d+x(\d+)$/i.exec(flag("size", rest) ?? "")?.[1];
+        if (!/^\d+$/.test(css) || height === undefined) fail("--css-width takes CSS px with --height N in points, as --css-width 390 --height 844", 2);
+        args = { tab: args.tab, cssWidth: Number(css), height: Number(height) };
+        break;
+      }
       // --size WIDTHxHEIGHT too, as agents wrote it (S99PartC)
       const size = flag("size", rest);
       const wh = size === undefined ? positional : /^(\d+)x(\d+)$/i.exec(size)?.slice(1);

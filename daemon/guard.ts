@@ -44,21 +44,37 @@ export function nameIn(names: string[], name: string): string | undefined {
 // 09-29 logs; text, selector, y, and files in the 09-28 to 09-30 logs; on
 // 10-07 net's query, the part of the address it keeps; in the 10-12 to
 // 10-16 logs shot's path and passwords' account; on 10-05 map's script;
-// on 10-22 download's out_dir.
+// on 10-22 download's out_dir. On 11-17 click {query} and map {do} each
+// failed a call: an action's query is the words its snapshot keeps, taken
+// ahead of query for text, so type never types words meant to be read.
+const ACTS_WITH_PAGE = ["open", "goto", "click", "type", "press", "refill", "select", "hover", "upload", "history"];
 const ALIASES: [string, string, string[]?][] = [
+  ["query", "snapshot", ACTS_WITH_PAGE], ["do", "what", ["map"]],
   ["go", "do"], ["action", "do"], ["value", "option"], ["query", "text"], ["code", "expression"], ["js", "expression"], ["script", "expression"], ["note", "fact"], ["mode", "what"],
   ["text", "ref", ["click", "hover"]], ["selector", "root"], ["y", "dy"], ["x", "dx"], ["files", "paths"], ["query", "url", ["net"]],
   ["path", "out", ["shot", "shots", "download"]], ["outDir", "out", ["download"]], ["account", "username", ["passwords"]],
+  // 11-17: contacts {query} and imessage_send {approve} each failed a call,
+  // and in the work Mac's sessions map {eval}, map {out} and
+  // authenticated_read {mode} did
+  ["query", "name", ["contacts"]], ["approve", "approved", ["imessage_send"]],
+  ["eval", "expression", ["map"]], ["out", "save", ["map"]], ["mode", "format", ["authenticated_read"]],
 ];
 
 // Parameters that ask a tool for what it cannot do, with what to do
 // instead: snapshot {url} and extract {url} each read no page on 09-29,
 // and on 10-05 and 10-08 map {max: 6000} and {max: 2500} meant to cut
-// each page's text.
+// each page's text. On 11-17 passwords {do: "code", selector} named the
+// field its code call had not found, and in the work Mac's sessions shot
+// {url} and map {extract: {}} (twice) each failed a call.
+const MAP_READ = 'map reads each page with what: "extract" (the default), "snapshot", "eval" or "fetch", and takes that read\'s options (selector, query, maxBytes) beside urls';
 const MISSES: [string, string, string][] = [
   ["snapshot", "url", "snapshot reads the page a tab shows; open the url first (open) and pass its tab"],
   ["extract", "url", "extract reads the page a tab shows; open the url first (open) and pass its tab, or read several addresses with map"],
+  ["shot", "url", "shot pictures the page a tab shows; open the url first (open) and pass its tab, or picture addresses with shots {urls}"],
   ["map", "max", "map takes no max: to keep each page's text short pass query (only lines with it) or selector, or save for a file per page; urls holds at most 20 addresses, and follow has its own max"],
+  ["map", "extract", MAP_READ],
+  ["map", "snapshot", MAP_READ],
+  ["passwords", "selector", "passwords takes no selector: code finds the field itself (marked one-time-code, a row of digit boxes, or one named like a code); when it finds none, open the page that shows the field and call code again"],
 ];
 
 // What to do instead of a parameter that asks tool for what it cannot do.

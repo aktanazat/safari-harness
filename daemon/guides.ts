@@ -30,6 +30,60 @@ export async function guide(which?: string): Promise<string | null> {
   return [...new Set(each.map((text, i) => (text ?? noGuide(words[i])).trimEnd()))].join("\n\n") + "\n";
 }
 
+// Only the parts of a guide that hold one of query's phrases (`a|b` is
+// either), any case; null when none does. A part is a paragraph, a list
+// item with its indented lines, or a code block. It comes under its
+// headings and its section's lead paragraphs, which in a site guide often
+// hold the section's rule (Slack's: every write drafts first); a heading
+// that holds a phrase keeps its whole section. On 11-16 agents piped the
+// 7 KB Slack guide into head or grep about 15 times.
+export function narrow(text: string, query: string): string | null {
+  const phrases = query.toLowerCase().split("|").map((p) => p.trim()).filter(Boolean);
+  const holds = (s: string) => phrases.some((p) => s.toLowerCase().includes(p));
+  type Part = { lines: string[]; kind: "heading" | "lead" | "item" | "code"; level: number };
+  const parts: Part[] = [];
+  let open: Part | undefined;
+  let fence = false;
+  for (const line of text.split("\n")) {
+    const code = line.trimStart().startsWith("```");
+    const listed = /^(- |\d+\. )/.test(line);
+    if (fence && open) {
+      open.lines.push(line);
+      if (code) [fence, open] = [false, undefined];
+    } else if (line.trim() === "") open = undefined;
+    else if (/^#{1,6} /.test(line)) {
+      parts.push({ lines: [line], kind: "heading", level: line.indexOf(" ") });
+      open = undefined;
+    } else if (code || listed || !open) {
+      parts.push(open = { lines: [line], kind: code ? "code" : listed ? "item" : "lead", level: 0 });
+      fence = code;
+    } else open.lines.push(line);
+  }
+  const keep = new Set<number>();
+  const headings: number[] = [];
+  let leads: number[] = [];
+  let pastLeads = false;
+  let whole = Infinity;
+  parts.forEach((part, i) => {
+    if (part.kind === "heading") {
+      while (headings.length && parts[headings[headings.length - 1]].level >= part.level) headings.pop();
+      headings.push(i);
+      [leads, pastLeads] = [[], false];
+      if (part.level <= whole) whole = holds(part.lines[0]) ? part.level : Infinity;
+    } else if (part.kind === "lead" && !pastLeads) leads.push(i);
+    else pastLeads = true;
+    if (whole !== Infinity || (part.kind !== "heading" && holds(part.lines.join("\n")))) {
+      for (const j of [...headings, ...leads, i]) keep.add(j);
+    }
+  });
+  if (keep.size === 0) return null;
+  const kept = [...keep].sort((a, b) => a - b);
+  return kept.map((i, k) => {
+    const listRuns = k > 0 && kept[k - 1] === i - 1 && parts[i].kind === "item" && parts[i - 1].kind === "item";
+    return (k > 0 && !listRuns ? "\n" : "") + parts[i].lines.join("\n");
+  }).join("\n") + "\n";
+}
+
 // A `## ` section of the reference, up to the next `#` or `## ` heading.
 // A tool's heading is its name alone (`## real_input`); an idea's is a
 // phrase (`## Two lanes: this harness or Apple's safaridriver`).

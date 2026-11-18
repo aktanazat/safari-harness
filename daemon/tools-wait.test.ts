@@ -44,8 +44,26 @@ test("a quiet wait that ends on a blank page with no errors says it shows nothin
     ok: false,
     found: false,
     empty: true,
-    hint: "the page went quiet but shows nothing yet: no text, picture, or frame; wait on words it should show",
+    hint: "the page went quiet but shows nothing yet: no text, picture, or frame; wait on words it should show; if a Safari prompt is over the tab (camera, microphone, location), only the user can answer it: handoff",
   });
+});
+
+// In a session mined on 11-17 a Meet tab under a camera and microphone
+// prompt read empty and 8 waits ran out, 3.5 minutes, before the agent
+// found the prompt. Safari here shows a blank page the words never reach.
+test("a text wait that misses on a blank page says a Safari prompt may hold it", async () => {
+  connect({
+    send(data: string) {
+      const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
+      const answers: Record<string, unknown> = { wait: { found: false }, eval: { result: false } };
+      const value = op === "relay" ? (answers[String(args[1])] ?? { ok: true }) : [];
+      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, value })));
+    },
+    close() {},
+  });
+  const got = await callTool("wait", { tab: 7, text: "Join now", ms: 100 }) as { hint?: string };
+  expect(got).toMatchObject({ ok: false, found: false });
+  expect(got.hint).toContain("the page shows nothing: no text, picture, or frame; if a Safari prompt is over the tab (camera, microphone, location), only the user can answer it: handoff");
 });
 
 // On 10-16, with Safari taking 4 to 13 s a call after a deploy, a wait for

@@ -139,7 +139,7 @@ test("doctor answers within 3 s: a probe still running then is reported as not a
   }
   const checks = await run;
   expect(waited).toBeLessThanOrEqual(3100);
-  expect(checks.tabs).toMatchObject({ status: "fail", detail: "no answer within 3 s", fix: expect.stringContaining("safari extension reload") });
+  expect(checks.tabs).toMatchObject({ status: "fail", detail: "no answer within 3 s", fix: expect.stringContaining("reloads it by itself") });
   expect(checks.swap).toMatchObject({ status: "skip", detail: "host-headroom failed: no answer within 3 s" });
   expect(checks["round trip"]).toMatchObject({ status: "skip", detail: expect.stringContaining("safari doctor --deep") });
   expect(asked).toEqual(["tabs"]);
@@ -156,7 +156,7 @@ test("an extension that is connected but stuck fails with the reload as the fix,
     health: async () => ({ pid: 4242, extension: { connected: true, stuck: true, timeouts: { "tabs.list": 3 }, connectedAt: Date.now() } }),
     tabs: async () => { asked.push("tabs"); return 12; },
   });
-  expect(checks.extension).toMatchObject({ status: "fail", detail: expect.stringMatching(/stuck.*tabs\.list 3/), fix: expect.stringMatching(/^safari extension reload/) });
+  expect(checks.extension).toMatchObject({ status: "fail", detail: expect.stringMatching(/stuck.*tabs\.list 3/), fix: expect.stringMatching(/^make the call again: a safari call that meets a stuck extension reloads it by itself/) });
   expect(checks.tabs).toMatchObject({ status: "skip", detail: "the extension is stuck" });
   expect(asked).toEqual([]);
 });

@@ -10,8 +10,8 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
-import { rateLimited } from "../failures.ts";
-import { NotSignedIn, draftOrSend, type SiteKit } from "./kit.ts";
+import { HarnessError, rateLimited } from "../failures.ts";
+import { NotSignedIn, draftOrSend, wroteOutside, type SiteKit } from "./kit.ts";
 
 const SITE = "Slack";
 const ORIGIN = "https://app.slack.com";
@@ -292,11 +292,18 @@ function client(kit: SiteKit, workspace: Workspace) {
   // no one's to see until files.completeUploadExternal names it.
   const sendBytes = async (f: LocalFile) => {
     const slot = await api<{ upload_url: string; file_id: string }>("files.getUploadURLExternal", { filename: f.name, length: f.bytes.length });
+    const host = new URL(slot.upload_url).host;
     const sent = await paced(kit, new URL(slot.upload_url).origin, async () => {
-      const res = await fetch(slot.upload_url, { method: "POST", body: f.bytes });
+      // The bytes go from this process, not the page: Safari's fetch takes
+      // only text. On 11-11 this Mac's connection to the host was refused
+      // three times and the error named neither the host nor the outcome.
+      const res = await fetch(slot.upload_url, { method: "POST", body: f.bytes }).catch((e: unknown) => {
+        throw new HarnessError("command_failed", `this Mac could not reach ${host}, Slack's upload address (${e instanceof Error ? e.message : String(e)}); nothing was shared`, { effect: "none", next: "try again in a minute" });
+      });
       return { status: res.status, retryAfter: res.headers.get("retry-after") };
     });
-    if (sent.status !== 200) throw new Error(`Slack's upload address answered HTTP ${sent.status}; the file was not shared`);
+    if (sent.status !== 200) throw new HarnessError("command_failed", `Slack's upload address ${host} answered HTTP ${sent.status}; nothing was shared`, { effect: "none" });
+    wroteOutside();
     return slot.file_id;
   };
   return {
@@ -624,11 +631,13 @@ export function slack(kit: SiteKit) {
       return (await readStore(kit)).teams;
     },
 
-    // teamId may also be the workspace's domain; without it, the workspace
-    // the owner used last, or the first stored one.
+    // teamId may also be the workspace's domain or its name, case aside
+    // (getClient("openfunnel") missed the "OpenFunnel" workspace, 11-17);
+    // without it, the workspace the owner used last, or the first stored one.
     async getClient(teamId?: string) {
       const { teams } = await readStore(kit);
-      const team = teamId ? teams.find((t) => t.teamId === teamId || t.domain === teamId) : (teams.find((t) => t.lastActive) ?? teams[0]);
+      const want = teamId?.toLowerCase();
+      const team = teamId ? teams.find((t) => t.teamId === teamId || t.domain.toLowerCase() === want) ?? teams.find((t) => t.name.toLowerCase() === want) : (teams.find((t) => t.lastActive) ?? teams[0]);
       if (!team) throw new Error(`no workspace "${teamId}" in Safari; listWorkspaces() has ${teams.map((t) => `${t.name} (${t.teamId})`).join(", ")}`);
       if (!team.signedIn) throw new NotSignedIn(SITE, `workspace ${team.name} needs a fresh sign-in`);
       return client(kit, team);

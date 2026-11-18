@@ -1,6 +1,6 @@
 ---
 name: Google Search
-hosts: google.com, www.google.com
+hosts: www.google.com
 ---
 # Google Search
 

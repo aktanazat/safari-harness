@@ -6,7 +6,7 @@ import { bridge } from "./bridge.ts";
 import { connect, historyFixture } from "./fake-safari.ts";
 import { guide } from "./guides.ts";
 import { runAs } from "./owner.ts";
-import { learn as learnSite, readerFor, realInputSite, realInputSites } from "./notes.ts";
+import { firstNotes, learn as learnSite, learnCheck, readerFor, realInputSite, realInputSites } from "./notes.ts";
 import { keepSecret, tabSecrets } from "./redact.ts";
 import { callTool } from "./tools.ts";
 
@@ -402,4 +402,13 @@ test("history is private and bounded while a current fact keeps its source", asy
   expect(readdirSync(dir).every((name) => (statSync(join(dir, name)).mode & 0o777) === 0o600)).toBe(true);
   expect(readdirSync(dir).reduce((bytes, name) => bytes + statSync(join(dir, name)).size, 0)).toBeLessThanOrEqual(1_100_000);
   await expect(isolatedLearn({ site: "example.com", undo: original })).rejects.toThrow(/no such learning edit/);
+});
+
+// On 11-17, 12 answers on Google Forms and Meet pages carried "bot check
+// learned for google.com: recaptcha wall", learned on search pages.
+test("a bot check learned on a site shows on its pages and www, not on its other subdomains' pages, even after one of those", () => {
+  learnCheck("https://google.com/search?q=x", () => ({ kind: "recaptcha", where: "page", signal: "fixture", last: "2026-11-17" }));
+  expect(runAs(990101, () => firstNotes("https://docs.google.com/forms/d/x/viewform")).notes ?? "").not.toContain("bot check");
+  expect(runAs(990101, () => firstNotes("https://www.google.com/search?q=y")).notes ?? "").toContain("bot check learned for google.com: recaptcha wall");
+  expect(runAs(990101, () => firstNotes("https://www.google.com/search?q=z")).notes ?? "").not.toContain("bot check");
 });

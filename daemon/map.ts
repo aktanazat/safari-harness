@@ -16,13 +16,15 @@ import { saveOutput, SAVED_DIR, targetOf, withLimit, writeIndex, type SaveKind, 
 import { failureOf, HarnessError, readFailure, type Failure } from "./failures.ts";
 import { affectsPage } from "./lanes.ts";
 import { turnAt } from "./pace.ts";
-import { partialRead, type PageState } from "./page-state.ts";
+import { classifyPage, partialRead, type PageKind, type PageState } from "./page-state.ts";
 import { checked, keep, recall } from "./reads.ts";
 import { cutFenced, defused } from "./injection.ts";
 
 export const MAP_MAX_URLS = 20;
-const AT_ONCE = 6;
-const MAX_AT_ONCE = 6;
+// No more at once than an agent's tab limit (AGENT_TAB_CAP in tools.ts),
+// which would close map's own tabs mid-read.
+const AT_ONCE = 4;
+const MAX_AT_ONCE = 4;
 // omp's MCP client ends a call at 60 s, and on 09-30 a map of six pages
 // whose eval ran 31.5 s each, three at once, lost all six there
 // (01a0f031). One read alone may take 32 s (eval's 30, and the 2 more the
@@ -64,13 +66,17 @@ const MISSED = "it did not show";
 // out its 50 s (SR-1).
 const FOLLOWED_WAIT = "wait holds each page followed, not the listing, and none of them showed it; a listing waits for follow's match, when it is a CSS selector";
 
-type Outcome = ({ ok: true; value: unknown } | { ok: false; error: string; failure?: Failure; value?: unknown }) & { challenge?: Challenge };
+// pageState: what an eval's page is, judged from its title and address
+// (readTab), when that names a page that is not content.
+type Outcome = ({ ok: true; value: unknown; pageState?: PageState } | { ok: false; error: string; failure?: Failure; value?: unknown }) & { challenge?: Challenge };
 // title: the page's as it opened, which an eval or fetch read does not
 // carry, where the address may have led to a sign-in or a page not found;
 // finalUrl: where it opened, when not at url; retried: how many times it
-// was loaded again after its site's error page; from: whose read of this
-// task's it is (reads.ts). A failed page's value is what an error page read.
-export type Page = Outcome & { url: string; finalUrl?: string; title?: string; ms: number; closeError?: string; retried?: number; from?: string };
+// was loaded again after its site's error page; reopened: it was read in
+// a new tab after Safari barred the extension from the first; from: whose
+// read of this task's it is (reads.ts). A failed page's value is what an
+// error page read.
+export type Page = Outcome & { url: string; finalUrl?: string; title?: string; ms: number; closeError?: string; retried?: number; reopened?: true; from?: string };
 type Call = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
 // What map does with each page: what it waits for (and how a miss names
 // it), the read, its arguments, where to save it, whether to load it
@@ -99,6 +105,8 @@ const DISCONNECTED = /^(?:the Safari extension (?:disconnected|restarted) before
 // 10-29 os.html, the longest of 20 python docs pages map read four at a
 // time, did not answer in 10 s (baseline).
 const STALLED = /^(?:the page (?:at \S+ )?did not answer\b|Safari did not answer \S+ in time\b|it gave the wait no answer in time\b)/;
+
+const BARRED = /\bSafari would not let the extension into the tab\b/;
 
 // A close the link dropped is asked again, each ask waiting for the
 // extension to connect again (bridge.ts): of the 61 map pages answered
@@ -131,19 +139,27 @@ export async function mapPages(a: Record<string, unknown>, call: Call): Promise<
 
 // map's addresses, what it does with each page, and how many at once.
 function jobOf(a: Record<string, unknown>, call: Call): { urls: string[]; job: Job; atOnce: number } {
-  const { urls, what = "extract", concurrency = AT_ONCE, save, wait, fresh, ...args } = a;
+  const { urls, what = "extract", concurrency = AT_ONCE, save, wait, fresh, ...asked } = a;
   if (!Array.isArray(urls) || urls.length === 0 || !urls.every((u): u is string => typeof u === "string")) throw new Error('map needs urls: ["https://…", …]');
   if (urls.length > MAP_MAX_URLS) throw new Error(`map reads at most ${MAP_MAX_URLS} pages a call; pass the rest to another`);
   const read = readOf(what);
-  if (read === "eval" && typeof args.expression !== "string" && typeof args.reader !== "string" && typeof args.file !== "string") throw new Error("what: eval needs expression, reader, or file");
+  if (read === "eval" && typeof asked.expression !== "string" && typeof asked.reader !== "string" && typeof asked.file !== "string") throw new Error("what: eval needs expression, reader, or file");
   const atOnce = Number(concurrency);
   if (!Number.isFinite(atOnce)) throw new Error("concurrency must be a number");
   const target = save === undefined || save === false ? undefined : targetOf(save, "folder");
+  // With save each page's file holds its whole read, and maxBytes limits
+  // only the answer, which gives a saved page's head: on 11-13 a map with
+  // maxBytes 2000 saved two ServiceNow pages cut at 2,022 bytes, short of
+  // the API reference the agent waited for (LOCK#1560).
+  const { maxBytes: _, ...whole } = asked;
+  const args = target ? withLimit(read, whole) : asked;
   const waits = wait === undefined ? undefined : waitOf(wait);
   // This task's reads are kept (reads.ts) by the read, its arguments as the
-  // page is asked them, and the wait. eval, whose page may change as it
-  // runs, and a fetch that changes something are not kept.
-  const key = affectsPage(read, args) ? undefined : JSON.stringify([read, Object.entries(target ? withLimit(read, args) : args).sort(), waits ? Object.entries(waits).sort() : null]);
+  // page is asked them, and the wait. eval is not kept, though it only
+  // reads (read: true): the page or the expression may have changed since,
+  // and a kept eval answers with measurements that no longer hold. Nor is a
+  // fetch that changes something.
+  const key = read === "eval" || affectsPage(read, args) ? undefined : JSON.stringify([read, Object.entries(args).sort(), waits ? Object.entries(waits).sort() : null]);
   return { urls, job: { wait: waits, read, args, target, fresh: fresh === true, key, call }, atOnce };
 }
 
@@ -380,12 +396,24 @@ function unfinished(url: string, began: number | undefined, effectful: boolean):
   return { ok: false, error, failure: failureOf(new HarnessError("timeout", error, { effect: effectful ? "possibly_effected" : "none" })), url, ms };
 }
 
+// A page's state: its own, as map judged an eval's page (readTab), or its
+// read's (page-state.ts).
+function stateOf(page: Page | Listing): PageState | undefined {
+  if (!page.ok || "items" in page) return undefined;
+  const v = page.value && typeof page.value === "object" ? page.value : {};
+  return page.pageState ?? ("pageState" in v ? (v.pageState as PageState | undefined) : undefined);
+}
+
 // A read of a page that read as content, with no check on it, which the
-// task may be answered with again.
+// task may be answered with again; one not judged is kept only if it read
+// some text. On 11-13 ServiceNow's "Loading application..." read as content
+// and answered a later map for 10 minutes (LOCK#1312).
 function keeps(page: Page): boolean {
   if (!page.ok || page.challenge) return false;
-  const state = page.value && typeof page.value === "object" && "pageState" in page.value ? (page.value.pageState as PageState | undefined) : undefined;
-  return state === undefined || state.kind === "content" || state.kind === "unjudged";
+  const state = stateOf(page);
+  const v = page.value && typeof page.value === "object" ? page.value : {};
+  const text = "text" in v && typeof v.text === "string" ? v.text : "snapshot" in v && typeof v.snapshot === "string" ? v.snapshot : "";
+  return state === undefined || state.kind === "content" || (state.kind === "unjudged" && text.trim() !== "");
 }
 
 // The page as this task met it in the last 10 minutes (reads.ts): read as
@@ -405,9 +433,13 @@ function recalled(url: string, job: Job): Page | undefined {
 // opens as its site's error page is loaded again after each of RETRY_MS.
 // One that threw leaves its tab in a state not known, so the tab closes;
 // a read of the page the tab showed before is that page's, not url's, so
-// url loads again in a new tab.
-async function visit(url: string, job: Job, warm: Warm, recovering = false): Promise<Visit> {
-  const started = performance.now();
+// url loads again in a new tab. A page Safari barred the extension from
+// (background.js barredText, where nothing was done) loads once more in
+// a new tab: on 11-16 a map failed a Google Forms page so after 21.9 s,
+// and an open of it at once read it. barred: that first try's start and
+// its tab's close error, which the page keeps.
+async function visit(url: string, job: Job, warm: Warm, recovering = false, barred?: { started: number; closeError?: string }): Promise<Visit> {
+  const started = barred?.started ?? performance.now();
   const effectful = job.readOnly !== true && affectsPage(job.read, job.args);
   let opened: Opened | undefined;
   let outcome: Outcome;
@@ -427,13 +459,14 @@ async function visit(url: string, job: Job, warm: Warm, recovering = false): Pro
     disconnected = DISCONNECTED.test(error) || recovering && error === "Safari extension not connected — enable the Safari Harness extension (Safari ▸ Settings ▸ Extensions; turning it on asks for the Mac's password or Touch ID)";
     outcome = { ok: false, error, failure: failureOf(e, { effectful: affectsPage(job.read, job.args) }) };
     closeError = await drop(warm, job.call);
+    if (!barred && !effectful && BARRED.test(error)) return visit(url, job, warm, recovering, { started, ...(closeError === undefined ? {} : { closeError }) });
   }
   // extract and snapshot say the address of the document they read
   const v = outcome.value;
   const shown = v && typeof v === "object" && "url" in v && typeof v.url === "string" ? address(v.url) : undefined;
   if (warm.tab !== undefined && warm.at !== undefined && shown === warm.at && address(url) !== warm.at) {
     await shut(warm, job.call);
-    return visit(url, job, warm, recovering);
+    return visit(url, job, warm, recovering, barred);
   }
   // map has closed the tab by the time its answer is read, so a stalled
   // page's advice to reload it there becomes mapping it again
@@ -448,7 +481,8 @@ async function visit(url: string, job: Job, warm: Warm, recovering = false): Pro
   const ms = Math.round(performance.now() - started);
   const finalUrl = opened?.url && opened.url !== URL.parse(url)?.href ? opened.url : undefined;
   const about = { url, ...(finalUrl ? { finalUrl } : {}), ...(opened?.title ? { title: opened.title } : {}) };
-  const page: Page = { ...outcome, ...about, ms, ...(retried ? { retried } : {}), ...(closeError === undefined ? {} : { closeError }) };
+  closeError ??= barred?.closeError;
+  const page: Page = { ...outcome, ...about, ms, ...(retried ? { retried } : {}), ...(barred ? { reopened: true } : {}), ...(closeError === undefined ? {} : { closeError }) };
   if (warm.tab !== undefined) warm.last = page;
   if (outcome.ok && job.key !== undefined && keeps(page)) keep(job.key, url, { ok: true, value: outcome.value, ...about });
   return { page, disconnected, stalled };
@@ -514,7 +548,7 @@ function address(url: string | undefined): string | undefined {
   return u.href;
 }
 
-async function readTab(opened: Opened, url: string, { wait, waited, read, args, target, call }: Job): Promise<Outcome> {
+async function readTab(opened: Opened, url: string, { wait, waited, read, args, call }: Job): Promise<Outcome> {
   const check = opened.challenge;
   if (check && check.where !== "box") return { ok: false, error: CHECKED[check.where], failure: failureOf(new HarnessError("blocked", CHECKED[check.where], { next: CHECKED[check.where] })), challenge: check };
   // open answers a site's error page (its guide's error-titles) as not ok,
@@ -532,21 +566,32 @@ async function readTab(opened: Opened, url: string, { wait, waited, read, args, 
   }
   const pdfRead = async (): Promise<Outcome> => ({ ok: true, value: await call("pdf", { do: "read", url: opened.url ?? url, ...(typeof args.maxBytes === "number" ? { maxBytes: args.maxBytes } : {}) }) });
   if (wait) {
-    const missed = missOf(await call("wait", { ...wait, tab: opened.id }), waited);
-    if (missed) return check ? { ...missed, challenge: check } : missed;
+    const seen = await call("wait", { ...wait, tab: opened.id });
+    const missed = missOf(seen, waited, url);
+    if (missed) {
+      const outcome = (await signedOut(seen, url, waited, opened.id, call)) ?? missed;
+      return check ? { ...outcome, challenge: check } : outcome;
+    }
   }
   // fetch asks again for the address the tab opened, with its cookies: the
   // body as the server sends it, where the others read the page it drew.
   let value: unknown;
   try {
-    value = await call(read, { ...(target ? withLimit(read, args) : args), tab: opened.id, ...(read === "fetch" ? { url } : {}) });
+    value = await call(read, { ...args, tab: opened.id, ...(read === "fetch" ? { url } : {}) });
   } catch (e) {
     if (read === "extract" && messageOf(e).includes("this is a PDF in Safari's viewer")) return pdfRead();
     throw e;
   }
+  // An eval's value is the expression's, which says nothing of the page it
+  // ran on, so the page's title and address are judged as its words: on
+  // 11-13 UKG's docs answered five evals under the title "You’ve been rate
+  // limited", each counted as read (LOCK#1363, #1401). A title that names
+  // no wall leaves the page unjudged.
+  const judged = read === "eval" && opened.title ? classifyPage({ url: opened.url ?? url, title: opened.title, text: opened.title }) : undefined;
+  const pageState = judged && judged.kind !== "content" && judged.kind !== "unjudged" ? judged : undefined;
   // A page can answer with an error instead of output (extract's selector
   // matches nothing): it read nothing, so it failed like a page that threw.
-  const outcome: Outcome = pageError(value, affectsPage(read, args)) ?? errorRead(value, opened.title) ?? { ok: true, value };
+  const outcome: Outcome = pageError(value, affectsPage(read, args)) ?? errorRead(value, opened.title, pageState) ?? { ok: true, value, ...(pageState ? { pageState } : {}) };
   return check ? { ...outcome, challenge: check } : outcome;
 }
 
@@ -557,17 +602,18 @@ function pageError(value: unknown, effectful: boolean): { ok: false; error: stri
 }
 
 // A read of a page that is not the one asked for: an HTTP error, or a page
-// its state calls an error (page-state.ts: a page not found, a rate limit).
-// It failed, and what it read stays beside the error: on 10-23 three saved
-// pages not found, three raw 404s, and an API's rate limit counted as read
-// (K4).
-function errorRead(value: unknown, title: string | undefined): Outcome | undefined {
+// its state (judged, for an eval's page) calls an error (page-state.ts: a
+// page not found, a rate limit). It failed, and what it read stays beside
+// the error: on 10-23 three saved pages not found, three raw 404s, and an
+// API's rate limit counted as read (K4).
+function errorRead(value: unknown, title: string | undefined, judged?: PageState): Outcome | undefined {
   if (!value || typeof value !== "object") return undefined;
   const v = value as { status?: unknown; title?: unknown; pageState?: PageState };
+  const state = judged ?? v.pageState;
   const status = typeof v.status === "number" && v.status >= 400 ? v.status : undefined;
-  if (status === undefined && v.pageState?.kind !== "error") return undefined;
+  if (status === undefined && state?.kind !== "error") return undefined;
   const named = typeof v.title === "string" && v.title ? v.title : title;
-  const error = `an error page${status === undefined ? "" : ` (HTTP ${status})`}${named ? `, "${named}"` : ""}, not the page asked for${v.pageState ? `: ${v.pageState.next}` : ""}`;
+  const error = `an error page${status === undefined ? "" : ` (HTTP ${status})`}${named ? `, "${named}"` : ""}, not the page asked for${state ? `: ${state.next}` : ""}`;
   const failure = status === undefined ? failureOf(new HarnessError("not_content", error)) : failureOf(Object.assign(new Error(error), { status }), { effectful: false });
   return { ok: false, error, failure, value };
 }
@@ -617,18 +663,54 @@ async function indexed(target: Target | undefined, pages: Page[]): Promise<{ ind
 // A page that never showed what the wait asked for is most often another
 // page (a redirect, a page not found): the address and title say which. A
 // page that gave the wait no answer in time (unanswered, a loaded Safari)
-// may show it all the same.
-function missOf(seen: unknown, waited = "what wait asked for"): { ok: false; error: string; failure: Failure } | undefined {
+// may show it all the same. One sent to another address says it was
+// redirected.
+function missOf(seen: unknown, waited = "what wait asked for", asked?: string): { ok: false; error: string; failure: Failure } | undefined {
   if (!seen || typeof seen !== "object" || !("found" in seen) || seen.found !== false) return undefined;
   const at = "url" in seen && typeof seen.url === "string" ? seen.url : "an address Safari did not give";
   const title = "title" in seen && typeof seen.title === "string" && seen.title !== "" ? ` ("${seen.title}")` : "";
-  const error = "unanswered" in seen && seen.unanswered === true
-    ? `it gave the wait no answer in time (Safari or the page was slow), so whether it shows ${waited} is not known: map it again`
-    : `${MISSED} ${waited}; the tab is at ${at}${title}`;
+  if ("unanswered" in seen && seen.unanswered === true) {
+    const error = `it gave the wait no answer in time (Safari or the page was slow), so whether it shows ${waited} is not known: map it again`;
+    return { ok: false, error, failure: failureOf(new HarnessError("not_content", error)) };
+  }
+  const error = `${MISSED} ${waited}; ${redirectedTo(seen, asked) ? "it was redirected: " : ""}the tab is at ${at}${title}`;
   return { ok: false, error, failure: failureOf(new HarnessError("not_content", error)) };
 }
 
-type Row = { page: Page | Listing; depth: number; head: string; body: string; sep: string };
+// The address a missed wait ended on, when it is not the one asked for.
+function redirectedTo(seen: object, asked: string | undefined): URL | undefined {
+  const at = "url" in seen && typeof seen.url === "string" ? URL.parse(seen.url) : null;
+  const from = asked === undefined ? null : URL.parse(asked);
+  return at && from && at.origin + at.pathname !== from.origin + from.pathname ? at : undefined;
+}
+
+// A wait that ended on a sign-in page says so: in the 11-16 work sessions
+// ServiceNow, SAP and UKG doc pages missed their waits 6 times at 20-27 s
+// each, mostly on sign-in redirects the miss did not name. An address or
+// title only nominates the page, since docs pages about sign-on match
+// them too ("Configure single sign-on | ServiceNow", help.sap.com/.../sso);
+// it is a sign-in only when its read finds a sign-in form (page-state.ts
+// login_wall). The address is read without its query (?next=/login).
+const SIGN_IN_AT = /^https?:\/\/(?:(?:login|signin|sso|auth|accounts|idp)\.|[^/]*\.(?:okta|onelogin|microsoftonline)\.com\/)|\/(?:signin|sign-in|login|log-in|sso|saml2?|oauth2?|auth)(?:\/|$)/i;
+const SIGN_IN_TITLE = /\b(?:sign[ -]?in|log[ -]?in|login|single sign-on)\b/i;
+async function signedOut(seen: unknown, asked: string, waited = "what wait asked for", tab: number | undefined, call: Call): Promise<{ ok: false; error: string; failure: Failure } | undefined> {
+  if (!seen || typeof seen !== "object") return undefined;
+  const at = redirectedTo(seen, asked);
+  const named = "title" in seen && typeof seen.title === "string" ? seen.title : "";
+  if (!at || !(SIGN_IN_AT.test(at.origin + at.pathname) || SIGN_IN_TITLE.test(named))) return undefined;
+  const read = await call("extract", { tab, maxBytes: 2000 }).catch(() => undefined);
+  const state = read && typeof read === "object" && "pageState" in read && read.pageState && typeof read.pageState === "object" && "kind" in read.pageState ? read.pageState.kind : undefined;
+  if (state !== "login_wall") return undefined;
+  const error = `redirected to sign-in at ${at.href}${named ? ` ("${named}")` : ""}, so it shows no ${waited}`;
+  return { ok: false, error, failure: failureOf(new HarnessError("blocked", error, { next: "sign in to the site in a tab (handoff for a step only the user can do), then map it again" })) };
+}
+
+type Row = { page: Page | Listing; depth: number; head: string; body: string; sep: string; wall?: string };
+
+// What a page read as, when it read as no content: map counts it apart
+// from the pages it read. On 11-15 a map of three pages answered "3 read"
+// for a sign-in page and an empty one (LOCK#1865).
+const NOT_CONTENT: Partial<Record<PageKind, string>> = { login_wall: "sign-in", paywall: "paywall", region_block: "region block", consent: "consent", loading: "loading", empty: "empty", error: "error" };
 
 // map's answer as text: a line counting its pages, then each page under
 // its title and address, as its read prints alone; a read that prints its
@@ -636,37 +718,49 @@ type Row = { page: Page | Listing; depth: number; head: string; body: string; se
 // followed has the pages it links to under it. Past max, an index of every
 // page comes first, and each page keeps an even share of the rest: on
 // 10-23 seven map answers were cut at a reply's 30,000 characters, and
-// three of their pages did not show at all (K6).
+// three of their pages did not show at all (K6). A page the answer's urls
+// name again is not read, not failed: on 11-16 a map of 20 X profiles
+// answered "2 read, 18 failed" while its urls named pages to map again.
 export function mapText(answer: MapAnswer, format: (value: unknown) => string, max = Infinity): string {
   const rows: Row[] = [];
+  const left = new Set(answer.urls);
   const add = (list: (Page | Listing)[], level: string, depth: number) => list.forEach((p, i) => {
+    const value = "value" in p ? p.value : undefined;
+    const state = stateOf(p);
+    const wall = state && NOT_CONTENT[state.kind];
     const notes = [
       `${p.ms} ms`,
       ...("from" in p && p.from ? [p.from] : []),
       ...("retried" in p && p.retried ? [`loaded again ${p.retried === 1 ? "once" : `${p.retried} times`} after its error page`] : []),
+      ...("reopened" in p && p.reopened ? ["read in a new tab after Safari barred the first"] : []),
       ...("challenge" in p && p.challenge ? [`challenge: ${JSON.stringify(p.challenge)}`] : []),
       ...(p.closeError ? [`not closed: ${p.closeError}`] : []),
       ...("unread" in p && p.unread ? [`${p.unread} more matching links past max`] : []),
+      // a read prints its own state; an eval's value has none
+      ...(state && wall && !(value && typeof value === "object" && "pageState" in value) ? [`${wall} page: ${state.next}`] : []),
     ];
-    const value = "value" in p ? p.value : undefined;
     const titled = !!value && typeof value === "object" && "title" in value;
     const head = `${level} ${p.title && !titled ? `${defused(p.title)} — ` : ""}${p.url} (${notes.join("; ")})`;
     const sep = i > 0 ? "\n\n" : depth > 0 ? "\n" : "";
-    if (!p.ok) return rows.push({ page: p, depth, head, body: `error: ${p.error}${value === undefined ? "" : `\n${format(value)}`}`, sep });
-    if (!("items" in p)) return rows.push({ page: p, depth, head, body: format(p.value), sep });
+    if (!p.ok) return rows.push({ page: p, depth, head, body: `${left.has(p.url) ? "not read" : "error"}: ${p.error}${value === undefined ? "" : `\n${format(value)}`}`, sep });
+    if (!("items" in p)) return rows.push({ page: p, depth, head, body: format(p.value), sep, ...(wall ? { wall } : {}) });
     rows.push({ page: p, depth, head, body: p.items.length ? "" : "no page of its own: its links were read above, or are past max", sep });
     add(p.items, `${level}#`, depth + 1);
   });
   add(answer.pages, "##", 0);
-  const read = rows.filter((r) => r.page.ok).length;
+  const walls = rows.flatMap((r) => (r.wall === undefined ? [] : [r.wall]));
+  const unread = rows.filter((r) => !r.page.ok && left.has(r.page.url)).length;
+  const failed = rows.filter((r) => !r.page.ok).length - unread;
+  const read = rows.length - failed - unread - walls.length;
+  const apart = walls.length ? `${walls.length} not content (${[...new Set(walls)].map((w) => `${w} ${walls.filter((x) => x === w).length}`).join(", ")}), ` : "";
   const kept = rows.filter((r) => "from" in r.page && r.page.from).length;
   const top = [
     ...(rows.length > 1 || answer.urls?.length || answer.index
-      ? [`${rows.length} page${rows.length === 1 ? "" : "s"}: ${read} read, ${rows.length - read} failed${kept ? `; ${kept} from this task's reads of the last 10 minutes (fresh: true reads them again)` : ""}`]
+      ? [`${rows.length} page${rows.length === 1 ? "" : "s"}: ${read} read, ${apart}${failed} failed${unread ? `, ${unread} not read` : ""}${kept ? `; ${kept} from this task's reads of the last 10 minutes (fresh: true reads them again)` : ""}`]
       : []),
     ...(answer.index ? [`index: ${answer.index}`] : []),
     ...(answer.urls?.length
-      ? [`not read: ${answer.urls.length} (past max, or when map's ${BUDGET_MS / 1000} s ran out); map ${answer.urls.length > MAP_MAX_URLS ? `the first ${MAP_MAX_URLS}` : "them"} next: ${JSON.stringify({ urls: answer.urls.slice(0, MAP_MAX_URLS) })}`]
+      ? [`map ${answer.urls.length > MAP_MAX_URLS ? `the first ${MAP_MAX_URLS}` : "them"} next (past max, no answer in time, or past map's ${BUDGET_MS / 1000} s): ${JSON.stringify({ urls: answer.urls.slice(0, MAP_MAX_URLS) })}`]
       : []),
   ];
   const text = (bodies: string[], lines: string[]) => [...(lines.length ? [`${lines.join("\n")}\n\n`] : []), ...rows.map((r, i) => `${r.sep}${r.head}${bodies[i] ? `\n${bodies[i]}` : ""}`)].join("");
@@ -682,7 +776,7 @@ export function mapText(answer: MapAnswer, format: (value: unknown) => string, m
   });
   const index = rows.map((r, i) => {
     const p = r.page;
-    const state = !p.ok ? `failed: ${p.error.length > 120 ? `${p.error.slice(0, 120)}…` : p.error}` : "items" in p ? `listing, ${p.items.length} links read` : `read, ${sizes[i].of}${sizes[i].saved}`;
+    const state = !p.ok ? `${left.has(p.url) ? "not read" : "failed"}: ${p.error.length > 120 ? `${p.error.slice(0, 120)}…` : p.error}` : "items" in p ? `listing, ${p.items.length} links read` : `${r.wall ? `${r.wall} page` : "read"}, ${sizes[i].of}${sizes[i].saved}`;
     return `${"  ".repeat(r.depth)}- ${p.url}: ${state}`;
   });
   const lines = [...top, `each page below is cut to its share of ${max} characters:`, ...index];

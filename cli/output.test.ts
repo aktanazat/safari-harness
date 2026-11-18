@@ -116,7 +116,7 @@ test("status tells a daemon that is not running from one that answered an error,
   expect(stuck.code).toBe(0);
   const [daemonLine, extensionLine, , ...events] = stuck.out.split("\n");
   expect(daemonLine).toBe("daemon 4242, 1 call(s) in flight");
-  expect(extensionLine).toBe("extension stuck: connected, but its calls time out (snapshot 3 in a row), last answered 95 s ago; run: safari extension reload");
+  expect(extensionLine).toBe("extension stuck: connected, but its calls time out (snapshot 3 in a row), last answered 95 s ago; the next call that needs it reloads it by itself; if that call fails too, quit Safari and open it again");
   expect(events).toHaveLength(1);
   expect(events[0]).toMatch(/ {2}stuck {2}\{"op":"snapshot"\}$/);
 });
@@ -163,6 +163,14 @@ test("window --size sets both sides, open --id prints the id alone, and open --t
   expect(invalidTab).toMatchObject({ out: "", code: 2 });
   expect(invalidTab.err).not.toBe("");
   expect(calls).toEqual([]);
+});
+
+// On 11-16 two opens in a script returned one tab's id twice, the second
+// open having reused the first's tab, and --id kept the note that said so.
+test("open --id prints the id alone on stdout and a reused tab's note on stderr", async () => {
+  const note = "loaded in your tab 13608 on shop.example, in place of https://shop.example/a; new: true opens a second tab";
+  answers = { open: { ok: true, value: { id: 13608, url: "https://shop.example/b", note } } };
+  expect(await safari(["open", "https://shop.example/b", "--id"])).toEqual({ out: "13608", err: `note: ${note}`, code: 0 });
 });
 
 test("upload sends files named relative to where it runs as whole paths, given bare or with --paths", async () => {

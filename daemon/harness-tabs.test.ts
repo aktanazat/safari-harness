@@ -467,25 +467,26 @@ test("a restart preserves the idle deadline while a recently used page remains o
   expect(Object.keys(saved.tabs).filter(tab => tab === "9021" || tab === "9022").sort()).toEqual(["9022"]);
 });
 
-// On 10-07 a tire-price agent held 42 tabs in his Safari within one turn.
-test("opening a ninth tab preserves unfinished work until admitted cleanup", async () => {
+// On 10-07 a tire-price agent held 42 tabs in his Safari within one turn,
+// and on 11-16 agents left 133 tabs in 37 windows, which stalled Safari.
+test("opening a fifth tab closes its agent's least recently used tab", async () => {
   const agent = Bun.spawn(["sleep", "60"]);
   const as = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
   const tabs: number[] = [];
-  for (let n = 0; n < 8; n++) {
+  for (let n = 0; n < 4; n++) {
     await as("open", { url: `https://shop${n}.example/`, background: true });
     tabs.push(nextTab);
   }
   showing = tabs.map((id, n) => ({ id, url: `https://shop${n}.example/` }));
   // the first is used again, so the second is the least recently used
   await as("info", { tab: tabs[0] });
-  await as("open", { url: "https://shop8.example/", background: true });
-  await endTurn(agent.pid + 1);
-  expect(tabs.map(tab => gone.has(tab))).toEqual(Array(8).fill(false));
-  expect(await as("info", { tab: tabs[1] })).not.toHaveProperty("note");
+  await as("open", { url: "https://shop4.example/", background: true });
+  const fifth = nextTab;
+  for (let i = 0; i < 100 && !gone.has(tabs[1]); i++) await Bun.sleep(5);
+  expect([...tabs, fifth].map(tab => gone.has(tab))).toEqual([false, true, false, false, false]);
   agent.kill();
   await endTurn(agent.pid);
-  await closedAs([tabs[0]]);
+  await closedAs([tabs[0], tabs[2], tabs[3], fifth]);
   showing = [];
 });
 
@@ -534,4 +535,75 @@ test("an agent's tab called every 30 s keeps its last use in the daemon's file o
   await endTurn(agent.pid);
   await closedAs([tab]);
   expect(Math.max(...behind)).toBeLessThanOrEqual(60_000);
+});
+
+// 11-16: keep answered ok for tab 2275611, which Safari had not had for 32
+// hours, and the activate right after it failed (LOCK#1915).
+test("keep refuses a tab Safari no longer has, and keeps one it has", async () => {
+  const agent = keeper();
+  const as = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
+  await as("open", { url: "https://kept.example/", background: true });
+  const tab = nextTab;
+  await expect(as("keep", { tab: 2275611 })).rejects.toMatchObject({ code: "stale_view", effect: "none", message: expect.stringContaining("that tab is gone") });
+  expect(await as("keep", { tab })).toEqual({ ok: true });
+  agent.kill();
+});
+
+// On 11-17 keep answered ok for a tab its agent's exit had closed, and the
+// agent told the user the page was left open for him.
+test("keep of a tab Safari no longer shows fails and keeps nothing", async () => {
+  showing = [];
+  await expect(callTool("keep", { tab: 98765 })).rejects.toThrow(/^that tab is gone: .*; nothing was kept/);
+});
+
+// On 11-16 shot, eval and wait with tab "latest" failed 3 times in one
+// session, as run's description says a step without a tab takes the
+// latest opened or named (WorkMining).
+test('tab "latest" names the calling agent\'s tab it opened or named last, never another agent\'s', async () => {
+  const [agent, other] = [Bun.spawn(["sleep", "60"]), Bun.spawn(["sleep", "60"])];
+  const as = (pid: number, tool: string, args: Record<string, unknown>) => runAs(pid, () => callTool(tool, args));
+  await as(agent.pid, "open", { url: "https://first.example/", background: true });
+  const first = nextTab;
+  await as(agent.pid, "open", { url: "https://second.example/", background: true });
+  const second = nextTab;
+  showing = [{ id: first, url: "https://first.example/" }, { id: second, url: "https://second.example/" }];
+  expect(await as(agent.pid, "resolve_tab", { tab: "latest" })).toEqual({ tab: second });
+  await as(agent.pid, "info", { tab: first });
+  relays.length = 0;
+  await as(agent.pid, "extract", { tab: "latest" });
+  expect(relays.map((r) => r[0])).toContain(first);
+  expect(relays.map((r) => r[0])).not.toContain(second);
+  await expect(as(other.pid, "resolve_tab", { tab: "latest" })).rejects.toThrow("you have none open");
+  agent.kill();
+  other.kill();
+  await endTurn(agent.pid);
+  await closedAs([first, second]);
+  showing = [];
+});
+
+// Review, 11-17: once an idle close took the newest tab, "latest" named
+// an older one an unsent form had kept open, and a click went there.
+test('tab "latest" still names the agent\'s newest tab after an idle close took it, never an older one left open', async () => {
+  const agent = Bun.spawn(["sleep", "60"]);
+  const as = (tool: string, args: Record<string, unknown>) => runAs(agent.pid, () => callTool(tool, args));
+  await as("open", { url: "https://form.example/", background: true });
+  const form = nextTab;
+  await as("type", { tab: form, ref: "1", text: "unsent" });
+  await as("open", { url: "https://newest.example/", background: true });
+  const newest = nextTab;
+  showing = [{ id: form, url: "https://form.example/" }, { id: newest, url: "https://newest.example/" }];
+  setSystemTime(new Date(Date.now() + 3 * 60_000));
+  try {
+    await endTurn(Bun.spawnSync(["true"]).pid);
+    expect([gone.has(form), gone.has(newest)]).toEqual([false, true]);
+    relays.length = 0;
+    await expect(as("click", { tab: "latest", ref: "1" })).rejects.toThrow("snapshot it, then act");
+    expect(relays.filter((r) => r[1] === "click")).toEqual([]);
+  } finally {
+    setSystemTime();
+    agent.kill();
+    forms.delete(form);
+    await endTurn(agent.pid);
+    showing = [];
+  }
 });

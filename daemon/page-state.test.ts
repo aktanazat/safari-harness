@@ -226,6 +226,150 @@ test.each(fixtures.map(({ name, ...fixture }) => [name, fixture] as const))("%s 
   expect(classifyPage(facts)).toMatchObject({ kind, next: expect.stringMatching(/\S/) });
 });
 
+// Pages as agents' reads met them between 11-09 and 11-16 (the audit of
+// 11-16; each name ends with the call that read it), with the state each
+// should have had: walls and pages still loading were judged content and
+// counted as read. A real article, a page not found, and a short robots.txt
+// keep their state.
+const audited: { name: string; facts: PageFacts; kind: PageKind }[] = [
+  {
+    name: "ServiceNow's docs before their app loads, saved by map (LOCK#1312)",
+    facts: { url: "https://www.servicenow.com/docs/", title: "Docs | ServiceNow", text: "Loading application...\n\niframe:\nready" },
+    kind: "loading",
+  },
+  {
+    name: "Slack's interstitial on the way to its app, the workspace's name changed (LOCK#563)",
+    facts: { url: "https://acme.slack.com/archives/C0000000000/p1787602975173769", title: "Redirecting… | Slack", text: "Launching Acme\n\nYou will be redirected in a few moments.\nYou can also open this link in your browser." },
+    kind: "loading",
+  },
+  {
+    name: "Type Network's font page with its styles still loading (BERK#185)",
+    facts: { url: "https://store.typenetwork.com/foundry/djr/fonts/input-mono", title: "Input · DJR · Buy Fonts · DJR · Buy Fonts · Type Network", text: "Fonts Stories\nShow filters\n\nLoading styles...\nAbout Type Network Help and Support\n\n© Copyright Type Network 2026. All Rights Reserved." },
+    kind: "loading",
+  },
+  {
+    name: "SAP's sign-in page, whose field no rule knew (LOCK#1284)",
+    facts: { url: "https://accounts.sap.com/oauth2/authorize?client_id=a25bb10e-9f04-4def-8bb7-75fce5390b8c&response_type=code&scope=email+openid+profile", title: "SAP Business Accelerator Hub: Sign In", text: "Sign In\nSAP Business Accelerator Hub\nEmail, User ID or Login Name\n\nDon't have a SAP ID?\nRegister\n\nContinue" },
+    kind: "login_wall",
+  },
+  {
+    name: "RapidAPI's sign-in page (LOCK#1865)",
+    facts: { url: "https://rapidapi.com/auth/login?referral=%2Fuser%2Fherosapi", title: "API Hub", text: "Log in to your account\nLogin with Github\nLogin with Google\nBy pressing the button you agree to our Terms of Service and to our Privacy Policy, and you certify that the information provided is complete and correct.\nor\nEmail\nPassword*\nForgot Password\nLog in\n\nDon't have an account? Sign Up\n\nHaving trouble? Contact support" },
+    kind: "login_wall",
+  },
+  {
+    name: "Exa's sign-in page beside a JSON sample (LOCK#1875)",
+    facts: { url: "https://auth.exa.ai/?callbackUrl=https%3A%2F%2Fdashboard.exa.ai%2Fbilling", title: "Exa Login", text: "Start building with Exa\n\nSign in, or create a free account in seconds.\n\nContinue with Google\nOR\nContinue with email\n\nBy using Exa, you agree to Exa's Terms of Service and Privacy Policy.\n\nSign in with SSO\n\nIf you are part of a team, please contact your team's administrator for an invite link.\n\nresults = exa.search(\n\"recent breakthroughs in nuclear fusion\"\n)\n{\n\"results\": [\n{\n\"id\": \"https://interestingengineering.com/energy/chinese-tokamak-achieves-hydrogen-boron-fusion-with-100-million-reactions-a-second\",\n\"title\": \"China reaches 100 million hydrogen-boron fusion reactions per second\",\n\"url\": \"https://interestingengineering.com/energy/chinese-tokamak-achieves-hydrogen-boron-fusion-with-100-million-reactions-a-second\",\n\"publishedDate\": \"2026-09-30T01:02:51.000Z\",\n\"author\": \"Georgina Jedikovska\"\n},\n{\n\"id\": \"https://energyinnovationreview.com/2026/09/24/diii-d-fusion-team-cracks-the-heat-wall-puzzle/\",\n\"title\": \"DIII-D fusion team cracks the heat-wall puzzle - Energy Innovation Review\",\n\"url\": \"https://energyinnovationreview.com/2026/09/24/diii-d-fusion-team-cracks-the-heat-wall-puzzle/\",\n\"publishedDate\": \"2026-09-24T00:00:00.000Z\",\n\"author\": \"Isaac Turner\"\n}\n]\n}" },
+    kind: "login_wall",
+  },
+  {
+    name: "Keenable's sign-in page with only provider buttons (LOCK#1876)",
+    facts: { url: "https://app.keenable.ai/login?redirect=%2Fconsole%2Foverview", title: "Console | Keenable", text: "Search\nfor AI agents\n\nLog in to Keenable\n\nUse the same method you signed up with.\n\nContinue with Google\nContinue with GitHub\nor\nContinue with email\n\nNew to Keenable? Create an account\n\nCookie settings" },
+    kind: "login_wall",
+  },
+  {
+    name: "Tako's sign-in page (LOCK#1876)",
+    facts: { url: "https://tako.com/login?redirect=%2Fconsole", title: "Tako Login", text: "Get started with Tako\nContinue with Google\n\nContinue with email\nSign in with password\n\nBy logging in, you agree to our Terms of Service and Privacy Policy." },
+    kind: "login_wall",
+  },
+  {
+    name: "Perplexity's API console sign-in page (LOCK#1877)",
+    facts: { url: "https://console.perplexity.ai/auth/login?redirectUrl=%2Fproject%2Fbilling", title: "API Platform", text: "API Platform\n\nLogin or sign up for free\n\nContinue with Google\nContinue with Apple\nSingle sign-on (SSO)\nContinue with email" },
+    kind: "login_wall",
+  },
+  {
+    name: "You.com's sign-in page (LOCK#1877)",
+    facts: { url: "https://you.com/signin?redirectUrl=%2Fplatform%2Fbilling", title: "You.com | Search and inference for AI", text: "Sign in\n\nContinue\n\nor\n\nSign in with Google\n\nContinue with Github\n\nContinue with Apple\n\nContinue with Single Sign-On\n\nBy using you.com, you agree to our Terms & Privacy Policy" },
+    kind: "login_wall",
+  },
+  {
+    name: "UKG's firewall rate limit, the address it named changed (LOCK#1363)",
+    facts: { url: "https://developer.ukg.com/wfm/reference/retrieve-timecards-as-employee", title: "You’ve been rate limited", text: "You’ve been rate limited\n\nYour requests have been rate limited by our firewall! This should almost never happen, so email our support and we can help out.\n\nYour IP: 2001:db8::1\nRay ID: a59b46288e1c7c8f" },
+    kind: "error",
+  },
+  {
+    name: "Harvard's firewall under heavy load (RSI#747)",
+    facts: { url: "https://dash.harvard.edu/bitstreams/7312037c-eb3a-6bd4-e053-0100007fdf3b/download", title: "", text: "WEB FIREWALL · 429\nThe service is under heavy load\n\nOur protection has temporarily kicked in, so this request could not be served right now.\n\nTo reach the resource, you can:\n\nLog in, then open the item again, or\ngo back to the home page and search for the item from there, without opening a new tab.\n\nPlease avoid reloading this page repeatedly: it keeps the protection active." },
+    kind: "error",
+  },
+  {
+    name: "Oxford Academic's offer of an article with no abstract (RSI#869)",
+    facts: { url: "https://academic.oup.com/ajcl/article-abstract/51/1/163/2571697", title: "Transplant Effect | The American Journal of Comparative Law | Oxford Academic", text: "Article Navigation\nJOURNAL ARTICLE\nThe Transplant Effect Get access\nDaniel Berkowitz , Katharina Pistor , Jean-Francois Richard\nThe American Journal of Comparative Law, Volume 51, Issue 1, Winter 2003, Pages 163–204, https://doi.org/10.2307/3649143\nPublished: 01 January 2003\nCite\nPermissions\nArticle PDF first page preview\n\nThis content is only available as a PDF.\n© 2003 by The American Society of Comparative Law, Inc.\nIssue Section: Articles\nYou do not currently have access to this article.\nSign in\nGet help with access\nPersonal account\nSign in with email/username & password\nGet email alerts\nSave searches\nPurchase content\nActivate your purchase/trial code\nAdd your ORCID iD\nSign in\nRegister\nInstitutional access\nSign in through your institution\nSign in through your institution\nSign in with a library card\nSign in with username/password\nRecommend to your librarian\nInstitutional account management\nSign in as administrator\nPurchase\nSubscription prices and ordering for this journal\nPurchasing options for books and journals across Oxford Academic\nShort-term Access\n\nTo purchase short-term access, please sign in to your personal account above.\n\nDon't already have a personal account? Register\n\nThe Transplant Effect - 24 Hours access\nEUR €39.00 GBP £33.00 USD $43.00\nRental\n\nThis article is also available for rental through DeepDyve." },
+    kind: "paywall",
+  },
+  {
+    name: "The Lancet's abstract beside its Get Access button, as far as the read kept it (RSI#829)",
+    facts: { url: "https://www.thelancet.com/journals/lancet/article/PIIS0140-6736(96)05122-7/abstract", title: "The discrepancy in discrepant analysis - The Lancet", text: "ARTICLESVolume 348, Issue 9027P592-593August 31, 1996\n\nDownload Full Issue\nThe discrepancy in discrepant analysis\nAlula Hadgu, DPha\nAffiliations & Notes\n\na\n\nCenters for Disease Control and Prevention, Center for HIV, STD, and TB prevention, Division of STD Prevention, 1600 Clifton Road, Mailstop E63, Atlanta, GA 30333\n\nArticle Info\n\nPublication History:\n\nPublished August 31, 1996\n\nDOI: 10.1016/S0140-6736(96)05122-7\n\nAlso available on ScienceDirect\n\nCopyright: © 1996 Elsevier Ltd. Published by Elsevier Ltd.\n\nGet Access\nOutline\n\nShare\nMore\nSummary\nDiscrepant analysis is a widely used technique that attempts to provide estimates of sensitivity and specificity in the presence of an imperfect gold-standard. This technique has been applied by many researchers to estimate the sensitivity and specificity of DNA-amplification tests for Chlamydia trachomatis such as the plasmid-based ligase chain-reaction and polymerase chain-reaction tests. However, the sensitivity and specificity estimates obtained by discrepant analysis are upwardly biased, and this bias remains even when a perfect test is used to resolve the discrepant results. " },
+    kind: "content",
+  },
+  {
+    name: "dokumen.tips's 199-character robots.txt (LOCK#1715, #1719)",
+    facts: { url: "https://dokumen.tips/robots.txt", title: "", text: "User-agent: *\nDisallow: /wp-admin/\nAllow: /wp-admin/admin-ajax.php\n\nSitemap: https://dokumen.tips/wp-sitemap.xml\n\nSitemap: https://dokumen.tips/sitemap.xml\nSitemap: https://dokumen.tips/sitemap.html\n" },
+    kind: "content",
+  },
+  {
+    name: "Grilli Type's page not found (BERK#185)",
+    facts: { url: "https://www.grillitype.com/typeface/gt-america/buy", title: "GT – 404 Page Not Found", text: "Grilli Type\nMenuClose\nTypefaces\nFree Trials\nCommissions\nBlog\nInformation\nAbout\nLogin\nSorry, we couldn’t find the page you were looking for.\nInformation\nAbout us\nCustom fonts\nRetail fonts\nLicensing\nPayment\nFree trial fonts\nFonts in use\nPrivacy Policy\nContact\nEmail\nInstagram\nTwitter\nFacebook\nNewsletter\nTypefaces\nGT Mechanik\nGT Canon\nGT Era\nGT Standard\nGT Flaire\nGT Pantheon\nGT America Intl\nGT Pressura\nGT Planar\nGT Ultra\nGT Maru\nGT Flexa\nGT Alpina\nGT Zirkon\nGT Super\nGT Walsheim\nGT America\nGT Eesti\nGT Cinetype\nGT Haptik\nGT Sectra\nAbout us\nGrilli Type\noffers original retail and custom typefaces with a contemporary aesthetic in the Swiss tradition." },
+    kind: "error",
+  },
+  {
+    name: "a host's 503 page in place of a robots.txt (LOCK#1717)",
+    facts: { url: "https://ukgdocs.sisaacson.io/robots.txt", title: "Site not available", text: "503 Service Unavailable\n\nThis site is not available at the moment\n\nukgdocs.sisaacson.io cannot answer your request right now. Please try again later.\n\nAre you the site owner?\nThe domain is not configured on a resource in Coolify, or its DNS points to another server.\nThe application is stopped, still deploying, or has crashed.\nThe application health check is failing.\nRead the troubleshooting guide" },
+    kind: "error",
+  },
+  {
+    name: "a reference page about a status code, headed by it",
+    facts: { url: "https://docs.example/http/status/503", title: "503 Service Unavailable - HTTP | Example Docs", text: `h1 "503 Service Unavailable"\n${articleText}` },
+    kind: "content",
+  },
+  {
+    name: "a help article on an accounts host",
+    facts: { ...article, url: "https://accounts.example/help/recover", title: "Recovering your account" },
+    kind: "content",
+  },
+  {
+    name: "a short article on a sign-in path that names signing in",
+    facts: { url: "https://docs.example/auth/login", title: "Login | Example Docs", text: `h1 "Login"\n${articleText}\n[1] button "Continue"` },
+    kind: "content",
+  },
+  // False positives the pre-ship review of these rules reproduced.
+  {
+    name: "a coming-soon page that says it is launching",
+    facts: { url: "https://acme.example/", title: "Acme", text: "Acme\nLaunching soon\nThe calendar that plans itself.\nJoin the waitlist" },
+    kind: "content",
+  },
+  {
+    name: "a page that names the year it launches",
+    facts: { url: "https://acme.example/", title: "Acme", text: "Acme\nLaunching 2027\nContact" },
+    kind: "content",
+  },
+  {
+    name: "a leaving-our-site page that asks before it redirects",
+    facts: { url: "https://bank.example/leaving?to=https%3A%2F%2Fpartner.example%2F", title: "Leaving our site", text: "You will be redirected to a third-party website…\nContinue\nCancel" },
+    kind: "content",
+  },
+  {
+    name: "a short docs page on signing in, with a nav sign-in link and a Continue button",
+    facts: { url: "https://docs.example.com/guides/auth", title: "Authentication | Acme Docs", text: 'navigation\n  [1] link "Docs"\n  [2] link "Sign in"\nh1 "Authentication"\nUse an API key or OAuth.\nSee the token guide.\n[3] button "Continue"' },
+    kind: "content",
+  },
+  {
+    name: "an API reference page on its login call, judged by its title alone as map judges an eval's page",
+    facts: { url: "https://docs.example.com/reference/login", title: "Login - API Reference", text: "Login - API Reference" },
+    kind: "content",
+  },
+];
+
+test.each(audited.map(({ name, ...fixture }) => [name, fixture] as const))("%s has the state it should have had", (_name, { facts, kind }) => {
+  expect(classifyPage(facts)).toMatchObject({ kind, next: expect.stringMatching(/\S/) });
+});
+
+test("a page that says the site rate-limited this browser says to wait before reading it again", () => {
+  const ukg = audited.find((fixture) => fixture.name.includes("LOCK#1363"));
+  expect(ukg && classifyPage(ukg.facts)).toEqual({ kind: "error", next: "the site rate-limited this browser; wait a few minutes before reading it again, then read its pages one at a time." });
+  expect(classifyPage({ url: "https://api.example/", title: "", status: 429 }).next).toStartWith("the site rate-limited this browser");
+});
+
 test("a browser block does not pretend a human can clear it", () => {
   expect(classifyPage({ url: "https://news.example/", title: "Blocked", challenge: { kind: "cloudflare", where: "block" } })).toMatchObject({ kind: "error", next: expect.stringMatching(/report the block.*do not bypass/i) });
 });

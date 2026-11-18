@@ -280,12 +280,23 @@
     try { href = new URL(href, document.baseURI).href; } catch {}
     return cut(href, URL_MAX);
   };
-  const record = (entry, start) => {
+  // The requests that failed, kept apart from the log for an action's
+  // receipt (earlier, below): a page that polls pushes a failure out of the
+  // log's 100 within a minute, as Robinhood's did (10-07). One the page
+  // cancelled itself (an AbortController's abort, an XHR's abort()) did
+  // not fail.
+  const FAILURES_MAX = 20;
+  const failures = [];
+  const record = (entry, start, cancelled = false) => {
     if (!net.on) return false;
     entry.ms = Math.round(performance.now() - start);
     entry.t = Date.now();
     net.log.push(entry);
     if (net.log.length > LOG_MAX) net.log.shift();
+    if (!cancelled && (entry.error !== undefined || entry.status >= 400)) {
+      failures.push(entry);
+      if (failures.length > FAILURES_MAX) failures.shift();
+    }
     return true;
   };
 
@@ -353,7 +364,7 @@
       return res;
     }, (e) => {
       flying.delete(entry);
-      try { record({ ...entry, error: String(e) }, start); } catch {}
+      try { record({ ...entry, error: String(e) }, start, e?.name === "AbortError"); } catch {}
       throw e;
     });
   });
@@ -363,6 +374,7 @@
   // still there to read).
   const xhrs = new WeakMap(); // request -> { entry, start, url } from open
   const listening = new WeakSet();
+  const aborted = new WeakSet(); // entries of requests the page aborted
   const ended = (xhr) => {
     const req = xhrs.get(xhr);
     if (!req || req.start === null) return;
@@ -372,7 +384,7 @@
     const answered = xhr.readyState === 4 && xhr.status > 0;
     if (answered) entry.status = xhr.status;
     else entry.error = "no response";
-    if (!record(entry, start) || !answered) return;
+    if (!record(entry, start, aborted.has(entry)) || !answered) return;
     const type = xhr.responseType;
     if ((type === "" || type === "text") && textual(xhr.getResponseHeader("content-type"))) {
       const text = xhr.responseText;
@@ -396,6 +408,7 @@
           listening.add(self);
           // a loadend after the page opened the request again is the old one's
           Reflect.apply(listen, self, ["loadend", () => { try { if (self.readyState === 4) ended(self); } catch {} }]);
+          Reflect.apply(listen, self, ["abort", () => { const req = xhrs.get(self); if (req) aborted.add(req.entry); }]);
         }
       }
     } catch {}
@@ -423,6 +436,7 @@
   document.addEventListener("__sh_net_off", () => {
     net.on = false;
     net.log.length = 0;
+    failures.length = 0;
     kept.length = 0;
     swap(ours, plain);
   });
@@ -474,7 +488,9 @@
   // not catch, which are kept whether the log is on or not, when the
   // timers it set that are still set run next, and how many images given
   // an address and WebSocket messages sent are still without their load,
-  // error, or answer. The answer goes back within the ask.
+  // error, or answer. Asked with recent, it adds the requests that failed
+  // and the errors thrown in the recent ms before. The answer goes back
+  // within the ask.
   const ERRORS_MAX = 20;
   const errors = (state.errors = []); // { t, message }; console read shows them too (pageCapture in background.js)
   const thrown = (message) => {
@@ -516,13 +532,21 @@
   });
   document.addEventListener("__sh_receipt_ask", (e) => {
     let since;
-    try { since = JSON.parse(e.detail).since; } catch { return; }
+    let recent;
+    try { ({ since, recent } = JSON.parse(e.detail)); } catch { return; }
+    const from = since - (recent ?? 0);
     tell("__sh_receipt_answer", {
       requests: net.on ? net.log.filter((x) => x.t - x.ms >= since).map(({ method, url, status, error }) => ({ method, url, status, error })) : null,
       pending: net.on ? [...flying].filter(([, t]) => t >= since).map(([x]) => ({ method: x.method, url: x.url })) : null,
       errors: errors.filter((x) => x.t >= since).map((x) => x.message),
       timers: [...timers.values()].filter((t) => t.set >= since).map((t) => Date.now() + t.due - performance.now()),
       loads: [...loads.values()].filter((t) => t >= since).length,
+      ...(recent ? {
+        earlier: {
+          requests: failures.filter((x) => x.t >= from && x.t - x.ms < since).map(({ method, url, status, error }) => ({ method, url, status, error })),
+          errors: errors.filter((x) => x.t >= from && x.t < since).map((x) => x.message),
+        },
+      } : {}),
     });
   });
 })();
