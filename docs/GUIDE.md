@@ -41,7 +41,11 @@ after a compaction. Details, one section at a time:
   background (omp `async: true`); its result arrives by itself: never poll
   it, and never loop on `status`, `doctor`, or `guide`.
 - Read the whole output. Narrow with `query` or `root`, never `| head`,
-  `| grep`, `sed`, or `>/dev/null`, which hide a failed call.
+  `| grep`, `sed`, or `>/dev/null`, which hide a failed call. A CLI step
+  whose answer you do not need takes `-q`: silent when it works, one line
+  and exit 1 when it misses.
+- Screenshots of pages at several widths: one `shots` call (`safari shots
+  --widths 390,1440 --out DIR URL...`), not a loop of `window` and `shot`.
 - A ref is the number alone: `safari click 15 --tab N` (in zsh an
   unquoted `[15]` is a file pattern and the command never runs).
 
