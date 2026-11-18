@@ -187,7 +187,8 @@ const USAGE = `safari — drive Safari from the terminal
                                              each page shown (--save keeps all),
                                              --wait '{"text":"Price"}' before each read,
                                              --follow '{"match":"a.item"}' to read the
-                                             pages a listing links to, --fresh to read
+                                             pages a listing links to, --pages 5 to read a
+                                             listing and its next pages, --fresh to read
                                              pages this task read in the last 10 min again)
   safari pdf [save|read] [file.pdf|url] [--out file.pdf] [--tab N]
                                              print the page to PDF, or read a PDF

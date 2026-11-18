@@ -22,7 +22,7 @@ import { addressedNote, cutFenced, defused, fence, shieldChat, shieldExtract, sh
 import { firstNotes, learn, pageHost, readerFor, readersOn, realInputSite, realInputSites } from "./notes.ts";
 import { errorPage, guideFor } from "./site-guides.ts";
 import { saveAnswer, saveOutput, SAVED_CHARS, targetOf, withLimit, type SaveKind } from "./save.ts";
-import { followPages, mapPages, mapText, MAP_MAX_URLS, type Listing, type MapAnswer, type Page } from "./map.ts";
+import { followPages, mapPages, mapText, MAP_MAX_URLS, pagedPages, type Listing, type MapAnswer, type Page } from "./map.ts";
 import { met, walled } from "./reads.ts";
 import { beside, checkCall, checkStep, fromModel, guard, type Checked } from "./guard.ts";
 import { acts, affectsPage, inLane, ordered, queuing } from "./lanes.ts";
@@ -4148,12 +4148,13 @@ export const TOOLS: Record<string, Tool> = {
       concurrency: { type: "number", description: "default 4 (max), the agent's tab limit" },
       save: { description: "true or an absolute folder: a file per page" },
       follow: { type: "object", description: `links matching CSS or /regex/, max ${MAP_MAX_URLS}` },
+      pages: { type: "number", description: "each url a listing: read it and its next pages, up to this many each" },
       fresh: { type: "boolean", description: "ignore this task's reads of the last 10 min" },
     },
     required: ["urls"],
     // The model's map call was checked (guard.ts); its opens, waits, reads,
     // and closes are the harness's, and pass each read the options map has.
-    run: async (a) => mapOffer(a, await (a.follow === undefined ? mapPages : followPages)(a, (tool, args) => callTool(tool, args, false))),
+    run: async (a) => mapOffer(a, await (a.pages !== undefined ? pagedPages : a.follow === undefined ? mapPages : followPages)(a, (tool, args) => callTool(tool, args, false))),
   },
   info: { desc: "URL, title, load state, and scroll position of a tab.", params: { tab: TAB }, required: ["tab"], run: (a) => tabInfo({ tab: a.tab as number | undefined }) },
   wait: {

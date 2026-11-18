@@ -73,7 +73,8 @@ type Outcome = ({ ok: true; value: unknown; pageState?: PageState } | { ok: fals
 // a new tab after Safari barred the extension from the first; from: whose
 // read of this task's it is (reads.ts). A failed page's value is what an
 // error page read.
-export type Page = Outcome & { url: string; finalUrl?: string; title?: string; ms: number; closeError?: string; retried?: number; reopened?: true; from?: string };
+// paged: its place in a listing map read page by page (pagedPages).
+export type Page = Outcome & { url: string; finalUrl?: string; title?: string; ms: number; closeError?: string; retried?: number; reopened?: true; from?: string; paged?: { n: number; of: string } };
 type Call = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
 // What map does with each page: what it waits for (and how a miss names
 // it), the read, its arguments, where to save it, whether to load it
@@ -81,8 +82,10 @@ type Call = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
 type Job = { wait?: Record<string, unknown>; waited?: string; read: SaveKind; args: Record<string, unknown>; target?: Target; fresh?: boolean; key?: string; readOnly?: true; call: Call };
 type Opened = { id?: number; url?: string; title?: string; challenge?: Challenge; ok?: boolean; warning?: string; file?: string; note?: string };
 // What map answers: its pages; the addresses it did not read (past follow's
-// max, or past its 50 s), for the next map; the folder's index.json.
-export type MapAnswer = { pages: (Page | Listing)[]; urls?: string[]; index?: string; note?: string };
+// max, or past its 50 s), for the next map; the folder's index.json; with
+// pages, each listing's next page left unread, for a map with the same
+// arguments.
+export type MapAnswer = { pages: (Page | Listing)[]; urls?: string[]; next?: string[]; index?: string; note?: string };
 // A reader's tab (readAll): the address of the page it shows, as map last
 // read it, and that page, which a close that fails is told on.
 type Warm = { tab?: number; at?: string; last?: Page };
@@ -366,9 +369,13 @@ function linksIn(match: string | RegExp): string {
   return `({ links: ${links}, next: (${NEXT_PAGE})(${typeof match === "string" ? `sh.q(${JSON.stringify(match)})` : "null"}) })`;
 }
 
+// A carousel's or slider's arrows say next too, and lead to its next
+// slide's link, not the list's next page. A blog's next page says older.
+const SAYS_NEXT = String.raw`(a) => !a.closest("[aria-roledescription~=carousel i], [class*=carousel i], [class*=slider i], [class*=swiper i], [class*=slick i]") && (/^(?:next(?: page)?|older(?: posts| entries)?|[›»→])(?:\s*[›»→>])?$/i.test(a.textContent.trim()) || /\bnext\b/i.test(a.getAttribute("aria-label") ?? "") || /(?:^|[\s_-])next(?:$|[\s_-])/i.test(a.getAttribute("class") ?? ""))`;
+
 const NEXT_PAGE = String.raw`(first) => {
   const usable = (a) => /^https?:/.test(a.href) && a.href.split("#")[0] !== location.href.split("#")[0] && a.getAttribute("aria-disabled") !== "true";
-  const says = (a) => /^(?:next(?: page)?|[›»→])(?:\s*[›»→>])?$/i.test(a.textContent.trim()) || /\bnext\b/i.test(a.getAttribute("aria-label") ?? "") || /(?:^|[\s_-])next(?:$|[\s_-])/i.test(a.getAttribute("class") ?? "");
+  const says = ${SAYS_NEXT};
   const marked = [...document.querySelectorAll("link[rel~=next][href], a[rel~=next][href]")].find(usable);
   if (marked) return marked.href;
   for (let box = first?.parentElement; box; box = box.parentElement) {
@@ -377,6 +384,157 @@ const NEXT_PAGE = String.raw`(first) => {
   }
   return [...document.querySelectorAll("a[href]")].find((a) => usable(a) && says(a))?.href ?? null;
 }`;
+
+// A page's next page, as NEXT_PAGE finds it near first (extract's
+// selector); with none, whether a control that is no link says next or
+// load more: a button, or a link only a script follows. Its words are the
+// page's, so only whether there is one comes back.
+function pagerOf(selector: unknown): string {
+  const first = typeof selector === "string" ? `sh.q(${JSON.stringify(selector)})` : "null";
+  return String.raw`(() => {
+  const next = (${NEXT_PAGE})(${first});
+  if (next) return { next };
+  const says = ${SAYS_NEXT};
+  const button = [...document.querySelectorAll('button, [role=button], a:not([href]), a[href^="javascript:" i], a[href="#"]')].some((e) => !e.disabled && e.getAttribute("aria-disabled") !== "true" && (says(e) || /^(?:load|show|see|view) more\b/i.test(e.textContent.trim())));
+  return { next: null, button };
+})()`;
+}
+
+// pages reads each of urls as a listing, page by page: the page, read as
+// map reads its urls, then its next page (NEXT_PAGE) in the same tab, up
+// to pages in all. A listing stops at its last page, at a next page that
+// is a button, at an address it read already, at a page that reads as one
+// before it (a site that answers ?page=99 with its last page), and at a
+// page that fails or reads as no content. next: a listing's next page left
+// unread, for a map with the same arguments.
+export async function pagedPages(a: Record<string, unknown>, call: Call): Promise<MapAnswer> {
+  const { pages: asked, follow, ...rest } = a;
+  if (follow !== undefined) throw new Error("map takes pages or follow, not both: follow already reads a listing's next pages while its max wants more links; pages reads the listings' own pages");
+  if (typeof asked !== "number" || !Number.isInteger(asked) || asked < 1 || asked > MAP_MAX_URLS) throw new Error(`pages must be a whole number, 1 to ${MAP_MAX_URLS}: how many pages of each listing to read`);
+  const { urls, job, atOnce } = jobOf(rest, call);
+  if (urls.length * asked > MAP_MAX_URLS) throw new Error(`${urls.length} listings of ${asked} pages each is ${urls.length * asked} pages, and map reads at most ${MAP_MAX_URLS} a call; pass fewer listings or a smaller pages`);
+  const end = Date.now() + BUDGET_MS;
+  const tabs: Warm[] = [];
+  const runs: Run[] = urls.map(() => ({ pages: [] }));
+  const writing: Promise<void>[] = [];
+  let over = Date.now() >= end;
+  const queue = urls.map((_, i) => i);
+  const worker = async () => {
+    const warm = tabs.pop() ?? {};
+    for (let i = queue.shift(); i !== undefined && !over; i = queue.shift()) await walk(urls[i], runs[i], asked, job, warm, writing, () => over);
+    if (over) void shut(warm, call);
+    else tabs.push(warm);
+  };
+  const { promise: late, resolve } = Promise.withResolvers<void>();
+  const timer = setTimeout(() => {
+    over = true;
+    resolve();
+  }, Math.max(0, end - Date.now()));
+  await Promise.race([Promise.all(Array.from({ length: Math.min(Math.max(1, Math.floor(atOnce)), MAX_AT_ONCE, urls.length) }, worker)), late]);
+  clearTimeout(timer);
+  await Promise.all(writing);
+  await closeAll(tabs, call, end);
+  const effectful = affectsPage(job.read, job.args);
+  const left: string[] = [];
+  const nexts: string[] = [];
+  const told: string[] = [];
+  const pages = urls.flatMap((url, i) => {
+    const run = runs[i];
+    if (run.pages.length === 0) {
+      if (!effectful || run.at === undefined) left.push(url);
+      return [unfinished(url, run.began, run.at !== undefined && effectful)];
+    }
+    const stop = run.stop ?? `map's ${BUDGET_MS / 1000} s ran out before page ${run.pages.length + 1}`;
+    const next = run.next ?? run.at;
+    if (next !== undefined) nexts.push(next);
+    told.push(`${url}: ${run.pages.length} page${run.pages.length === 1 ? "" : "s"} answered, then ${stop}`);
+    return run.pages;
+  });
+  const { index, note } = await indexed(job.target, pages);
+  const notes = [...told, ...(nexts.length ? [`to go on: map ${JSON.stringify({ urls: nexts, pages: asked })} with the same what and read options`] : []), ...(note ? [note] : [])];
+  return { pages, ...(left.length ? { urls: left } : {}), ...(nexts.length ? { next: nexts } : {}), ...(index ? { index } : {}), note: notes.join("; ") };
+}
+
+// A listing as pagedPages reads it: its pages so far; at, the address
+// being read, which the 50 s may leave unread; next, the one it left
+// unread; stop, why it ended.
+type Run = { pages: Page[]; at?: string; began?: number; next?: string; stop?: string };
+
+const BUTTON_NEXT = "its next is a button, not a link: read the rest with extract {scroll: true} or {expand: true} in a tab, or net {pages}";
+
+async function walk(url: string, run: Run, most: number, job: Job, warm: Warm, writing: Promise<void>[], over: () => boolean): Promise<void> {
+  const home = site(URL.parse(url)?.hostname ?? "");
+  const seen = new Map<string, number>();
+  const prints = new Map<string, number>();
+  for (let n = 1, at: string = url; ; n++) {
+    run.at = at;
+    run.began ??= performance.now();
+    const began = performance.now();
+    // a site that showed this task a check is not loaded again (recalled);
+    // a kept read is, as its next page is read from the tab
+    const known = recalled(at, { ...job, key: undefined });
+    const { page, stalled } = known ? { page: known, stalled: false } : await visit(at, job, warm);
+    if (over()) return;
+    page.ms = Math.round(performance.now() - began);
+    page.paged = { n, of: url };
+    for (const u of [at, page.finalUrl]) if (u !== undefined) seen.set(address(u) ?? u, n);
+    if (!page.ok) {
+      run.at = undefined;
+      run.pages.push(page);
+      if (stalled) run.next = at;
+      run.stop = n === 1 ? "it failed" : `page ${n} failed`;
+      return;
+    }
+    const state = stateOf(page);
+    const wall = state && NOT_CONTENT[state.kind];
+    const print = printOf(page.value);
+    const same = print === undefined ? undefined : prints.get(print);
+    if (same !== undefined) {
+      run.at = undefined;
+      run.stop = `page ${n} (${at}) read the same as page ${same}, as a site answers past its last page, so it is left out`;
+      return;
+    }
+    if (print !== undefined) prints.set(print, n);
+    const { target } = job;
+    const written = (target && page.value !== undefined ? savePage(page, job, target) : Promise.resolve(page)).then((saved) => {
+      run.pages.push(saved);
+      if (warm.last === page) warm.last = saved;
+    });
+    writing.push(written);
+    await written;
+    run.at = undefined;
+    if (wall) return void (run.stop = `page ${n} read as a ${wall} page`);
+    if (warm.tab === undefined) return void (run.stop = `page ${n} left no tab to find its next page in`);
+    let pager: unknown;
+    try {
+      pager = await job.call("eval", { tab: warm.tab, expression: pagerOf(job.args.selector), read: true });
+    } catch (e) {
+      return void (run.stop = `its next page could not be found: ${messageOf(e)}`);
+    }
+    if (over()) return;
+    const found = pager && typeof pager === "object" && "result" in pager && pager.result && typeof pager.result === "object" ? (pager.result as { next?: unknown; button?: unknown }) : {};
+    const next = typeof found.next === "string" ? URL.parse(found.next) : null;
+    if (!next) return void (run.stop = found.button === true ? BUTTON_NEXT : `page ${n} links no next page`);
+    next.hash = "";
+    if (!/^https?:$/.test(next.protocol) || site(next.hostname) !== home) return void (run.stop = `page ${n}'s next page is on another site`);
+    if (next.pathname === "/" && next.search === "" && URL.parse(url)?.pathname !== "/") return void (run.stop = `page ${n}'s next leads to the site's front page, not a page of the listing`);
+    const again = seen.get(next.href);
+    if (again !== undefined) return void (run.stop = `page ${n}'s next page is page ${again} again`);
+    if (n >= most) {
+      run.next = next.href;
+      return void (run.stop = `it reached pages: ${most}`);
+    }
+    at = next.href;
+  }
+}
+
+// What a page read, to tell two pages apart by: its text, tables, outline,
+// or an eval's value, without the address and title each page has.
+function printOf(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  for (const key of ["text", "tables", "snapshot", "result"]) if (key in value) return JSON.stringify((value as Record<string, unknown>)[key]);
+  return undefined;
+}
 
 // eval answers {result}; a page's script may make it anything.
 function listedOf(value: unknown): { links: string[]; next?: string } {
@@ -737,7 +895,8 @@ export function mapText(answer: MapAnswer, format: (value: unknown) => string, m
       ...(state && wall && !(value && typeof value === "object" && "pageState" in value) ? [`${wall} page: ${state.next}`] : []),
     ];
     const titled = !!value && typeof value === "object" && "title" in value;
-    const head = `${level} ${p.title && !titled ? `${defused(p.title)} — ` : ""}${p.url} (${notes.join("; ")})`;
+    const place = "paged" in p && p.paged ? [p.paged.n === 1 ? "page 1" : `page ${p.paged.n} of ${p.paged.of}`] : [];
+    const head = `${level} ${p.title && !titled ? `${defused(p.title)} — ` : ""}${p.url} (${[...place, ...notes].join("; ")})`;
     const sep = i > 0 ? "\n\n" : depth > 0 ? "\n" : "";
     if (!p.ok) return rows.push({ page: p, depth, head, body: `${left.has(p.url) ? "not read" : "error"}: ${p.error}${value === undefined ? "" : `\n${format(value)}`}`, sep });
     if (!("items" in p)) return rows.push({ page: p, depth, head, body: format(p.value), sep, ...(wall ? { wall } : {}) });

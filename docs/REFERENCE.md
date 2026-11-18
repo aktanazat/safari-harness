@@ -1410,6 +1410,23 @@ first line counts the pages read, those that loaded but hold no content
   The 50 s cover the listings and their pages together. The matching
   links past `max`, and items the 50 s left unread, come back as `urls`,
   to map next.
+- `pages: 5` reads each of `urls` as a listing, page by page: the page,
+  read as map reads its pages (`what`, `selector`, `query`, `as`), then
+  its next page (the link marked `rel=next`, else the one that says next
+  or older, never a carousel's or slider's arrow) in the same tab, up to `pages`
+  pages each. All the listings' pages together are at most 20, inside
+  map's 50 s. Each page comes back in `pages` in order, marked `page 2 of
+  <listing>` and carrying `paged: {n, of}`. A listing stops at the first
+  of: no next link; a next that is a button or a link only a script
+  follows (read the rest with `extract {scroll: true}` or `{expand:
+  true}` in a tab, or `net {pages}`); a next page whose address it read
+  already, or the site's front page; a page that reads the same as one before it (a site that
+  answers `?page=99` with its last page), which is left out; a page that
+  reads as no content (a sign-in, a paywall) or fails. `note` says, for
+  each listing, how many pages it answered and why it stopped. `next`
+  names each listing's next page left unread (past `pages` or the 50 s),
+  and `note` gives the map that goes on: the same arguments with those
+  `urls`. `pages` and `follow` do not go together.
 - A page that fails (an error from the page, a tab that went away) is
   reported in its place, and the others are still read. So is a page that
   reads as an error page (HTTP 400 or more, a page titled not found, a rate
@@ -1475,7 +1492,7 @@ first line counts the pages read, those that loaded but hold no content
   An `eval`'s file holds `{url, title, ok, ms, value}`.
 - `fetch` asks for each address again with its page's cookies and returns
   the body as the server sends it; an answer of HTTP 400 or more fails.
-- CLI: `safari map <url>... [--what snapshot] [--wait '{"text":"Price"}'] [--follow '{"match":"a.item"}'] [--save] [--fresh]`.
+- CLI: `safari map <url>... [--what snapshot] [--wait '{"text":"Price"}'] [--follow '{"match":"a.item"}'] [--pages 5] [--save] [--fresh]`.
 - More than 3 pages of the same kind (search results, item pages, a
   site's listings) go through `map`, never a `goto` loop, a bash loop of
   `goto` and `eval`, or a bash loop of `map` calls. One call takes 20
