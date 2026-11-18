@@ -3,8 +3,9 @@ import { bridge, type ExtSocket } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
 import { watched } from "./mission.ts";
 import { runAs, watchOwner } from "./owner.ts";
+import { SEARCH_GAP_MS } from "./pace.ts";
 import { bingSearch, COLLECT as BING } from "./sites/bing-search.ts";
-import { COLLECT as GOOGLE, googleSearch } from "./sites/google-search.ts";
+import { COLLECT as GOOGLE, googleSearch, SearchBusy } from "./sites/google-search.ts";
 import { SiteKit } from "./sites/kit.ts";
 import { callTool, endTurn } from "./tools.ts";
 
@@ -27,13 +28,17 @@ const atGoogle = (tabs: Map<number, Tab>) => [...tabs.values()].filter((t) => t.
 // which tab it shows), and Safari keeps such a tab at a close for
 // idleness, as the user's. The page of a tab in hung answers nothing, as
 // one a dialog holds. An op in lose goes unanswered once, as the
-// extension's link drops and comes back.
+// extension's link drops and comes back. hold() leaves the next page load
+// unanswered until its release, as a Safari that stopped answering, and
+// navigated lists when each load was asked, on the real clock.
 function safari(first: number, ...open: Tab[]) {
   const tabs = new Map<number, Tab>((open.length > 0 ? open : [{ id: 1, url: "https://his.example/", windowId: USER_WINDOW }]).map((t) => [t.id, t]));
   const opened: string[] = [];
   const lose = new Set<string>();
   const listed = new Map<number, object>();
   const hung = new Set<number>();
+  const navigated: number[] = [];
+  let holding: { asked: PromiseWithResolvers<void>; released: PromiseWithResolvers<void> } | undefined;
   let next = first;
   const gone = (id: unknown) => new Error(`that tab is gone: Safari has had no tab ${String(id)}`);
   const ops: Record<string, (args: unknown[]) => unknown> = {
@@ -89,19 +94,33 @@ function safari(first: number, ...open: Tab[]) {
         });
         return;
       }
-      const run = ops[op];
-      let answer: object;
-      try {
-        answer = run ? { value: run(args) } : { error: `this fake has no ${op}` };
-      } catch (e) {
-        answer = { error: e instanceof Error ? e.message : String(e) };
+      if (op === "tabs.navigate") navigated.push(performance.now());
+      const answer = () => {
+        const run = ops[op];
+        try {
+          return JSON.stringify({ id, ...(run ? { value: run(args) } : { error: `this fake has no ${op}` }) });
+        } catch (e) {
+          return JSON.stringify({ id, error: e instanceof Error ? e.message : String(e) });
+        }
+      };
+      const held = op === "tabs.navigate" ? holding : undefined;
+      if (held) {
+        holding = undefined;
+        held.asked.resolve();
+        void held.released.promise.then(() => bridge.handleMessage(answer()));
+        return;
       }
-      queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, ...answer })));
+      const now = answer();
+      queueMicrotask(() => bridge.handleMessage(now));
     },
     close() {},
   });
   connect(socket());
-  return { tabs, opened, lose, listed, hung };
+  const hold = () => {
+    holding = { asked: Promise.withResolvers<void>(), released: Promise.withResolvers<void>() };
+    return { asked: holding.asked.promise, release: holding.released.resolve };
+  };
+  return { tabs, opened, lose, listed, hung, navigated, hold };
 }
 
 // An agent process, to call as.
@@ -120,9 +139,14 @@ function kit(task = JSON.stringify(["session", "agent"])) {
   return new SiteKit((tool, args) => watched(agent.pid, tool, args, () => runAs(agent.pid, () => callTool(tool, args, false, true), task)));
 }
 
+// Each search a gap after the one before it on the still clock, so its
+// results page loads at once rather than waiting out its turn (pace.ts).
 function google(task?: string) {
   const search = googleSearch(kit(task));
-  return (query: string) => search.search(query, { paced: false });
+  return (query: string) => {
+    setSystemTime(new Date(Date.now() + SEARCH_GAP_MS));
+    return search.search(query);
+  };
 }
 
 // Each test runs hours after the last on a still clock, so each Safari
@@ -252,4 +276,35 @@ test("a search tab the user took to a site where he typed stays open past 20 min
   setSystemTime(new Date(Date.now() + 21 * 60_000));
   await endTurn(agent.pid);
   expect(s.tabs.get(held.id)).toBe(held);
+}));
+
+// On 11-18 Safari answered no results page for 3.6 minutes, and each
+// search queued behind the held one waited it out.
+test("while Safari holds a Google results page past 15 s, a search that can go elsewhere is turned away at once, unloaded", () => later(async () => {
+  const s = safari(15_000);
+  await google()("Bitfarms renamed Keel Infrastructure");
+  const held = s.hold();
+  const first = google()("Keel Infrastructure ticker");
+  await held.asked;
+  setSystemTime(new Date(Date.now() + 20_000));
+  await expect(googleSearch(kit()).search("Keel Infrastructure miners", { maxWait: 45_000 })).rejects.toBeInstanceOf(SearchBusy);
+  held.release();
+  await first;
+  expect(s.navigated).toHaveLength(1);
+}));
+
+// After that stall, 40 Google results pages loaded under 2.5 s apart, and
+// Google showed its check two minutes later.
+test("after Safari answers a Google results page it held, the next one loads a gap later", () => later(async () => {
+  const s = safari(16_000);
+  await google()("Bitfarms renamed Keel Infrastructure");
+  const held = s.hold();
+  const first = google()("Keel Infrastructure ticker");
+  await held.asked;
+  setSystemTime(new Date(Date.now() + 20_000));
+  const released = performance.now();
+  held.release();
+  await first;
+  await googleSearch(kit()).search("Keel Infrastructure miners");
+  expect(s.navigated[1] - released).toBeGreaterThanOrEqual(SEARCH_GAP_MS - 50);
 }));
