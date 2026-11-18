@@ -832,7 +832,7 @@
     }
     const o = await frameOffset({ x, y, width: r.width, height: r.height });
     if (!o) return { error: "could not place this frame on the page" };
-    return { x: x + o.x, y: y + o.y, width: r.width, height: r.height, innerWidth: o.innerWidth, innerHeight: o.innerHeight };
+    return { x: x + o.x, y: y + o.y, width: r.width, height: r.height, innerWidth: o.innerWidth, innerHeight: o.innerHeight, ...(clickBlocked(el)?.reason === "disabled" ? { disabled: true } : {}) };
   }
 
   // real_input's click on a tab not in front (daemon/input.ts) presses the
@@ -853,6 +853,9 @@
     const el = resolve(ref);
     if (!el) return missing(ref);
     if (picker(el) || (el.localName === "label" && picker(el.control))) return { picker: true };
+    // A page may enable a control only while its window is in front, as
+    // GitHub's OAuth Authorize button does (11-18): the real mouse goes there.
+    if (clickBlocked(el)?.reason === "disabled") return { disabled: true };
     el.scrollIntoView({ block: "center", behavior: "instant" });
     const mark = `__sh_press_${Math.random().toString(36).slice(2, 10)}`;
     const heard = Promise.withResolvers();

@@ -61,6 +61,9 @@ type Page = {
   inFrontInstead?: string;
   // a prompt that comes up as Safari is raised (Mac.prompt)
   promptOnRaise?: string;
+  // a control disabled until its tab has been in front a moment (GitHub's
+  // OAuth Authorize, 11-18), or for good
+  disabled?: "untilFront" | "always";
 };
 type Mac = {
   app: string;
@@ -95,6 +98,7 @@ function mac(page: Page = {}): Mac {
   ];
   let frontWindow = 1;
   let marks = 0;
+  let locatesInFront = 0;
   // the field's text as typing began (append), and whether Cmd+A selected it
   let before = "";
   let selected = false;
@@ -113,7 +117,7 @@ function mac(page: Page = {}): Mac {
       if (op === "tabs.select") return (show(args[0]), answer({ ok: true }));
       if (op === "tabs.activate") return ((frontWindow = show(args[0])), answer({ ok: true }));
       const dom = op === "relay" ? args[1] : undefined;
-      if (dom === "pressMark") return answer(page.picker ? { picker: true } : { mark: "__sh_press_t", width: 1247, height: 870 });
+      if (dom === "pressMark") return answer(page.picker ? { picker: true } : page.disabled ? { disabled: true } : { mark: "__sh_press_t", width: 1247, height: 870 });
       if (dom === "pressDone") {
         if (page.opens && page.owner !== undefined) setTimeout(queuePopup, 100, page.owner, page.opens);
         return answer({ errors: page.errors ?? [], ...(page.opens ? { tab: true } : {}) });
@@ -135,7 +139,10 @@ function mac(page: Page = {}): Mac {
       }
       if (dom === "sendButton") return answer(page.sendButton ? { send: ".__sh_type_t_send", name: page.sendButton } : { send: null });
       if (dom === "wait") return answer(page.reply ? { found: true, added: page.reply } : { found: false });
-      if (dom === "locate") return answer({ x: 100, y: 50, width: 80, height: 20, innerWidth: 1200, innerHeight: 800 });
+      if (dom === "locate") {
+        const disabled = page.disabled === "always" || (page.disabled === "untilFront" && !(m.app === front.SAFARI && frontWindow === 2 && ++locatesInFront > 2));
+        return answer({ x: 100, y: 50, width: 80, height: 20, innerWidth: 1200, innerHeight: 800, ...(disabled ? { disabled: true } : {}) });
+      }
       if (dom === "tabInfo") return answer({ url: "https://example.com/", title: "Page", viewport: { w: 1200, h: 800 } });
       if (dom === "snapshot") return answer({ url: "https://example.com/", title: "Page", snapshot: "[1] button Continue", truncated: false });
       if (dom === "eval") return answer({ result: { marks, focus: true } });
@@ -271,6 +278,15 @@ test("a select, a date or color input, or a file input's label takes the real mo
   const m = mac({ picker: true });
   expect(await click(21)).toEqual({ ok: true, at: { x: 140, y: 160 } });
   expect(run(m, "press")).toEqual([]);
+});
+
+// 11-18: GitHub's OAuth Authorize button stays disabled until its window has
+// been in front a moment. Pressed from behind, the click went nowhere and
+// the answer still said ok.
+test("a control disabled behind its window is clicked with the real mouse once its tab is in front and the page enables it", async () => {
+  const m = mac({ disabled: "untilFront" });
+  expect(await click(21)).toEqual({ ok: true, at: { x: 140, y: 160 } });
+  expect({ pressed: run(m, "press"), activated: run(m, "activate")[0], clicks: run(m, "click") }).toEqual({ pressed: [], activated: ["activate", front.SAFARI], clicks: [["click", "140", "160", "--count", "1", "--button", "left"]] });
 });
 
 test.each([[{ count: 2 }, ["--count", "2", "--button", "left"]], [{ button: "right" }, ["--count", "1", "--button", "right"]]])(
