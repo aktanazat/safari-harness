@@ -122,7 +122,7 @@ function flatten(row: Record<string, unknown>): Map<string, string> {
 
 function column(name: string, hint: string, values: string[]): Column {
   const own = name.split(" > ").at(-1) ?? name;
-  return { name, own: new Set(words(own)), all: new Set(words(name)), hint: new Set(words(hint)), link: / href$/.test(name), values, filled: values.filter((v) => v.trim()).length };
+  return { name, own: new Set(words(own)), all: new Set(words(name)), hint: new Set(words(hint)), link: name.endsWith(" href"), values, filled: values.filter((v) => v.trim()).length };
 }
 
 function columnsOf(source: RowsSource): { columns: Column[]; count: number } {

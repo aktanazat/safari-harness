@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { markLines } from "./injection.ts";
 import { currentOwner, currentTask } from "./owner.ts";
 import { endpointOf, textShownOn } from "./request-catalog.ts";
+import { jsonWall } from "./page-state.ts";
 
 // net {tab, pages}: the JSON list behind a page, read a page at a time the
 // way the page itself asks for its next one. The request is one the tab made
@@ -394,14 +395,6 @@ function fresh(list: Row[], state: Pick<State, "idKey" | "seen">): Row[] {
   });
 }
 
-// A JSON reply that says it failed, needs a sign-in, or is still loading,
-// as request-catalog's check reads one.
-function failedEnvelope(body: unknown): boolean {
-  if (!isRow(body)) return false;
-  return body.ok === false || body.success === false || body.authenticated === false || body.authorized === false || body.requiresLogin === true || body.loading === true
-    || (body.error !== undefined && body.error !== null && body.error !== false && body.error !== "") || (Array.isArray(body.errors) && body.errors.length > 0);
-}
-
 const SCROLL = "scroll instead: extract {tab, scroll: true} lets the page ask for its next pages itself";
 
 type Paged = { pages: number; rows: Row[]; stopped?: string; ended?: string };
@@ -439,7 +432,7 @@ async function readOn(state: State, want: number, deps: FeedDeps, started: numbe
     if (got.truncated) return { ...out, stopped: "the next page's reply ran past 1 MB" };
     let body: unknown;
     try { body = JSON.parse(got.text ?? ""); } catch { return { ...out, stopped: `the next page did not answer JSON (a sign-in or bot check?); ${SCROLL}` }; }
-    if (failedEnvelope(body)) return { ...out, stopped: "the next page's reply reports an error, a sign-in, or loading" };
+    if (jsonWall(body) !== undefined) return { ...out, stopped: "the next page's reply reports an error, a sign-in, or loading" };
     const list = rowsAt(body, state.rows);
     if (!list) return { ...out, stopped: `the next page's reply has no rows at ${rowsName(state.rows)}` };
     if (!list.length) return { ...out, ended: "the next page had no rows: the list ended" };
@@ -510,7 +503,9 @@ function pagesOf(value: unknown): number {
 
 type Candidate = { index: number; entry: NetEntry; body: unknown; rows: RowsPath; count: number; shown: number };
 
-const basic = (e: NetEntry) => (e.method ?? "GET") === "GET" && (e.kind === "fetch" || e.kind === "xhr") && (e.frame ?? 0) === 0
+// The net log cuts an address past 500 characters with "…" (dialogs.js);
+// asked again, the cut one drops the filters after the cut.
+const basic = (e: NetEntry) => (e.method ?? "GET") === "GET" && (e.kind === "fetch" || e.kind === "xhr") && (e.frame ?? 0) === 0 && !e.url.endsWith("…")
   && e.error === undefined && e.status !== undefined && e.status >= 200 && e.status <= 299 && /^\s*[[{]/.test(e.body ?? "");
 const endpoint = (url: string) => { const u = new URL(url); return u.origin + u.pathname; };
 
@@ -649,16 +644,16 @@ export async function feedPages(tab: number, args: Record<string, unknown>, deps
 
 // For a table or list read: a hint naming the JSON request whose reply
 // holds what it read, when the page fetched one; texts are the read's own.
-export async function feedHint(tab: number, texts: string[], deps: Pick<FeedDeps, "entries" | "body" | "pageUrl">): Promise<string | undefined> {
+// Its cost is one net read and one body: the request whose logged start
+// holds a text, else the latest.
+export async function feedHint(tab: number, texts: string[], pageUrl: string, deps: Pick<FeedDeps, "entries" | "body">): Promise<string | undefined> {
   const sample = texts.filter((t) => t.length >= 4 && t.length <= 200).slice(0, 8);
   if (sample.length < 2) return undefined;
-  const pageUrl = await deps.pageUrl(tab);
-  const entries = (await deps.entries(tab)).filter((e) => basic(e) && feedRefusal(e.url, pageUrl) === undefined).slice(-3);
-  for (const entry of entries.reverse()) {
-    const kept = await deps.body(tab, entry).catch(() => undefined);
-    if (!kept) continue;
-    const hits = sample.filter((t) => kept.text.includes(t) || kept.text.includes(JSON.stringify(t).slice(1, -1))).length;
-    if (hits >= Math.min(3, sample.length)) return `these rows came from the page's JSON request to ${new URL(entry.url).pathname}; net {tab, pages: 5} reads its next pages as rows`;
-  }
-  return undefined;
+  const holds = (text: string) => sample.filter((t) => text.includes(t) || text.includes(JSON.stringify(t).slice(1, -1))).length;
+  const entries = (await deps.entries(tab)).filter((e) => basic(e) && feedRefusal(e.url, pageUrl) === undefined);
+  const entry = entries.findLast((e) => holds(e.body ?? "") > 0) ?? entries.at(-1);
+  if (!entry) return undefined;
+  const kept = await deps.body(tab, entry).catch(() => undefined);
+  if (!kept || holds(kept.text) < Math.min(3, sample.length)) return undefined;
+  return `these rows came from the page's JSON request to ${new URL(entry.url).pathname}; net {tab, pages: 5} reads its next pages as rows`;
 }

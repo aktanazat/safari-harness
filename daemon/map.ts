@@ -532,7 +532,7 @@ async function walk(url: string, run: Run, most: number, job: Job, warm: Warm, w
 // or an eval's value, without the address and title each page has.
 function printOf(value: unknown): string | undefined {
   if (!value || typeof value !== "object") return undefined;
-  for (const key of ["text", "tables", "snapshot", "result"]) if (key in value) return JSON.stringify((value as Record<string, unknown>)[key]);
+  for (const key of ["text", "tables", "rows", "snapshot", "result"]) if (key in value) return JSON.stringify((value as Record<string, unknown>)[key]);
   return undefined;
 }
 

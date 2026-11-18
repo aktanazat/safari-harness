@@ -1880,19 +1880,19 @@ export async function extract(opts: { tab?: number; selector?: string; query?: s
   // as: "table" answers rows, not text
   const rows = "tables" in page ? page.tables : undefined;
   const out = "text" in page ? await fit(shieldExtract(withReader(page)), limit, whole) : "messages" in page ? shieldChat(page)
-    : await withFeedHint(tab, fields !== undefined ? withFields(page as { url: string; title: string; tables: RowsSource[]; truncated?: boolean }, fields) : page, rows);
+    : await withFeedHint(tab, fields !== undefined ? withFields(page as { url: string; title: string; tables: RowsSource[]; truncated?: boolean; judgedText?: string }, fields) : page, rows);
   return missed ? { ...out, note: missed } : out;
 }
 
 // extract's fields (fields.ts): the rows of the table or card list that
 // fits them best, as objects with those keys, and where each key came from.
-function withFields(page: { url: string; title: string; tables: RowsSource[]; truncated?: boolean }, fields: unknown) {
+function withFields(page: { url: string; title: string; tables: RowsSource[]; truncated?: boolean; judgedText?: string }, fields: unknown) {
   const title = markLines(page.title, false);
   const { addressedToAI = 0, ...picked } = pickFields(page.tables, fields);
   const places = title.places + addressedToAI;
   const next = !page.tables.length ? "no table or card list here; extract {tab} reads the page's text"
     : picked.missing ? 'a missing field takes one of unused\'s columns by name, as fields: {"seller": "<column>"}' : undefined;
-  return { url: page.url, title: title.text, ...picked, ...(page.truncated ? { truncated: true } : {}), ...(places ? { addressedToAI: places } : {}), ...(next ? { next } : {}) };
+  return { url: page.url, title: title.text, ...picked, ...(page.truncated ? { truncated: true } : {}), ...(places ? { addressedToAI: places } : {}), ...(next ? { next } : {}), ...(page.judgedText === undefined ? {} : { judgedText: page.judgedText }) };
 }
 
 // The net log and page the JSON feed reader (feed.ts) works from. Its
@@ -1907,10 +1907,11 @@ const FEED_DEPS: FeedDeps = {
   save: saveAnswer,
 };
 
-// A table or list read whose rows the page got as JSON says so, and names
-// the net call that reads the pages after them. A hint that fails to form
-// leaves the read as it was.
+// A model's table or list read whose rows the page got as JSON says so,
+// and names the net call that reads the pages after them. A hint that
+// fails to form leaves the read as it was.
 async function withFeedHint<T extends object>(tab: number, read: T, rows: unknown): Promise<T> {
+  if (!fromModel()) return read;
   const texts = new Set<string>();
   const walk = (value: unknown) => {
     if (texts.size >= 8) return;
@@ -1918,7 +1919,8 @@ async function withFeedHint<T extends object>(tab: number, read: T, rows: unknow
     else if (value !== null && typeof value === "object") for (const child of Object.values(value)) walk(child);
   };
   walk(rows);
-  const next = await feedHint(tab, [...texts], FEED_DEPS).catch(() => undefined);
+  const url = "url" in read && typeof read.url === "string" ? read.url : await FEED_DEPS.pageUrl(tab);
+  const next = await feedHint(tab, [...texts], url, FEED_DEPS).catch(() => undefined);
   if (next === undefined) return read;
   const own = "next" in read && typeof read.next === "string" ? `${read.next}; ` : "";
   return { ...read, next: `${own}${next}` };

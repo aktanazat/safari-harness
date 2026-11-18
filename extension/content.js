@@ -4782,7 +4782,9 @@
   // the agent sees the answer: a sign-in page's provider buttons read as a
   // list of three cards. A selector's or query's read says nothing of the
   // whole page.
-  const JUDGED_CHARS = 2000;
+  // Past page-state.ts's 3,000 characters a page is too long to be a wall;
+  // a cut at 2,000 made a long listing's cookie banner read as one.
+  const JUDGED_CHARS = 4000;
   function judgedSample(opts) {
     return opts.selector || opts.query ? {} : { judgedText: tidyText(contentRoot().root ?? document.body).text.slice(0, JUDGED_CHARS) };
   }
