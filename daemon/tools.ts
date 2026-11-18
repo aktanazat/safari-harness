@@ -1861,7 +1861,10 @@ export async function extract(opts: { tab?: number; selector?: string; query?: s
   const as = fields !== undefined && opts.as === undefined ? "table" : opts.as;
   if (fields !== undefined && as !== "table") throw new Error(`fields reads the rows of tables and card lists: drop as: "${as}", or pass as: "table"`);
   const ask = (selector: string | undefined) => {
-    const args = { selector, query: opts.query, maxBytes: opts.maxBytes, whole, as, strict_selector: strict, expand: opts.expand === true, scroll: opts.scroll === true, hints: fields !== undefined };
+    // fields cuts its own rows at maxBytes (withFields): the columns are
+    // judged on the table's rows, not on what fits the reply.
+    const maxBytes = fields === undefined ? opts.maxBytes : Math.max(opts.maxBytes ?? 0, 20000);
+    const args = { selector, query: opts.query, maxBytes, whole, as, strict_selector: strict, expand: opts.expand === true, scroll: opts.scroll === true, hints: fields !== undefined };
     return (gathers ? gathering(tab, "extract", args) : relay(tab, "extract", [args])) as Promise<Extract | Chat | { tables: unknown[] }>;
   };
   const read = (selector: string | undefined) => researchRead(tab, () => ask(selector));
@@ -1880,19 +1883,21 @@ export async function extract(opts: { tab?: number; selector?: string; query?: s
   // as: "table" answers rows, not text
   const rows = "tables" in page ? page.tables : undefined;
   const out = "text" in page ? await fit(shieldExtract(withReader(page)), limit, whole) : "messages" in page ? shieldChat(page)
-    : await withFeedHint(tab, fields !== undefined ? withFields(page as { url: string; title: string; tables: RowsSource[]; truncated?: boolean; judgedText?: string }, fields) : page, rows);
+    : await withFeedHint(tab, fields !== undefined ? withFields(page as { url: string; title: string; tables: RowsSource[]; truncated?: boolean; judgedText?: string }, fields, limit) : page, rows);
   return missed ? { ...out, note: missed } : out;
 }
 
 // extract's fields (fields.ts): the rows of the table or card list that
 // fits them best, as objects with those keys, and where each key came from.
-function withFields(page: { url: string; title: string; tables: RowsSource[]; truncated?: boolean; judgedText?: string }, fields: unknown) {
+function withFields(page: { url: string; title: string; tables: RowsSource[]; truncated?: boolean; judgedText?: string }, fields: unknown, limit: number) {
   const title = markLines(page.title, false);
-  const { addressedToAI = 0, ...picked } = pickFields(page.tables, fields);
+  const { addressedToAI = 0, rows, ...picked } = pickFields(page.tables, fields);
+  let used = 0;
+  const kept = rows.filter((row) => (used += JSON.stringify(row).length + 1) <= limit);
   const places = title.places + addressedToAI;
   const next = !page.tables.length ? "no table or card list here; extract {tab} reads the page's text"
     : picked.missing ? 'a missing field takes one of unused\'s columns by name, as fields: {"seller": "<column>"}' : undefined;
-  return { url: page.url, title: title.text, ...picked, ...(page.truncated ? { truncated: true } : {}), ...(places ? { addressedToAI: places } : {}), ...(next ? { next } : {}), ...(page.judgedText === undefined ? {} : { judgedText: page.judgedText }) };
+  return { url: page.url, title: title.text, rows: kept, ...picked, ...(page.truncated || kept.length < rows.length ? { truncated: true } : {}), ...(places ? { addressedToAI: places } : {}), ...(next ? { next } : {}), ...(page.judgedText === undefined ? {} : { judgedText: page.judgedText }) };
 }
 
 // The net log and page the JSON feed reader (feed.ts) works from. Its

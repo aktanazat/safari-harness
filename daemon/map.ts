@@ -530,10 +530,13 @@ async function walk(url: string, run: Run, most: number, job: Job, warm: Warm, w
 
 // What a page read, to tell two pages apart by: its text, tables, outline,
 // or an eval's value, without the address and title each page has.
+// An empty read (no rows, no text) is not a page to compare: two of them
+// say nothing of a site answering past its last page.
 function printOf(value: unknown): string | undefined {
   if (!value || typeof value !== "object") return undefined;
-  for (const key of ["text", "tables", "rows", "snapshot", "result"]) if (key in value) return JSON.stringify((value as Record<string, unknown>)[key]);
-  return undefined;
+  const key = ["text", "tables", "rows", "snapshot", "result"].find((k) => k in value);
+  const print = key === undefined ? undefined : JSON.stringify((value as Record<string, unknown>)[key]);
+  return print === undefined || print === "[]" || print === '""' ? undefined : print;
 }
 
 // eval answers {result}; a page's script may make it anything.
