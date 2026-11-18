@@ -143,12 +143,15 @@ async function clickAt(tab: number, a: Record<string, unknown>, count: number, b
   let box = await locate();
   // A control a page enables only once its window has been in front a
   // moment, as GitHub's OAuth Authorize button (11-18), is waited for here,
-  // its tab in front.
+  // its tab in front. The user may take his screen back meanwhile: the
+  // click then goes nowhere, as it would land on his app.
+  const waited = !!box.disabled;
   for (const until = Date.now() + ENABLE_MS; box.disabled && Date.now() < until;) {
     await Bun.sleep(250);
     box = await locate();
   }
-  if (box.disabled) throw new HarnessError("stale_view", `${what} stayed disabled for ${ENABLE_MS / 1000} s with its tab in front, so it was not clicked`, { effect: "none", next: "complete what the page asks before it enables the control, then click again" });
+  if (box.disabled) throw new HarnessError("stale_view", `${what} stayed disabled for ${ENABLE_MS / 1000} s with its tab in front, so it was not clicked and Safari went back behind`, { effect: "none", next: "complete what the page asks before it enables the control, then click again" });
+  if (waited && (await frontApp()) !== SAFARI) throw new HarnessError("unavailable", `another app came in front while ${what} was enabling, so it was not clicked`, { effect: "none", next: "nothing was sent; try again in a moment" });
   const { x, y, width, height, innerWidth, innerHeight } = box;
   if (typeof x !== "number" || typeof y !== "number" || typeof width !== "number" || typeof height !== "number" || typeof innerWidth !== "number" || typeof innerHeight !== "number") {
     throw new Error(`locate returned no box for ${what}: ${JSON.stringify(box)}`);

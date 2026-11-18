@@ -141,6 +141,8 @@ function mac(page: Page = {}): Mac {
       if (dom === "wait") return answer(page.reply ? { found: true, added: page.reply } : { found: false });
       if (dom === "locate") {
         const disabled = page.disabled === "always" || (page.disabled === "untilFront" && !(m.app === front.SAFARI && frontWindow === 2 && ++locatesInFront > 2));
+        // he takes his screen back as the page enables the control
+        if (page.disabled === "untilFront" && page.takeover && !disabled) m.app = page.takeover;
         return answer({ x: 100, y: 50, width: 80, height: 20, innerWidth: 1200, innerHeight: 800, ...(disabled ? { disabled: true } : {}) });
       }
       if (dom === "tabInfo") return answer({ url: "https://example.com/", title: "Page", viewport: { w: 1200, h: 800 } });
@@ -287,6 +289,12 @@ test("a control disabled behind its window is clicked with the real mouse once i
   const m = mac({ disabled: "untilFront" });
   expect(await click(21)).toEqual({ ok: true, at: { x: 140, y: 160 } });
   expect({ pressed: run(m, "press"), activated: run(m, "activate")[0], clicks: run(m, "click") }).toEqual({ pressed: [], activated: ["activate", front.SAFARI], clicks: [["click", "140", "160", "--count", "1", "--button", "left"]] });
+});
+
+test("a control that enables after the user took his screen back is not clicked: the click would land on his app", async () => {
+  const m = mac({ disabled: "untilFront", takeover: GHOSTTY });
+  await expect(click(21)).rejects.toThrow(/another app came in front/);
+  expect(run(m, "click")).toEqual([]);
 });
 
 test.each([[{ count: 2 }, ["--count", "2", "--button", "left"]], [{ button: "right" }, ["--count", "1", "--button", "right"]]])(
