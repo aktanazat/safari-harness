@@ -44,6 +44,13 @@ const READS: Record<string, () => Promise<{ COLLECT: string }>> = {
   "www.bing.com": () => import("./sites/bing-search.ts"),
 };
 
+// Whether url is a page of a search engine's own site: its results, or its
+// robot check.
+export function onSearchEngine(url: string | undefined): boolean {
+  const host = url === undefined ? undefined : URL.parse(url)?.hostname;
+  return host !== undefined && Object.hasOwn(READS, host);
+}
+
 // A failure of the tab, not of the search: the tab is gone, its page
 // stopped answering (background.js), or the extension's link went down
 // mid-call (bridge.ts).

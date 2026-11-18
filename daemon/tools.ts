@@ -47,7 +47,7 @@ import { createVideoTool } from "./video-observation.ts";
 import { inputStateTool } from "./input-state.ts";
 import { PACE_TOOL } from "./pace.ts";
 import { PAGES_TOOL } from "./page-store.ts";
-import { searchPage } from "./search-tabs.ts";
+import { onSearchEngine, searchPage } from "./search-tabs.ts";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -917,13 +917,15 @@ async function closeTrackedTab(tab: number, t: HarnessTab, shown?: TabInfo, reas
   t.closing = true;
   const link = bridge.extensionInfo?.connectedAt;
   try {
-    // A search tab holds no one's work, but Google's results page has a
-    // frame the extension cannot read for unsent forms, so an idle close of
-    // one is refused (11-11). One the list shows at its results, and not in
-    // front, closes as a finished tab does; the extension checks any other
-    // as it does an idle one, a tab whose front it cannot tell counting as
-    // the user's (inFront in background.js).
-    const unread = t.search === true && shown !== undefined && shown.partial === undefined && !shown.front && !shown.shown && shown.url?.startsWith("https://www.google.com/search?") === true;
+    // A search tab holds no one's work, but the extension cannot read a
+    // frame of Google's or Bing's pages for unsent forms, so an idle close
+    // of one is refused (11-11; on 11-18 seven such tabs, Bing's and
+    // Google's robot check among them, held the daemon's search window on
+    // the Agents display for 7 hours). One the list shows on its engine's
+    // site, and not in front, closes as a finished tab does; the extension
+    // checks any other as it does an idle one, a tab whose front it cannot
+    // tell counting as the user's (inFront in background.js).
+    const unread = t.search === true && shown !== undefined && shown.partial === undefined && !shown.front && !shown.shown && onSearchEngine(shown.url);
     const completed = t.done || (t.orphan && t.owner !== undefined && !alive(t.owner)) || unread;
     const res = (await bridge.request("tabs.close", completed ? [tab] : [tab, "idle"], 20000, { start: false })) as { ok?: boolean; front?: true; protected?: string; windowId?: number } | null;
     if (res?.front) {

@@ -21,10 +21,10 @@ const atGoogle = (tabs: Map<number, Tab>) => [...tabs.values()].filter((t) => t.
 // A Safari that started again with the tabs in open, by default the
 // user's one; the tabs and windows the harness opens are numbered from
 // first. A results page read with its engine's read shows the results for
-// its query, with another nothing. Safari refuses to close a Google one
-// for idleness, as on 11-11: the extension cannot read one of its frames
-// for unsent forms; and a page of his.example, where the user has typed
-// text he has not sent. listed adds to what Safari lists of a tab
+// its query, with another nothing. Safari refuses to close a Google or Bing
+// one for idleness, as on 11-11 and 11-18: the extension cannot read one of
+// its frames for unsent forms; and a page of his.example, where the user
+// has typed text he has not sent. listed adds to what Safari lists of a tab
 // (shown: it shows the tab in front; partial: it did not say in time
 // which tab it shows), and Safari keeps such a tab at a close for
 // idleness, as the user's. The page of a tab in hung answers nothing, as
@@ -65,7 +65,7 @@ function safari(first: number, ...open: Tab[]) {
       const t = tabs.get(Number(id));
       if (!t) throw gone(id);
       if (only === "idle" && listed.has(t.id)) return { ok: false, front: true };
-      if (only === "idle" && t.url.startsWith("https://www.google.com/")) return { ok: false, protected: "unreadable" };
+      if (only === "idle" && /^https:\/\/www\.(google|bing)\.com\//.test(t.url)) return { ok: false, protected: "unreadable" };
       if (only === "idle" && t.url.startsWith("https://his.example/")) return { ok: false, protected: "form" };
       tabs.delete(t.id);
       return { ok: true };
@@ -238,6 +238,27 @@ test("a search tab Safari restores as it starts again closes once unused for 20 
 test("a Google tab no search used for 20 minutes closes, though Safari refuses its page a close for idleness", () => later(async () => {
   const s = safari(11_000);
   await google()("Bitfarms renamed Keel Infrastructure");
+  setSystemTime(new Date(Date.now() + 21 * 60_000));
+  await endTurn(agent.pid);
+  expect(atGoogle(s.tabs)).toEqual([]);
+}));
+
+// On 11-18 six Bing results pages and Google's robot check stood unused in
+// the search window on the Agents display for 7 hours, each idle close
+// refused as unreadable.
+test("a Bing tab no search used for 20 minutes closes, though Safari refuses its page a close for idleness", () => later(async () => {
+  const s = safari(11_500);
+  await bingSearch(kit()).search("Keel Infrastructure");
+  setSystemTime(new Date(Date.now() + 21 * 60_000));
+  await endTurn(agent.pid);
+  expect([...s.tabs.values()].filter((t) => t.url.startsWith("https://www.bing.com/"))).toEqual([]);
+}));
+
+test("a Google tab left at Google's robot check closes once unused for 20 minutes", () => later(async () => {
+  const s = safari(11_700);
+  await google()("Bitfarms renamed Keel Infrastructure");
+  const [held] = atGoogle(s.tabs);
+  held.url = "https://www.google.com/sorry/index?continue=https://www.google.com/search%3Fq%3Dkeel";
   setSystemTime(new Date(Date.now() + 21 * 60_000));
   await endTurn(agent.pid);
   expect(atGoogle(s.tabs)).toEqual([]);
