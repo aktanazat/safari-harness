@@ -119,6 +119,10 @@ async function post(tab: number, args: string[], keys: boolean, timeout?: number
   return result;
 }
 
+// How long a disabled control may take to enable with its tab in front,
+// Safari holding the user's front all that while.
+const ENABLE_MS = 5000;
+
 // Clicks the middle of ref, or the point x, y, with the real mouse; the tab
 // must be in front. x and y are what click takes: a point of the viewport
 // in CSS px, as the page's clientX and clientY count it. locate gives the
@@ -135,7 +139,19 @@ async function post(tab: number, args: string[], keys: boolean, timeout?: number
 async function clickAt(tab: number, a: Record<string, unknown>, count: number, button: string): Promise<Point> {
   const point = a.ref === undefined;
   const what = point ? `${String(a.x)}, ${String(a.y)}` : String(a.ref);
-  const box = ((await rpc("locate", point ? { tab, x: a.x, y: a.y } : { tab, ref: a.ref })) ?? {}) as Partial<Rect & { innerWidth: number; innerHeight: number }>;
+  const locate = async () => ((await rpc("locate", point ? { tab, x: a.x, y: a.y } : { tab, ref: a.ref })) ?? {}) as Partial<Rect & { innerWidth: number; innerHeight: number; disabled: true }>;
+  let box = await locate();
+  // A control a page enables only once its window has been in front a
+  // moment, as GitHub's OAuth Authorize button (11-18), is waited for here,
+  // its tab in front. The user may take his screen back meanwhile: the
+  // click then goes nowhere, as it would land on his app.
+  const waited = !!box.disabled;
+  for (const until = Date.now() + ENABLE_MS; box.disabled && Date.now() < until;) {
+    await Bun.sleep(250);
+    box = await locate();
+  }
+  if (box.disabled) throw new HarnessError("stale_view", `${what} stayed disabled for ${ENABLE_MS / 1000} s with its tab in front, so it was not clicked and Safari went back behind`, { effect: "none", next: "complete what the page asks before it enables the control, then click again" });
+  if (waited && (await frontApp()) !== SAFARI) throw new HarnessError("unavailable", `another app came in front while ${what} was enabling, so it was not clicked`, { effect: "none", next: "nothing was sent; try again in a moment" });
   const { x, y, width, height, innerWidth, innerHeight } = box;
   if (typeof x !== "number" || typeof y !== "number" || typeof width !== "number" || typeof height !== "number" || typeof innerWidth !== "number" || typeof innerHeight !== "number") {
     throw new Error(`locate returned no box for ${what}: ${JSON.stringify(box)}`);
@@ -284,7 +300,7 @@ async function pressBehind(tab: number, ref: unknown): Promise<string[] | null> 
   if (app === SAFARI && tabs.find((t) => t.id === tab)?.shown) return null;
   return inTree(tab, tabs, async () => {
     const marked = await rpc("press_mark", { tab, ref });
-    if (marked && typeof marked === "object" && "picker" in marked) return null;
+    if (marked && typeof marked === "object" && ("picker" in marked || "disabled" in marked)) return null;
     if (!isMark(marked)) throw new Error(`press_mark returned no mark for ${String(ref)}: ${JSON.stringify(marked)}`);
     let pressed = false;
     let done: unknown;

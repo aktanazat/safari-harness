@@ -590,19 +590,33 @@ func front() {
 // NSWorkspace hears of the change through the run loop, so it turns while
 // this waits. The two seconds are the clock's: on 10-30, on a loaded Mac,
 // 100 turns of 20 ms took nearly 10 s, the daemon's limit for the helper.
+// UserNotificationCenter's alert can keep the front from that activate: on
+// 11-18 a handoff failed while it was in front. The app is then opened
+// through Launch Services, as a click on its Dock icon is, and waited for
+// two seconds more. Other prompts with no Dock icon (SecurityAgent's for a
+// keychain password) are the user's to answer, and keep the front.
 func activate(_ args: [String]) {
     guard args.count == 1 else { fail("usage: input activate BUNDLEID", 2) }
     guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: args[0]).first else { fail("\(args[0]) is not running") }
-    let deadline = Date(timeIntervalSinceNow: 2)
     app.activate()
+    if cameForward(app, within: 2) { return printJSON(["bundleId": args[0]]) }
+    if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.UserNotificationCenter", let url = app.bundleURL {
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in }
+        if cameForward(app, within: 2) { return printJSON(["bundleId": args[0], "reopened": true]) }
+    }
+    let other = NSWorkspace.shared.frontmostApplication.map { $0.localizedName ?? $0.bundleIdentifier ?? "another app" } ?? "no app"
+    fail("\(args[0]) did not come to the front; \(other) is in front")
+}
+
+func cameForward(_ app: NSRunningApplication, within seconds: TimeInterval) -> Bool {
+    let deadline = Date(timeIntervalSinceNow: seconds)
     while NSWorkspace.shared.frontmostApplication?.processIdentifier != app.processIdentifier {
-        guard Date() < deadline else {
-            let other = NSWorkspace.shared.frontmostApplication.map { $0.localizedName ?? $0.bundleIdentifier ?? "another app" } ?? "no app"
-            fail("\(args[0]) did not come to the front within 2 s; \(other) is in front")
-        }
+        guard Date() < deadline else { return false }
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
     }
-    printJSON(["bundleId": args[0]])
+    return true
 }
 
 // ---------- window ----------
