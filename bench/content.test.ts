@@ -1422,6 +1422,25 @@ benchRows("content.js in WebKit", [
     }],
   },
   {
+    name: "a card's rating drawn only by its class names reads as a field, and two values, digits run together, another scale, a lone star glyph, a row of star glyphs, and a hidden rating read nothing",
+    page: "ratings.html",
+    steps: [{
+      op: "extract",
+      args: [{ as: "table", hints: true }],
+      answer: {
+        value: {
+          truncated: false,
+          tables: [
+            { kind: "cards", headers: ["h3.title", "p.star-rating", "p.price"], hints: ["", "rating", ""], rows: [["A Light in the Attic", "3", "£51.77"], ["Tipping the Velvet", "1", "£53.74"], ["Soumission", "5", "£50.10"]] },
+            { kind: "cards", headers: ["h3.name", "span.meta", "span.cost"], hints: ["", "rating", ""], rows: [["Kettle", "4", "$29.99"], ["Toaster", "4.5", "$31.50"], ["Blender", "0", "$27.25"]] },
+            { kind: "cards", headers: ["h3.name", "span.cost"], rows: [["Two values", "$1.00"], ["Run together", "$2.00"], ["Out of ten", "$3.00"], ["A word", "$4.00"]] },
+            { kind: "cards", headers: ["h3.name", "span.cost"], rows: [["Row of stars", "$5.00"], ["One icon", "$6.00"], ["Hidden", "$7.00"]] },
+          ],
+        },
+      },
+    }],
+  },
+  {
     name: "a scroll the window cannot take scrolls the box under the middle of the window, and says what moved",
     page: "inner-scroll.html",
     steps: [{ op: "scroll", args: [0, 300], answer: { value: { ok: true, moved: "box", scrollY: 300, maxY: 2200 } } }],

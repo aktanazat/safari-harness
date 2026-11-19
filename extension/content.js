@@ -4925,6 +4925,9 @@
         const hint = hints ? fieldHint(el, own, label) : "";
         fields.push({ key, value: own, ...(hint ? { hint } : {}) });
         label = /^[^:]{1,30}:$/.test(own) ? own.slice(0, -1) : "";
+      } else if (!own && drawn(el)) {
+        const stars = classRating(el);
+        if (stars) fields.push({ key, value: stars, ...(hints ? { hint: [fieldHint(el, stars, label), "rating"].filter(Boolean).join(" ") } : {}) });
       }
       if (el.tagName === "A" && el.href) fields.push({ key: `${key} href`, value: el.href, link: true });
       return fields.length <= CARD_FIELDS_MAX;
@@ -4932,6 +4935,39 @@
     if (!add(card)) return null;
     for (const el of deepElements(card)) if (!add(el)) return null;
     return fields;
+  }
+
+  // A rating drawn only by CSS, as its class names say it, or "": an
+  // element with no text whose classes name a rating (star, stars, rating,
+  // rated) and one value from 0 to 5, as "star-rating Three" (Books to
+  // Scrape), "rating-4", or "a-star-4-5" (4.5). Two values, a value past 5
+  // (another scale), or digits run together ("stars-45") read nothing, and
+  // so does a star among sibling stars (one glyph of a row of five).
+  const RATING_WORD = /(?:^|[-_])(?:stars?|ratings?|rated)(?:$|[-_])/i;
+  const RATING_NUMBERS = ["zero", "one", "two", "three", "four", "five"];
+  function classRating(el) {
+    const classes = [...el.classList];
+    if (!classes.some((c) => RATING_WORD.test(c))) return "";
+    const glyphs = el.parentElement ? [...el.parentElement.children].filter((sib) => [...sib.classList].some((c) => RATING_WORD.test(c))) : [];
+    if (glyphs.length > 1) return "";
+    const values = new Set();
+    for (const c of classes) {
+      const word = RATING_NUMBERS.indexOf(c.toLowerCase());
+      if (word >= 0) values.add(String(word));
+      const joined = /(?:^|[-_])(?:stars?|ratings?|rated)[-_]+(?:(\d+)(?:[-_](\d))?|([a-z]+))$/i.exec(c);
+      if (!joined) continue;
+      const [, whole, tenth, named] = joined;
+      if (named !== undefined) {
+        const n = RATING_NUMBERS.indexOf(named.toLowerCase());
+        if (n >= 0) values.add(String(n));
+        continue;
+      }
+      if (whole.length > 1 || (tenth !== undefined && whole === "5" && tenth !== "0")) return "";
+      values.add(tenth === undefined || tenth === "0" ? whole : `${whole}.${tenth}`);
+    }
+    if (values.size !== 1) return "";
+    const [value] = values;
+    return Number(value) <= 5 ? value : "";
   }
 
   // What a field says it is, as words: its itemprop, data-testid,
