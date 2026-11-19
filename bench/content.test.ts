@@ -1437,6 +1437,7 @@ benchRows("content.js in WebKit", [
             { kind: "cards", headers: ["h3.name", "span.cost"], rows: [["Row of stars", "$5.00"], ["One icon", "$6.00"], ["Labelled stars", "$5.50"], ["Wrapped stars", "$5.60"], ["Listed stars", "$5.70"], ["Hidden", "$7.00"]] },
             { kind: "cards", headers: ["h3.name", "span.rating > span.score", "span.cost"], rows: [["Said in text", "4.6 out of 5", "$8.00"], ["Said again", "4.2 out of 5", "$9.00"], ["Said once more", "3.4 out of 5", "$10.00"]] },
             { kind: "cards", headers: ["h3.name", "span.meta", "span.rating-count", "span.cost"], hints: ["", "rating", "", ""], rows: [["Counted", "4", "(12)", "$11.00"], ["Counted again", "2", "(3)", "$12.00"], ["Counted once more", "5", "", "$13.00"]] },
+            { kind: "cards", headers: ["h3.name", "span.cost"], rows: [["Shadow stars", "$5.80"], ["Shadow stars again", "$5.85"], ["Shadow stars once more", "$5.90"]] },
           ],
         },
       },

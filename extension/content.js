@@ -4976,11 +4976,15 @@
     if (values.size !== 1) return "";
     const [value] = values;
     if (Number(value) > 5) return "";
-    const saysText = (box) => [box, ...box.querySelectorAll("*")].some((d) => drawn(d) && [...d.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && /\S/.test(n.nodeValue)));
+    const saysText = (box) => [box, ...deepElements(box)].some((d) => drawn(d) && [...d.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && /\S/.test(n.nodeValue)));
     if (saysText(el)) return "";
+    const holds = (up, down) => {
+      for (let at = down; at; at = at.parentElement ?? at.getRootNode().host) if (at === up) return true;
+      return false;
+    };
     const box = card ?? el.parentElement;
-    const glyph = (o) => o !== el && !o.contains(el) && !el.contains(o) && [...o.classList].some((c) => RATING_WORD.test(c)) && drawn(o) && !saysText(o);
-    if (box && [...box.querySelectorAll("*")].some(glyph)) return "";
+    const glyph = (o) => !holds(o, el) && !holds(el, o) && [...o.classList].some((c) => RATING_WORD.test(c)) && drawn(o) && !saysText(o);
+    if (box && [...deepElements(box)].some(glyph)) return "";
     return value;
   }
 

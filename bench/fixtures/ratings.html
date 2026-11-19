@@ -42,5 +42,13 @@
   <li class="row"><h3 class="name">Counted again</h3><span class="meta rating-2"></span><span class="rating-count">(3)</span><span class="cost">$12.00</span></li>
   <li class="row"><h3 class="name">Counted once more</h3><span class="meta rating-5"></span><span class="rating-count" style="display:none"></span><span class="cost">$13.00</span></li>
 </ul>
+<ul class="shadowed">
+  <li class="row"><h3 class="name">Shadow stars</h3><span class="widget"></span><span class="cost">$5.80</span></li>
+  <li class="row"><h3 class="name">Shadow stars again</h3><span class="widget"></span><span class="cost">$5.85</span></li>
+  <li class="row"><h3 class="name">Shadow stars once more</h3><span class="widget"></span><span class="cost">$5.90</span></li>
+</ul>
+<script>
+  for (const host of document.querySelectorAll(".widget")) host.attachShadow({ mode: "open" }).innerHTML = [1, 2, 3, 4, 5].map((n) => `<i class="star star-${n}" style="display:inline-block;width:1em;height:1em"></i>`).join("");
+</script>
 </body>
 </html>
