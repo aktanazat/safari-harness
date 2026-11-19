@@ -202,7 +202,16 @@ function toMessage(r: MsgRow, names: Map<string, string>) {
 }
 
 const MSG_COLS = "m.ROWID rowid, m.date, m.is_from_me me, m.text, m.attributedBody body, m.cache_has_attachments att, h.id handle";
-const THREAD_COLS = `${MSG_COLS}, m.guid, m.thread_originator_guid reply`;
+
+// Older macOS has no reply (before 11) or emoji-reaction (before 15) columns.
+type ThreadCols = { select: string; emoji: string };
+function threadCols(db: Database): ThreadCols {
+  const has = new Set(db.query<{ name: string }, []>("PRAGMA table_info(message)").all().map((c) => c.name));
+  return {
+    select: `${MSG_COLS}, m.guid, ${has.has("thread_originator_guid") ? "m.thread_originator_guid" : "NULL"} reply`,
+    emoji: has.has("associated_message_emoji") ? "m.associated_message_emoji" : "NULL",
+  };
+}
 
 // Tapback rows point at one part of a message as "p:<part>/<guid>",
 // "bp:<guid>" or the bare guid, which is always 36 characters; types
@@ -214,7 +223,7 @@ type Reaction = { from: string; reaction: string };
 type ReplyTo = { rowid: number; from: string; text: string } | { unavailable: true };
 
 // What each reply answers and who reacted how, for messages read together.
-function threadContext(db: Database, rows: ThreadRow[], names: Map<string, string>) {
+function threadContext(db: Database, cols: ThreadCols, rows: ThreadRow[], names: Map<string, string>) {
   const replies = new Map<number, ReplyTo>();
   const reactions = new Map<number, Reaction[]>();
   if (!rows.length) return { replies, reactions };
@@ -226,7 +235,7 @@ function threadContext(db: Database, rows: ThreadRow[], names: Map<string, strin
   }
   const targets = new Map(rows.map((r) => [r.guid, r.rowid]));
   const tapbacks = db.query(`
-    SELECT m.associated_message_guid target, substr(m.associated_message_guid, -36) guid, m.associated_message_type type, m.associated_message_emoji emoji, m.is_from_me me, h.id handle
+    SELECT m.associated_message_guid target, substr(m.associated_message_guid, -36) guid, m.associated_message_type type, ${cols.emoji} emoji, m.is_from_me me, h.id handle
     FROM message m LEFT JOIN handle h ON h.ROWID = m.handle_id
     WHERE m.associated_message_guid IS NOT NULL AND m.associated_message_type BETWEEN 2000 AND 3007
       AND substr(m.associated_message_guid, -36) IN (${Array(targets.size).fill("?").join(",")})
@@ -251,8 +260,8 @@ function threadContext(db: Database, rows: ThreadRow[], names: Map<string, strin
   return { replies, reactions };
 }
 
-function withContext(db: Database, rows: ThreadRow[], names: Map<string, string>) {
-  const { replies, reactions } = threadContext(db, rows, names);
+function withContext(db: Database, cols: ThreadCols, rows: ThreadRow[], names: Map<string, string>) {
+  const { replies, reactions } = threadContext(db, cols, rows, names);
   const files = messageFiles(db, rows.map((r) => r.rowid));
   return (rowid: number) => ({
     ...(replies.has(rowid) ? { replyTo: replies.get(rowid) } : {}),
@@ -267,10 +276,11 @@ export function history(opts: { chat: string; limit?: number; since?: number }) 
   try {
     const names = nameIndex(loadContacts());
     const c = resolveChat(db, opts.chat, names);
+    const cols = threadCols(db);
     const rows = db.query(`
-      SELECT ${THREAD_COLS} FROM chat_message_join j JOIN message m ON m.ROWID = j.message_id LEFT JOIN handle h ON h.ROWID = m.handle_id
+      SELECT ${cols.select} FROM chat_message_join j JOIN message m ON m.ROWID = j.message_id LEFT JOIN handle h ON h.ROWID = m.handle_id
       WHERE j.chat_id = ? AND m.ROWID > ? AND ${REAL} ORDER BY m.date DESC LIMIT ?`).all(c.id, Number(opts.since ?? 0), limit) as ThreadRow[];
-    const extra = withContext(db, rows, names);
+    const extra = withContext(db, cols, rows, names);
     return { ...describe(db, c, names), messages: rows.reverse().map((r) => ({ ...toMessage(r, names), ...extra(r.rowid) })) };
   } finally {
     db.close();
@@ -298,8 +308,9 @@ export function search(opts: { text?: string; from?: string; chat?: string; days
       if (handleKey(from).length >= 7 || from.includes("@")) fromKeys.add(handleKey(from));
       if (!fromKeys.size) throw new Error(`no contact or handle matches "${from}"`);
     }
+    const cols = threadCols(db);
     const rows = db.query(`
-      SELECT ${THREAD_COLS}, c.guid chat, c.ROWID cid, c.chat_identifier ident, c.display_name dn, c.service_name svc, c.style
+      SELECT ${cols.select}, c.guid chat, c.ROWID cid, c.chat_identifier ident, c.display_name dn, c.service_name svc, c.style
       FROM message m JOIN chat_message_join j ON j.message_id = m.ROWID JOIN chat c ON c.ROWID = j.chat_id LEFT JOIN handle h ON h.ROWID = m.handle_id
       WHERE m.date >= ? AND ${REAL} AND (m.text IS NOT NULL OR m.attributedBody IS NOT NULL)
       ORDER BY m.date DESC`).all(since) as (ThreadRow & { chat: string; cid: number; ident: string; dn: string | null; svc: string; style: number })[];
@@ -314,7 +325,7 @@ export function search(opts: { text?: string; from?: string; chat?: string; days
       found.push(r);
       if (hits.length >= limit) break;
     }
-    const extra = withContext(db, found, names);
+    const extra = withContext(db, cols, found, names);
     return hits.map((r) => ({ ...r, ...extra(r.rowid) }));
   } finally {
     db.close();

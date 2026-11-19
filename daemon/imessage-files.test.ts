@@ -89,6 +89,24 @@ test("history shows what a reply answers and only the reactions still standing",
   expect(reply.reactions).toEqual([{ from: "fixture@example.com", reaction: "★" }]);
 });
 
+// Messages on macOS before 11 has no reply column, before 15 no emoji one.
+test("history and search still read a Messages database without reply or emoji columns", async () => {
+  const { home, db } = fixture();
+  db.exec(`
+    INSERT INTO message VALUES ('R1',812678400000000020,0,NULL,NULL,0,1,0,2001,NULL,'p:0/AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',NULL);
+    INSERT INTO chat_message_join VALUES (1,2,812678400000000020);
+    ALTER TABLE message DROP COLUMN thread_originator_guid;
+    ALTER TABLE message DROP COLUMN associated_message_emoji;
+  `);
+  db.close();
+  const history = await invoke(home, "imessage_history", { chat: "iMessage;-;fixture@example.com" });
+  expect(history.error).toBe("");
+  expect(history.value.messages.map((m: { text: string; reactions?: unknown }) => [m.text, m.reactions])).toEqual([["photos", [{ from: "fixture@example.com", reaction: "liked" }]]]);
+  const search = await invoke(home, "imessage_search", { text: "photos", days: 36500 });
+  expect(search.error).toBe("");
+  expect(search.value.map((m: { text: string }) => m.text)).toEqual(["photos"]);
+});
+
 test("saving two same-named attachments preserves both files and an existing destination", async () => {
   const { home, db, folder } = fixture();
   db.exec("UPDATE attachment SET filename='~/Library/Messages/second.jpg', transfer_name='../photo.jpg' WHERE guid='cloud'");
