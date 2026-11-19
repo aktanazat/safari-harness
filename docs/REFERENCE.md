@@ -1778,11 +1778,13 @@ order. The rules are fixed, so the same page always reads the same way.
   say a rating (star, stars, rating, rated) and its value, is a field
   holding that number: `star-rating Three` (Books to Scrape) reads `3`,
   `rating-4` reads `4`, `a-star-4-5` reads `4.5`. Its hint for `fields`
-  is `rating`. Only one value from 0 to 5 counts: two values, a value past
-  5 (another scale), digits run together (`stars-45`), a word that is no
-  number, a star among sibling stars (one glyph of a row), and a bare star
-  icon read nothing. One that holds drawn text (`4.6 out of 5`) gives that
-  text instead.
+  is `rating`. Only a certain value from 0 to 5 counts: two values, a
+  value past 5 (another scale), digits run together (`stars-45`), a sign
+  (`rating--1`), a fraction word beside the value (`star-rating Four
+  half`), a number word with no class saying rating (`icon-star one`), a
+  star among other stars in the card (one glyph of a row, however each is
+  wrapped), and a bare star icon read nothing. One that holds drawn text
+  (`4.6 out of 5`) gives that text instead.
 - `selector` narrows the read to one region, and may name the table or
   list itself. `query` keeps the rows containing the text. `maxBytes`
   (default 20000) bounds the JSON of what comes back; `truncated: true`

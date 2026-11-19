@@ -4926,7 +4926,7 @@
         fields.push({ key, value: own, ...(hint ? { hint } : {}) });
         label = /^[^:]{1,30}:$/.test(own) ? own.slice(0, -1) : "";
       } else if (!own && drawn(el)) {
-        const stars = classRating(el);
+        const stars = classRating(el, card);
         if (stars) fields.push({ key, value: stars, ...(hints ? { hint: [fieldHint(el, stars, label), "rating"].filter(Boolean).join(" ") } : {}) });
       }
       if (el.tagName === "A" && el.href) fields.push({ key: `${key} href`, value: el.href, link: true });
@@ -4940,24 +4940,29 @@
   // A rating drawn only by CSS, as its class names say it, or "": an
   // element with no text whose classes name a rating (star, stars, rating,
   // rated) and one value from 0 to 5, as "star-rating Three" (Books to
-  // Scrape), "rating-4", or "a-star-4-5" (4.5). Two values, a value past 5
-  // (another scale), or digits run together ("stars-45") read nothing, and
-  // so does a star among sibling stars (one glyph of a row of five), or
-  // one holding drawn text of its own ("4.6 out of 5" is read as it is).
+  // Scrape), "rating-4", or "a-star-4-5" (4.5). Anything less than certain
+  // reads nothing: two values, a value past 5 (another scale), digits run
+  // together ("stars-45"), a sign ("rating--1"), a fraction word beside the
+  // value ("Four half"), a number word with no class saying rating ("icon-star
+  // one"), one star of several in the card (a glyph of a row of five, however
+  // wrapped), or one holding drawn text ("4.6 out of 5" is read as it is).
   const RATING_WORD = /(?:^|[-_])(?:stars?|ratings?|rated)(?:$|[-_])/i;
+  const RATING_SAID = /(?:^|[-_])(?:ratings?|rated)(?:$|[-_])/i;
+  const RATING_PART = /(?:^|[-_])(?:halfs?|halves|quarters?|thirds?|plus|minus|negative|neg)(?:$|[-_])/i;
   const RATING_NUMBERS = ["zero", "one", "two", "three", "four", "five"];
-  function classRating(el) {
+  function classRating(el, card) {
     const classes = [...el.classList];
     if (!classes.some((c) => RATING_WORD.test(c))) return "";
-    const saysText = (box) => [box, ...box.querySelectorAll("*")].some((d) => drawn(d) && [...d.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && /\S/.test(n.nodeValue)));
-    if (saysText(el)) return "";
-    const glyphs = el.parentElement ? [...el.parentElement.children].filter((sib) => drawn(sib) && !saysText(sib) && [...sib.classList].some((c) => RATING_WORD.test(c))) : [];
-    if (glyphs.length > 1) return "";
+    if (classes.some((c) => RATING_PART.test(c))) return "";
     const values = new Set();
     for (const c of classes) {
       const word = RATING_NUMBERS.indexOf(c.toLowerCase());
-      if (word >= 0) values.add(String(word));
-      const joined = /(?:^|[-_])(?:stars?|ratings?|rated)[-_]+(?:(\d+)(?:[-_](\d))?|([a-z]+))$/i.exec(c);
+      if (word >= 0) {
+        if (!classes.some((k) => RATING_SAID.test(k))) return "";
+        values.add(String(word));
+      }
+      if (/(?:^|[-_])(?:stars?|ratings?|rated)[-_]{2}/i.test(c)) return "";
+      const joined = /(?:^|[-_])(?:stars?|ratings?|rated)[-_](?:(\d+)(?:[-_](\d))?|([a-z]+))$/i.exec(c);
       if (!joined) continue;
       const [, whole, tenth, named] = joined;
       if (named !== undefined) {
@@ -4970,7 +4975,13 @@
     }
     if (values.size !== 1) return "";
     const [value] = values;
-    return Number(value) <= 5 ? value : "";
+    if (Number(value) > 5) return "";
+    const saysText = (box) => [box, ...box.querySelectorAll("*")].some((d) => drawn(d) && [...d.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && /\S/.test(n.nodeValue)));
+    if (saysText(el)) return "";
+    const box = card ?? el.parentElement;
+    const glyph = (o) => o !== el && !o.contains(el) && !el.contains(o) && [...o.classList].some((c) => RATING_WORD.test(c)) && drawn(o) && !saysText(o);
+    if (box && [...box.querySelectorAll("*")].some(glyph)) return "";
+    return value;
   }
 
   // What a field says it is, as words: its itemprop, data-testid,
