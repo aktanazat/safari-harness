@@ -1473,6 +1473,27 @@ test("a tab Safari puts in another window than the agent's is closed, and the op
   expect(await windowsOf(b)).toEqual([1, window]);
 });
 
+// 11-18: nothing recorded where the six Slack tabs were put, so the next
+// such tab must leave the window asked for and the one it landed in.
+test("each tab the harness makes is journaled with the window asked for, the one it landed in, and the tabs beside it it did not make", async () => {
+  const b = await start();
+  b.open("https://x.com/home");
+  const window = await b.agentWindow();
+  const fine = b.request("tabs.open", ["https://app.slack.com/a", true, window]);
+  await b.clock.advance(15_000);
+  await fine;
+  b.misplaceNext();
+  const lost = b.request("tabs.open", ["https://app.slack.com/b", true, window]);
+  await b.clock.advance(15_000);
+  await lost;
+  const placed = b.told.filter((m) => m.kind === "tab placed").map(({ asked, landed, agentWindow, notMade }) => ({ asked, landed, agentWindow, notMade }));
+  expect(placed).toEqual([
+    { asked: "new window", landed: window, agentWindow: true, notMade: 0 },
+    { asked: window, landed: window, agentWindow: true, notMade: 0 },
+    { asked: window, landed: 1, agentWindow: false, notMade: 1 },
+  ]);
+});
+
 // 09-30: a second page's word that a tab is coming, in the same second,
 // replaced the first's, and the first page's tab went to the second page,
 // which may be another agent's.

@@ -1955,7 +1955,9 @@ async function handle(msg) {
       // Only a window that holds this page alone is one of the agent's: a
       // Safari that opened the page in a window of the user's would make
       // his an agent window, and every open after it would go there.
-      if ((await api.tabs.query({ windowId: tab.windowId })).length !== 1) {
+      const beside = await api.tabs.query({ windowId: tab.windowId });
+      send({ op: "note", kind: "tab placed", tab: tab.id, asked: "new window", landed: tab.windowId, agentWindow: beside.length === 1, notMade: beside.filter((t) => t.id !== tab.id && !harnessTabs.has(t.id) && !drivenTabs.has(t.id)).length });
+      if (beside.length !== 1) {
         closing.add(tab.id);
         await api.tabs.remove(tab.id).catch(() => closing.delete(tab.id));
         throw new Error(`Safari opened the agent window's page in window ${tab.windowId}, which holds other tabs, so it was closed`);
@@ -2395,10 +2397,16 @@ const GROUP_WAIT_MS = 20_000;
 const creatingIn = new Map(); // windowId -> the tab creates under way in it
 
 async function agentWindow(windowId) {
-  if (typeof windowId !== "number") throw new Error(`no window was named, and the harness opens tabs only in an agent's window: one with no window ${NOT_AGENT}`);
+  if (typeof windowId !== "number") {
+    send({ op: "note", kind: "tab refused", asked: null });
+    throw new Error(`no window was named, and the harness opens tabs only in an agent's window: one with no window ${NOT_AGENT}`);
+  }
   const id = await resolveWindow(windowId);
   await bounded(listsChanged, "window lists", Date.now() + LIST_MS);
-  if (!windowLists.agentWindows.includes(id)) throw new Error(`window ${windowId} ${NOT_AGENT}, so no tab opens in it`);
+  if (!windowLists.agentWindows.includes(id)) {
+    send({ op: "note", kind: "tab refused", asked: windowId, resolved: id });
+    throw new Error(`window ${windowId} ${NOT_AGENT}, so no tab opens in it`);
+  }
   return id;
 }
 
@@ -2421,10 +2429,25 @@ async function createInAgentWindow(windowId, props) {
     if (under.size === 0 && creatingIn.get(id) === under) creatingIn.delete(id);
   }
   const placed = await api.tabs.get(tab.id).catch(() => tab);
+  void notePlaced(placed, id);
   if (placed.windowId === id) return placed;
   closing.add(tab.id);
   await api.tabs.remove(tab.id).catch(() => closing.delete(tab.id));
   throw new Error(`Safari put the new tab in window ${placed.windowId}, not in agent window ${id}, so it was closed; open it again`);
+}
+
+// Where each tab the harness made landed, in the journal: the window asked
+// for, the one Safari put it in, whether that is an agent window, and how
+// many tabs the harness did not make sit beside it there. The six Slack
+// tabs that reached the user's window on 11-18 left no trace of where they
+// were put, and no reproduction found how (16 runs, 0 misplaced).
+async function notePlaced(tab, asked) {
+  const beside = await bounded(api.tabs.query({ windowId: tab.windowId }), "tabs.query", Date.now() + LIST_MS).catch(() => null);
+  send({
+    op: "note", kind: "tab placed", tab: tab.id, asked, landed: tab.windowId,
+    agentWindow: windowLists.agentWindows.includes(tab.windowId),
+    notMade: beside === null ? null : beside.filter((t) => t.id !== tab.id && !harnessTabs.has(t.id) && !drivenTabs.has(t.id)).length,
+  });
 }
 
 api.runtime.onStartup.addListener(() => {
