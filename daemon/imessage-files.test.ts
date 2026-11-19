@@ -17,7 +17,8 @@ function fixture() {
     CREATE TABLE handle (id TEXT);
     CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
     CREATE TABLE message (guid TEXT, date INTEGER, is_from_me INTEGER, text TEXT, attributedBody BLOB,
-      cache_has_attachments INTEGER, handle_id INTEGER, item_type INTEGER, associated_message_type INTEGER);
+      cache_has_attachments INTEGER, handle_id INTEGER, item_type INTEGER, associated_message_type INTEGER,
+      thread_originator_guid TEXT, associated_message_guid TEXT, associated_message_emoji TEXT);
     CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER, message_date INTEGER);
     CREATE TABLE attachment (guid TEXT, transfer_name TEXT, mime_type TEXT, total_bytes INTEGER,
       filename TEXT, transfer_state INTEGER, hide_attachment INTEGER);
@@ -25,7 +26,7 @@ function fixture() {
     INSERT INTO chat VALUES ('iMessage;-;fixture@example.com','fixture@example.com',NULL,'iMessage',45);
     INSERT INTO handle VALUES ('fixture@example.com');
     INSERT INTO chat_handle_join VALUES (1,1);
-    INSERT INTO message VALUES ('AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',812678400000000000,0,'photos',NULL,1,1,0,0);
+    INSERT INTO message VALUES ('AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',812678400000000000,0,'photos',NULL,1,1,0,0,NULL,NULL,NULL);
     INSERT INTO chat_message_join VALUES (1,1,812678400000000000);
     INSERT INTO attachment VALUES ('local','photo.jpg','image/jpeg',5,'~/Library/Messages/photo.jpg',0,0);
     INSERT INTO attachment VALUES ('cloud','cloud.jpg','image/jpeg',5,'~/Library/Messages/missing.jpg',5,0);
@@ -62,6 +63,32 @@ test("history distinguishes real local files from offloaded files and hidden pre
   ]);
 });
 
+// A reaction someone took back must not be reported as standing; taking
+// one back from a part of a message leaves the same one on another part,
+// and another device's clock can date a reaction before its message.
+test("history shows what a reply answers and only the reactions still standing", async () => {
+  const { home, db } = fixture();
+  db.exec(`
+    INSERT INTO message VALUES ('CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC',812678400000000010,1,'nice',NULL,0,0,0,0,'AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',NULL,NULL);
+    INSERT INTO message VALUES ('R1',812678399000000000,0,NULL,NULL,0,1,0,2001,NULL,'p:0/AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',NULL);
+    INSERT INTO message VALUES ('R2',812678400000000030,1,NULL,NULL,0,0,0,2000,NULL,'p:0/AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',NULL);
+    INSERT INTO message VALUES ('R3',812678400000000035,1,NULL,NULL,0,0,0,2000,NULL,'p:1/AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',NULL);
+    INSERT INTO message VALUES ('R4',812678400000000040,1,NULL,NULL,0,0,0,3000,NULL,'p:1/AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',NULL);
+    INSERT INTO message VALUES ('R5',812678400000000045,0,NULL,NULL,0,1,0,2003,NULL,'p:0/AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',NULL);
+    INSERT INTO message VALUES ('R6',812678400000000046,0,NULL,NULL,0,1,0,3003,NULL,'p:0/AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',NULL);
+    INSERT INTO message VALUES ('R7',812678400000000050,0,NULL,NULL,0,1,0,2006,NULL,'bp:CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC','★');
+    INSERT INTO chat_message_join VALUES (1,2,812678400000000010),(1,3,812678399000000000),(1,4,812678400000000030),(1,5,812678400000000035),(1,6,812678400000000040),(1,7,812678400000000045),(1,8,812678400000000046),(1,9,812678400000000050);
+  `);
+  db.close();
+  const result = await invoke(home, "imessage_history", { chat: "iMessage;-;fixture@example.com" });
+  expect(result.error).toBe("");
+  expect(result.value.messages).toHaveLength(2);
+  const [photos, reply] = result.value.messages;
+  expect(photos.reactions).toEqual([{ from: "fixture@example.com", reaction: "liked" }, { from: "me", reaction: "loved" }]);
+  expect(reply.replyTo).toEqual({ rowid: 1, from: "fixture@example.com", text: "photos" });
+  expect(reply.reactions).toEqual([{ from: "fixture@example.com", reaction: "★" }]);
+});
+
 test("saving two same-named attachments preserves both files and an existing destination", async () => {
   const { home, db, folder } = fixture();
   db.exec("UPDATE attachment SET filename='~/Library/Messages/second.jpg', transfer_name='../photo.jpg' WHERE guid='cloud'");
@@ -95,7 +122,7 @@ test("a search with a chat finds the words in that conversation only", async () 
     INSERT INTO chat VALUES ('iMessage;-;other@example.com','other@example.com',NULL,'iMessage',45);
     INSERT INTO handle VALUES ('other@example.com');
     INSERT INTO chat_handle_join VALUES (2,2);
-    INSERT INTO message VALUES ('BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB',812678400000000001,0,'more photos',NULL,0,2,0,0);
+    INSERT INTO message VALUES ('BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB',812678400000000001,0,'more photos',NULL,0,2,0,0,NULL,NULL,NULL);
     INSERT INTO chat_message_join VALUES (2,2,812678400000000001);
   `);
   db.close();
