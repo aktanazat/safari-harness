@@ -4942,13 +4942,15 @@
   // rated) and one value from 0 to 5, as "star-rating Three" (Books to
   // Scrape), "rating-4", or "a-star-4-5" (4.5). Two values, a value past 5
   // (another scale), or digits run together ("stars-45") read nothing, and
-  // so does a star among sibling stars (one glyph of a row of five).
+  // so does a star among sibling stars (one glyph of a row of five), or
+  // one holding drawn text of its own ("4.6 out of 5" is read as it is).
   const RATING_WORD = /(?:^|[-_])(?:stars?|ratings?|rated)(?:$|[-_])/i;
   const RATING_NUMBERS = ["zero", "one", "two", "three", "four", "five"];
   function classRating(el) {
     const classes = [...el.classList];
     if (!classes.some((c) => RATING_WORD.test(c))) return "";
-    const glyphs = el.parentElement ? [...el.parentElement.children].filter((sib) => [...sib.classList].some((c) => RATING_WORD.test(c))) : [];
+    if ([...el.querySelectorAll("*")].some((d) => drawn(d) && [...d.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && /\S/.test(n.nodeValue)))) return "";
+    const glyphs = el.parentElement ? [...el.parentElement.children].filter((sib) => !/\S/.test(sib.textContent) && drawn(sib) && [...sib.classList].some((c) => RATING_WORD.test(c))) : [];
     if (glyphs.length > 1) return "";
     const values = new Set();
     for (const c of classes) {

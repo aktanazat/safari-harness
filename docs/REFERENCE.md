@@ -1781,7 +1781,8 @@ order. The rules are fixed, so the same page always reads the same way.
   is `rating`. Only one value from 0 to 5 counts: two values, a value past
   5 (another scale), digits run together (`stars-45`), a word that is no
   number, a star among sibling stars (one glyph of a row), and a bare star
-  icon read nothing.
+  icon read nothing. One that holds drawn text (`4.6 out of 5`) gives that
+  text instead.
 - `selector` narrows the read to one region, and may name the table or
   list itself. `query` keeps the rows containing the text. `maxBytes`
   (default 20000) bounds the JSON of what comes back; `truncated: true`
