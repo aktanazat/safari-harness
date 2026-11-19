@@ -1780,7 +1780,7 @@ order. The rules are fixed, so the same page always reads the same way.
   `rating-4` reads `4`, `a-star-4-5` reads `4.5`. Its hint for `fields`
   is `rating`. Only a certain value from 0 to 5 counts: two values, a
   value past 5 (another scale), digits run together (`stars-45`), a sign
-  (`rating--1`), a fraction word beside the value (`star-rating Four
+  (`rating--1`), a word that is no number, a fraction word beside the value (`star-rating Four
   half`), a number word with no class saying rating (`icon-star one`), a
   star among other stars in the card (one glyph of a row, however each is
   wrapped), and a bare star icon read nothing. One that holds drawn text
