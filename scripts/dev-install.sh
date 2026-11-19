@@ -70,6 +70,38 @@ esac
 
 # health FIELD: that field of the daemon's /health, or "" when it does not answer
 health() { curl -s --max-time 2 "$BASE/health" | jq -r "$1 // empty" 2>/dev/null || true; }
+# in_use: pinned paths and every release current since the oldest live
+# client started. point touches each release as it stops being current.
+in_use() {
+  local processes files up cmd d h m s now oldest="" r physical
+  processes="$(ps -axww -o etime=,command=)" || return 1
+  [ -n "$processes" ] || return 1
+  files="$(lsof -nP -d cwd,txt -Fn 2>/dev/null)" || return 1
+  grep -q '^n/' <<<"$files" || return 1
+  now="$(date +%s)"
+  while read -r up cmd; do
+    [[ "$up" =~ ^([0-9]+-)?([0-9]+:)?[0-9]+:[0-9]+$ ]] && [ -n "$cmd" ] || return 1
+    case "$cmd" in
+      *"$CURRENT/"* | *"$HOME/.bun/bin/safari"*)
+        d=0 h=0
+        [[ "$up" != *-* ]] || { d="${up%%-*}"; up="${up#*-}"; }
+        [[ "$up" != *:*:* ]] || { h="${up%%:*}"; up="${up#*:}"; }
+        m="${up%:*}" s="${up#*:}"
+        up=$((now - ((10#$d * 24 + 10#$h) * 60 + 10#$m) * 60 - 10#$s))
+        [ -n "$oldest" ] && [ "$oldest" -le "$up" ] || oldest="$up" ;;
+    esac
+  done <<<"$processes"
+  for r in "$RELEASES"/*/; do
+    r="${r%/}"
+    physical="$(cd "$r" && pwd -P)" || return 1
+    if grep -qF "$r" <<<"$processes" || grep -qF "$physical" <<<"$processes" || grep -qxF "n$physical" <<<"$files" || grep -qF "n$physical/" <<<"$files"; then
+      basename "$r"
+    elif [ -n "$oldest" ]; then
+      [ "$(stat -f %m "$r")" -lt "$oldest" ] || basename "$r"
+    fi
+  done
+  return 0
+}
 # trash PATH: moves it to the Trash under a name of its own
 trash() { mv "$1" "$HOME/.Trash/safari-harness-$(basename "$1")-$(date +%s)"; }
 # job LABEL: the program its launchd job runs
@@ -389,12 +421,17 @@ checkpoint=""
 
 # Kept: the current release, the newest KEEP others, any current in the
 # last week (an agent session's MCP server may still run it), and the one
-# the daemon runs. App zips no kept release is built from go too.
+# the daemon runs, plus releases used by live clients. App zips no kept
+# release is built from go too.
+if ! live="$(in_use)"; then
+  echo "cleanup skipped: process identity unavailable"
+  exit 0
+fi
 running="$(health .root)"
 n=0
 for r in $(ls -t "$RELEASES"); do
   n=$((n + 1))
-  if [ "$n" -gt $((KEEP + 1)) ] && [ "$RELEASES/$r" != "$running" ] && [ -z "$(find "$RELEASES/$r" -maxdepth 0 -mtime -7)" ]; then trash "$RELEASES/$r"; fi
+  if [ "$n" -gt $((KEEP + 1)) ] && [ "$RELEASES/$r" != "$running" ] && ! grep -qxF "$r" <<<"$live" && [ -z "$(find "$RELEASES/$r" -maxdepth 0 -mtime -7)" ]; then trash "$RELEASES/$r"; fi
 done
 for zip in "$DATA"/apps/*.zip; do
   [ -f "$zip" ] || continue
