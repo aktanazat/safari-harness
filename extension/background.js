@@ -1956,7 +1956,7 @@ async function handle(msg) {
       // Safari that opened the page in a window of the user's would make
       // his an agent window, and every open after it would go there.
       const beside = await api.tabs.query({ windowId: tab.windowId });
-      send({ op: "note", kind: "tab placed", tab: tab.id, asked: "new window", landed: tab.windowId, agentWindow: false, notMade: beside.filter((t) => t.id !== tab.id && !harnessTabs.has(t.id)).length });
+      send({ op: "note", kind: "tab placed", tab: tab.id, asked: "new window", landed: tab.windowId, agentWindow: beside.length === 1, notMade: beside.filter((t) => t.id !== tab.id && !harnessTabs.has(t.id) && !drivenTabs.has(t.id)).length });
       if (beside.length !== 1) {
         closing.add(tab.id);
         await api.tabs.remove(tab.id).catch(() => closing.delete(tab.id));
@@ -2429,7 +2429,7 @@ async function createInAgentWindow(windowId, props) {
     if (under.size === 0 && creatingIn.get(id) === under) creatingIn.delete(id);
   }
   const placed = await api.tabs.get(tab.id).catch(() => tab);
-  await notePlaced(placed, id);
+  void notePlaced(placed, id);
   if (placed.windowId === id) return placed;
   closing.add(tab.id);
   await api.tabs.remove(tab.id).catch(() => closing.delete(tab.id));
@@ -2446,7 +2446,7 @@ async function notePlaced(tab, asked) {
   send({
     op: "note", kind: "tab placed", tab: tab.id, asked, landed: tab.windowId,
     agentWindow: windowLists.agentWindows.includes(tab.windowId),
-    notMade: beside === null ? null : beside.filter((t) => t.id !== tab.id && !harnessTabs.has(t.id)).length,
+    notMade: beside === null ? null : beside.filter((t) => t.id !== tab.id && !harnessTabs.has(t.id) && !drivenTabs.has(t.id)).length,
   });
 }
 

@@ -1488,7 +1488,7 @@ test("each tab the harness makes is journaled with the window asked for, the one
   await lost;
   const placed = b.told.filter((m) => m.kind === "tab placed").map(({ asked, landed, agentWindow, notMade }) => ({ asked, landed, agentWindow, notMade }));
   expect(placed).toEqual([
-    { asked: "new window", landed: window, agentWindow: false, notMade: 0 },
+    { asked: "new window", landed: window, agentWindow: true, notMade: 0 },
     { asked: window, landed: window, agentWindow: true, notMade: 0 },
     { asked: window, landed: 1, agentWindow: false, notMade: 1 },
   ]);
