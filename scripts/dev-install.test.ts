@@ -1,6 +1,6 @@
 // Deploys must preserve the installed history before touching a release or native app.
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -377,4 +377,52 @@ test("a deploy marks the daemon's restart for callers until it is done", () => {
   expect(deployed).toMatchObject({ code: 0, out: expect.stringContaining("daemon: restarted (its code changed)") });
   expect(Number(readFileSync(join(home, "deploying-seen"), "utf8"))).toBeGreaterThan(started + 60);
   expect(existsSync(join(data, "deploying"))).toBe(false);
+});
+
+function pruneSandbox(identity = "") {
+  git("update-ref", "refs/remotes/origin/master", descendant);
+  for (let i = 0; i < 7; i++) release(`recent-${i}`);
+  const old = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000 - 60000);
+  for (const id of ["seven-days-old", "unused-old"]) utimesSync(release(id), old, old);
+  const layer = join(root, "prune.sh");
+  writeFileSync(layer, `
+. "${env.BASH_ENV}"
+mv() {
+  case "$1" in "$RELEASES"/*) echo "would trash $(basename "$1")" ;; *) command mv "$@" ;; esac
+}
+${identity}
+`);
+  env.BASH_ENV = layer;
+  return deployThrough(descendant);
+}
+
+test.each(["command", "cwd", "exe"])("pruning keeps a seven-day-old release used by a live pinned client (%s)", async kind => {
+  const pinned = release("seven-days-old");
+  if (kind === "exe") {
+    copyFileSync("/bin/sleep", join(pinned, "client"));
+    const signed = Bun.spawnSync(["codesign", "--force", "--sign", "-", join(pinned, "client")]);
+    expect(signed.exitCode).toBe(0);
+  }
+  const client = Bun.spawn(kind === "exe" ? [join(pinned, "client"), "120"] : ["/bin/bash", "-c", 'while :; do sleep 1; done', kind === "command" ? join(pinned, "daemon/mcp.ts") : "client"], {
+    cwd: kind === "cwd" ? pinned : root, stdout: "ignore", stderr: "ignore",
+  });
+  try {
+    const result = pruneSandbox();
+    expect(client.exitCode).toBeNull();
+    console.log(`${kind}: ${result.out.trim()}`);
+    expect(result.code).toBe(0);
+    expect(result.out).not.toContain("would trash seven-days-old");
+    expect(result.out).toContain("would trash unused-old");
+  } finally {
+    client.kill();
+    await client.exited;
+  }
+});
+
+test.each(["ps() { return 1; }", "ps() { :; }", "ps() { echo unusable; }", "lsof() { return 1; }", "lsof() { :; }"])("pruning skips all cleanup with untrusted process identity: %s", identity => {
+  const result = pruneSandbox(identity);
+  console.log(result.out.trim());
+  expect(result.code).toBe(0);
+  expect(result.out).toContain("cleanup skipped: process identity unavailable");
+  expect(result.out).not.toContain("would trash");
 });
