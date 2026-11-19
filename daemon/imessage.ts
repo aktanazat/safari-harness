@@ -185,18 +185,81 @@ export function chats(opts: { limit?: number } = {}) {
 }
 
 type MsgRow = { rowid: number; date: number; me: number; text: string | null; body: Uint8Array | null; att: number; handle: string | null };
+type ThreadRow = MsgRow & { guid: string; reply: string | null };
+
+function sender(me: number, handle: string | null, names: Map<string, string>): string {
+  return me === 1 ? "me" : handle ? names.get(handleKey(handle)) ?? handle : "unknown";
+}
 
 function toMessage(r: MsgRow, names: Map<string, string>) {
   return {
     rowid: r.rowid,
     at: toDate(r.date),
-    from: r.me === 1 ? "me" : r.handle ? names.get(handleKey(r.handle)) ?? r.handle : "unknown",
+    from: sender(r.me, r.handle, names),
     text: messageText(r.text, r.body),
     ...(r.att ? { attachment: true } : {}),
   };
 }
 
 const MSG_COLS = "m.ROWID rowid, m.date, m.is_from_me me, m.text, m.attributedBody body, m.cache_has_attachments att, h.id handle";
+const THREAD_COLS = `${MSG_COLS}, m.guid, m.thread_originator_guid reply`;
+
+// Tapback rows point at one part of a message as "p:<part>/<guid>",
+// "bp:<guid>" or the bare guid, which is always 36 characters; types
+// 2000-2007 add one, the same type plus 1000 takes it back. Dates can't
+// bound the lookup: another device's clock can date a tapback before its message.
+const REACTIONS = ["loved", "liked", "disliked", "laughed", "emphasized", "questioned", "emoji", "sticker"];
+
+type Reaction = { from: string; reaction: string };
+type ReplyTo = { rowid: number; from: string; text: string } | { unavailable: true };
+
+// What each reply answers and who reacted how, for messages read together.
+function threadContext(db: Database, rows: ThreadRow[], names: Map<string, string>) {
+  const replies = new Map<number, ReplyTo>();
+  const reactions = new Map<number, Reaction[]>();
+  if (!rows.length) return { replies, reactions };
+  const original = db.query(`SELECT ${MSG_COLS} FROM message m LEFT JOIN handle h ON h.ROWID = m.handle_id WHERE m.guid = ?`);
+  for (const r of rows) {
+    if (!r.reply) continue;
+    const o = original.get(r.reply) as MsgRow | null;
+    replies.set(r.rowid, o ? { rowid: o.rowid, from: sender(o.me, o.handle, names), text: messageText(o.text, o.body).slice(0, 200) } : { unavailable: true });
+  }
+  const targets = new Map(rows.map((r) => [r.guid, r.rowid]));
+  const tapbacks = db.query(`
+    SELECT m.associated_message_guid target, substr(m.associated_message_guid, -36) guid, m.associated_message_type type, m.associated_message_emoji emoji, m.is_from_me me, h.id handle
+    FROM message m LEFT JOIN handle h ON h.ROWID = m.handle_id
+    WHERE m.associated_message_guid IS NOT NULL AND m.associated_message_type BETWEEN 2000 AND 3007
+      AND substr(m.associated_message_guid, -36) IN (${Array(targets.size).fill("?").join(",")})
+    ORDER BY m.date`).all(...targets.keys()) as { target: string; guid: string; type: number; emoji: string | null; me: number; handle: string | null }[];
+  const live = new Map<number, Map<string, Reaction>>();
+  for (const t of tapbacks) {
+    const rowid = targets.get(t.guid);
+    const kind = t.type % 1000;
+    if (rowid === undefined || kind > 7) continue;
+    const from = sender(t.me, t.handle, names);
+    const reaction = kind === 6 && t.emoji ? t.emoji : REACTIONS[kind];
+    const key = `${t.target}\n${from}\n${kind === 6 ? `emoji:${t.emoji ?? ""}` : kind}`;
+    const onMessage = live.get(rowid) ?? new Map<string, Reaction>();
+    if (t.type < 3000) onMessage.set(key, { from, reaction });
+    else onMessage.delete(key);
+    live.set(rowid, onMessage);
+  }
+  for (const [rowid, onMessage] of live) {
+    const standing = new Map([...onMessage.values()].map((r) => [`${r.from}\n${r.reaction}`, r]));
+    if (standing.size) reactions.set(rowid, [...standing.values()]);
+  }
+  return { replies, reactions };
+}
+
+function withContext(db: Database, rows: ThreadRow[], names: Map<string, string>) {
+  const { replies, reactions } = threadContext(db, rows, names);
+  const files = messageFiles(db, rows.map((r) => r.rowid));
+  return (rowid: number) => ({
+    ...(replies.has(rowid) ? { replyTo: replies.get(rowid) } : {}),
+    ...(reactions.has(rowid) ? { reactions: reactions.get(rowid) } : {}),
+    ...(files.has(rowid) ? { files: files.get(rowid) } : {}),
+  });
+}
 
 export function history(opts: { chat: string; limit?: number; since?: number }) {
   const limit = Math.min(Math.max(Number(opts.limit ?? 30), 1), 200);
@@ -205,10 +268,10 @@ export function history(opts: { chat: string; limit?: number; since?: number }) 
     const names = nameIndex(loadContacts());
     const c = resolveChat(db, opts.chat, names);
     const rows = db.query(`
-      SELECT ${MSG_COLS} FROM chat_message_join j JOIN message m ON m.ROWID = j.message_id LEFT JOIN handle h ON h.ROWID = m.handle_id
-      WHERE j.chat_id = ? AND m.ROWID > ? AND ${REAL} ORDER BY m.date DESC LIMIT ?`).all(c.id, Number(opts.since ?? 0), limit) as MsgRow[];
-    const files = messageFiles(db, rows.map((r) => r.rowid));
-    return { ...describe(db, c, names), messages: rows.reverse().map((r) => ({ ...toMessage(r, names), ...(files.has(r.rowid) ? { files: files.get(r.rowid) } : {}) })) };
+      SELECT ${THREAD_COLS} FROM chat_message_join j JOIN message m ON m.ROWID = j.message_id LEFT JOIN handle h ON h.ROWID = m.handle_id
+      WHERE j.chat_id = ? AND m.ROWID > ? AND ${REAL} ORDER BY m.date DESC LIMIT ?`).all(c.id, Number(opts.since ?? 0), limit) as ThreadRow[];
+    const extra = withContext(db, rows, names);
+    return { ...describe(db, c, names), messages: rows.reverse().map((r) => ({ ...toMessage(r, names), ...extra(r.rowid) })) };
   } finally {
     db.close();
   }
@@ -236,21 +299,23 @@ export function search(opts: { text?: string; from?: string; chat?: string; days
       if (!fromKeys.size) throw new Error(`no contact or handle matches "${from}"`);
     }
     const rows = db.query(`
-      SELECT ${MSG_COLS}, c.guid chat, c.ROWID cid, c.chat_identifier ident, c.display_name dn, c.service_name svc, c.style
+      SELECT ${THREAD_COLS}, c.guid chat, c.ROWID cid, c.chat_identifier ident, c.display_name dn, c.service_name svc, c.style
       FROM message m JOIN chat_message_join j ON j.message_id = m.ROWID JOIN chat c ON c.ROWID = j.chat_id LEFT JOIN handle h ON h.ROWID = m.handle_id
       WHERE m.date >= ? AND ${REAL} AND (m.text IS NOT NULL OR m.attributedBody IS NOT NULL)
-      ORDER BY m.date DESC`).all(since) as (MsgRow & { chat: string; cid: number; ident: string; dn: string | null; svc: string; style: number })[];
+      ORDER BY m.date DESC`).all(since) as (ThreadRow & { chat: string; cid: number; ident: string; dn: string | null; svc: string; style: number })[];
     const hits = [];
+    const found: ThreadRow[] = [];
     for (const r of rows) {
       if (only !== undefined && r.cid !== only) continue;
       if (fromKeys.size && (r.me === 1 || !r.handle || !fromKeys.has(handleKey(r.handle)))) continue;
       const msg = toMessage(r, names);
       if (text && !msg.text.toLowerCase().includes(text)) continue;
       hits.push({ ...msg, chat: r.chat, chatName: describe(db, { id: r.cid, guid: r.chat, ident: r.ident, dn: r.dn, svc: r.svc, style: r.style }, names).name });
+      found.push(r);
       if (hits.length >= limit) break;
     }
-    const files = messageFiles(db, hits.map((r) => r.rowid));
-    return hits.map((r) => ({ ...r, ...(files.has(r.rowid) ? { files: files.get(r.rowid) } : {}) }));
+    const extra = withContext(db, found, names);
+    return hits.map((r) => ({ ...r, ...extra(r.rowid) }));
   } finally {
     db.close();
   }
@@ -774,7 +839,7 @@ export const IMESSAGE_TOOLS: Record<string, Tool> = {
     run: async (a) => chats({ limit: a.limit as number | undefined }),
   },
   imessage_history: {
-    desc: "Conversation messages and files, oldest first. Missing files: imessage_files.",
+    desc: "Conversation messages and files, oldest first; replyTo is the message a reply answers, reactions the tapbacks on it. Missing files: imessage_files.",
     params: {
       chat: { type: "string", description: "chat id, phone, email, or contact name" },
       limit: { type: "number", description: "default 30, max 200" },
