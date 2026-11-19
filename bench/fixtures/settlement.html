@@ -1,0 +1,36 @@
+<!doctype html>
+<title>Settling controls</title>
+<style>#motion { width: 10px; transition: width 200ms linear; }</style>
+<label>Field <input id="field"></label>
+<label>Choice <select id="choice"><option>A</option><option>B</option></select></label>
+<button id="idle">Idle</button><p id="out">Before</p><div id="motion">Motion</div>
+<script>
+  const mode = new URL(location.href).searchParams.get("mode");
+  let act = () => {};
+  let interval;
+  const reject = () => { field.value = "rewritten"; choice.value = "A"; };
+  const schedule = () => {
+    if (mode === "sync") reject();
+    else if (mode === "microtask") queueMicrotask(reject);
+    else if (mode === "raf") requestAnimationFrame(reject);
+    else if (mode === "idle") (window.requestIdleCallback ?? (fn => setTimeout(fn, 150)))(reject);
+    else if (mode === "string") setTimeout("document.querySelector('#field').value='rewritten';document.querySelector('#choice').value='A'", 200);
+    else if (mode === "fetch" || mode === "body") fetch(`/answer?mode=${mode}`).then(r => r.text()).then(reject);
+    else if (mode === "interval") interval = setInterval(reject, 150);
+    else if (mode === "channel") {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = reject;
+      setTimeout(() => channel.port2.postMessage(null), 150);
+    } else if (mode === "transition") {
+      motion.getBoundingClientRect();
+      motion.style.width = "100px";
+      motion.ontransitionend = reject;
+      setTimeout(reject, 200);
+    } else if (mode === "preexisting") act = reject;
+    else if (mode !== "quiet") setTimeout(reject, Number(mode));
+  };
+  window.prepare = () => { if (mode === "preexisting") setTimeout(() => act(), 200); };
+  prepare();
+  field.oninput = choice.oninput = schedule;
+  idle.onclick = () => setTimeout("document.querySelector('#out').textContent='After'", 200);
+</script>

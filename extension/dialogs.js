@@ -22,10 +22,13 @@
   const state = (window[KEY] = { armed: false, accept: false, text: null, catching: false });
   const native = {
     alert: window.alert, confirm: window.confirm, prompt: window.prompt, print: window.print, open: window.open, click: HTMLAnchorElement.prototype.click,
+    raf: window.requestAnimationFrame, timeout: window.setTimeout,
     caf: window.cancelAnimationFrame, clearTimeout: window.clearTimeout,
     hidden: Object.getOwnPropertyDescriptor(Document.prototype, "hidden").get,
   };
   const tell = (name, value) => document.dispatchEvent(new CustomEvent(name, { detail: JSON.stringify(value) }));
+  const settlementEarly = document.readyState === "loading" && !document.body &&
+    [...document.scripts].every((script) => script === document.currentScript);
   const seen = (type, message, answer) => tell("__sh_dialog_seen", { type, message: String(message ?? "").slice(0, 500), answer, url: location.href });
 
   window.alert = function (message) {
@@ -148,6 +151,8 @@
   let announcing = false;
   const frames = new Map(); // native frame id -> callback not yet run
   const timers = new Map(); // native timer id -> { fn, args, due, every, set }
+  const stringTimers = new Map();
+  const idleCallbacks = new Set();
 
   // A wrapper is a proxy of the browser's own function, so it still reads
   // as native code to a site that checks (anti-bot scripts do).
@@ -165,14 +170,22 @@
   });
   window.setTimeout = wrap(window.setTimeout, (set, self, args) => {
     const [fn, ms, ...rest] = args;
-    if (typeof fn !== "function") return Reflect.apply(set, self, args);
+    if (typeof fn !== "function") {
+      const id = Reflect.apply(set, self, args);
+      stringTimers.set(id, { due: typeof ms === "number" ? Date.now() + Math.max(0, ms || 0) : -1, every: false });
+      return id;
+    }
     const id = Reflect.apply(set, self, [() => { if (timers.delete(id)) fn.apply(window, rest); }, ms]);
     timers.set(id, { fn, args: rest, due: performance.now() + Math.max(0, Number(ms) || 0), every: 0, set: Date.now() });
     return id;
   });
   window.setInterval = wrap(window.setInterval, (set, self, args) => {
     const [fn, ms, ...rest] = args;
-    if (typeof fn !== "function") return Reflect.apply(set, self, args);
+    if (typeof fn !== "function") {
+      const id = Reflect.apply(set, self, args);
+      stringTimers.set(id, { due: Date.now(), every: true });
+      return id;
+    }
     const timer = { fn, args: rest, due: 0, every: Math.max(1, Number(ms) || 0), set: Date.now() };
     timer.due = performance.now() + timer.every;
     // A late native run right after a tick ran it would run it twice.
@@ -187,6 +200,24 @@
   window.cancelAnimationFrame = wrap(window.cancelAnimationFrame, forget(frames));
   window.clearTimeout = wrap(window.clearTimeout, forget(timers));
   window.clearInterval = wrap(window.clearInterval, forget(timers));
+  for (const name of ["clearTimeout", "clearInterval"]) {
+    window[name] = wrap(window[name], (clear, self, args) => {
+      stringTimers.delete(Number(args[0]));
+      return Reflect.apply(clear, self, args);
+    });
+  }
+  if (window.requestIdleCallback) {
+    window.requestIdleCallback = wrap(window.requestIdleCallback, (request, self, args) => {
+      const [fn, ...rest] = args;
+      const id = Reflect.apply(request, self, [(deadline) => { idleCallbacks.delete(id); return fn(deadline); }, ...rest]);
+      idleCallbacks.add(id);
+      return id;
+    });
+    window.cancelIdleCallback = wrap(window.cancelIdleCallback, (cancel, self, args) => {
+      idleCallbacks.delete(Number(args[0]));
+      return Reflect.apply(cancel, self, args);
+    });
+  }
 
   for (const [name, visible] of [["visibilityState", "visible"], ["hidden", false]]) {
     const d = Object.getOwnPropertyDescriptor(Document.prototype, name);
@@ -326,6 +357,57 @@
       });
   };
   const XHR = XMLHttpRequest.prototype;
+  const bodies = new Set();
+  const responses = new WeakMap();
+  const streams = new WeakMap();
+  const readers = new WeakMap();
+  const body = Object.getOwnPropertyDescriptor(Response.prototype, "body");
+  const trackResponse = (response) => {
+    const token = { reading: 0 };
+    responses.set(response, token);
+    const stream = body.get.call(response);
+    if (stream) { bodies.add(token); streams.set(stream, token); }
+    return response;
+  };
+  for (const method of ["text", "json", "arrayBuffer", "blob", "formData", "bytes"]) {
+    if (!Response.prototype[method]) continue;
+    Response.prototype[method] = wrap(Response.prototype[method], (read, self, args) => {
+      const result = Reflect.apply(read, self, args);
+      const token = responses.get(self);
+      if (token) token.reading++;
+      return result.then((value) => { if (token && --token.reading === 0) bodies.delete(token); return value; }, (error) => { if (token) token.reading--; throw error; });
+    });
+  }
+  Response.prototype.clone = wrap(Response.prototype.clone, (clone, self, args) => {
+    const copy = Reflect.apply(clone, self, args);
+    return responses.has(self) ? trackResponse(copy) : copy;
+  });
+  ReadableStream.prototype.getReader = wrap(ReadableStream.prototype.getReader, (get, self, args) => {
+    const reader = Reflect.apply(get, self, args);
+    if (streams.has(self)) readers.set(reader, streams.get(self));
+    return reader;
+  });
+  for (const proto of [window.ReadableStreamDefaultReader?.prototype, window.ReadableStreamBYOBReader?.prototype]) {
+    if (!proto) continue;
+    proto.read = wrap(proto.read, (read, self, args) => {
+      const result = Reflect.apply(read, self, args);
+      return result.then((value) => { if (value.done) bodies.delete(readers.get(self)); return value; });
+    });
+  }
+  const settlementRequests = new Set();
+  window.fetch = wrap(window.fetch, (fetch, self, args) => {
+    const token = {};
+    const result = Reflect.apply(fetch, self, args);
+    settlementRequests.add(token);
+    return result.then((response) => { settlementRequests.delete(token); return trackResponse(response); }, (error) => { settlementRequests.delete(token); throw error; });
+  });
+  XHR.send = wrap(XHR.send, (send, self, args) => {
+    const token = {};
+    settlementRequests.add(token);
+    const done = () => { settlementRequests.delete(token); self.removeEventListener("loadend", done); };
+    self.addEventListener("loadend", done);
+    try { return Reflect.apply(send, self, args); } catch (error) { done(); throw error; }
+  });
   const plain = { fetch: window.fetch, open: XHR.open, send: XHR.send, setRequestHeader: XHR.setRequestHeader };
   const ours = {};
 
@@ -518,6 +600,77 @@
     heeded.add(target);
     for (const type of types) listen.call(target, type, () => loads.delete(target));
   };
+  let unbounded = 0;
+  let posted = -1;
+  const portSeen = (port) => {
+    if (port !== runner.port1 && port !== runner.port2) unbounded++;
+  };
+  EventTarget.prototype.addEventListener = wrap(EventTarget.prototype.addEventListener, (add, self, args) => {
+    if (self instanceof MessagePort && args[1]) portSeen(self);
+    return Reflect.apply(add, self, args);
+  });
+  const onmessage = Object.getOwnPropertyDescriptor(MessagePort.prototype, "onmessage");
+  if (onmessage?.set) Object.defineProperty(MessagePort.prototype, "onmessage", {
+    ...onmessage,
+    set: wrap(onmessage.set, (set, self, args) => {
+      if (args[0]) portSeen(self);
+      return Reflect.apply(set, self, args);
+    }),
+  });
+  for (const name of ["start", "postMessage"]) MessagePort.prototype[name] = wrap(MessagePort.prototype[name], (method, self, args) => {
+    portSeen(self);
+    return Reflect.apply(method, self, args);
+  });
+  addEventListener("message", (e) => { if (e.ports?.length) unbounded += e.ports.length; }, true);
+  for (const name of ["WebSocket", "EventSource", "Worker", "SharedWorker", "BroadcastChannel", "MessageChannel"]) {
+    if (!window[name]) continue;
+    window[name] = new Proxy(window[name], {
+      construct(target, args, constructor) {
+        const value = Reflect.construct(target, args, constructor);
+        unbounded++;
+        return value;
+      },
+    });
+  }
+  window.postMessage = wrap(window.postMessage, (post, self, args) => {
+    posted = Date.now();
+    return Reflect.apply(post, self, args);
+  });
+  const settlementAPIs = ["setTimeout", "setInterval", "requestAnimationFrame", "requestIdleCallback", "fetch", "postMessage", "WebSocket", "EventSource", "Worker", "SharedWorker", "BroadcastChannel", "MessageChannel"];
+  const installedAPIs = settlementAPIs.map((name) => window[name]);
+  const settlementHooks = [
+    () => EventTarget.prototype.addEventListener,
+    () => Object.getOwnPropertyDescriptor(MessagePort.prototype, "onmessage")?.set,
+    ...["start", "postMessage"].map((name) => () => MessagePort.prototype[name]),
+    ...["text", "json", "arrayBuffer", "blob", "formData", "bytes", "clone"].map((name) => () => Response.prototype[name]),
+    () => ReadableStream.prototype.getReader,
+    () => window.ReadableStreamDefaultReader?.prototype.read,
+    () => window.ReadableStreamBYOBReader?.prototype.read,
+    () => XHR.send,
+  ];
+  const installedHooks = settlementHooks.map((read) => read());
+  document.addEventListener("__sh_settle_ask", (e) => {
+    let ask;
+    try { ask = JSON.parse(e.detail); } catch { return; }
+    const due = [...timers.values()].map((t) => ({ due: Date.now() + t.due - performance.now(), every: !!t.every }));
+    tell("__sh_settle_answer", {
+      version: 1, early: settlementEarly,
+      intact: settlementAPIs.every((name, i) => window[name] === installedAPIs[i]) && settlementHooks.every((read, i) => read() === installedHooks[i]),
+      visible: !native.hidden.call(document),
+      timers: [...due, ...stringTimers.values()], frames: frames.size, idle: idleCallbacks.size,
+      network: settlementRequests.size + bodies.size, unbounded, posted,
+      loads: loads.size,
+    });
+  });
+  document.addEventListener("__sh_settle_barrier", (e) => {
+    let id;
+    try { ({ id } = JSON.parse(e.detail)); } catch { return; }
+    native.raf.call(window, () => native.timeout.call(window, () => {
+      tell("__sh_settle_turn", { id });
+      native.timeout.call(window, () => tell("__sh_settle_quiet", { id }), 50);
+    }, 0));
+    native.timeout.call(window, () => tell("__sh_settle_timeout", { id }), 100);
+  });
   const src = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, "src");
   Object.defineProperty(HTMLImageElement.prototype, "src", {
     ...src,

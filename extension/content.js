@@ -1676,7 +1676,7 @@
     const prior = opts?.expectedTarget ? refMap.get(opts.expectedTarget) : null;
     const el = resolve(ref, true);
     const fp = el && (fingerprints.get(String(ref).trim()) ?? candidateOf(el));
-    const once = () => expectedClick(el, opts, prior) ?? afterward(() => withOutcome(() => click(ref, el)), opts);
+    const once = () => expectedClick(el, opts, prior) ?? afterward(() => withOutcome(() => click(ref, el)), opts, "click");
     lastCover = null;
     const first = once();
     const cover = first?.reason === "covered" && first.failure?.effect === "none" ? lastCover : null;
@@ -2149,7 +2149,7 @@
       const point = clickPoint(el);
       if (point.error) return refused(el, point);
     }
-    if (el.tagName === "SELECT") return choice === null ? optionList(optionsOf(el)) : afterward(() => withOutcome(() => selectOption(el, choice)), opts);
+    if (el.tagName === "SELECT") return choice === null ? optionList(optionsOf(el)) : afterward(() => withOutcome(() => selectOption(el, choice)), opts, "select");
     if (getExplicitRole(el) === "combobox") return comboOption(el, choice, opts);
     return { error: "not a <select> or combobox; click it, then click the option in a fresh snapshot", failure: UNSENT };
   }
@@ -2799,6 +2799,7 @@
   let lastTyped = null; // the field type last put text in (typedForm)
 
   async function typeText(ref, text, opts = {}) {
+    const started = Date.now();
     const el = fieldOf(resolve(ref));
     if (!el) return missing(ref);
     if (el.matches(":disabled")) return { error: "that field is disabled, so the page would ignore text typed into it", failure: UNSENT };
@@ -2831,7 +2832,10 @@
     // it (at once, with noWaitAfter): a page may reformat it (a phone field
     // adds dashes) or cut it (a length limit). The text itself never comes
     // back: type once echoed a one-time code into the transcript.
-    if (!opts.noWaitAfter) await whenPage(() => false, RECEIPT_SPAN.min);
+    if (!opts.noWaitAfter) {
+      const deadline = Date.now() + RECEIPT_SPAN.min;
+      if (!await settledEarly(spread ? boxes : [el], deadline, started)) await whenPage(() => false, Math.max(0, deadline - Date.now()));
+    }
     const kept = spread ? boxes.map((b) => b.value).join("") === text
       : el.isContentEditable ? (el.textContent ?? "").includes(text)
       : keeps(el.value, (opts.append ? before : "") + text);
@@ -5048,6 +5052,13 @@
     return Math.min(max, Math.max(start + span.min, (back === null ? last : Math.max(last, back)) + span.quiet));
   }
 
+  function settlementClear(heard, deadline, since) {
+    return heard?.version === 1 && heard.early === true && heard.intact === true && heard.visible === true &&
+      heard.frames === 0 && heard.idle === 0 && heard.network === 0 && heard.unbounded === 0 && heard.loads === 0 &&
+      typeof heard.posted === "number" && heard.posted < since && Array.isArray(heard.timers) &&
+      heard.timers.every((timer) => timer && timer.every === false && Number.isFinite(timer.due) && timer.due > deadline);
+  }
+
   // Gmail pads previews with U+034F and U+200C (09-30). The same invisible
   // characters are ignored by waits, queries, and loading skeleton reads.
   const INVISIBLE = /[\u00AD\u200B-\u200D\u2060\uFEFF]|\u034F/g;
@@ -5114,6 +5125,45 @@
     return heard;
   }
 
+  let settlementId = 0;
+  function settledEarly(elements, deadline, since) {
+    const clear = () => {
+      try {
+        return !document.hidden && document.readyState === "complete" && !window.opener && !document.querySelector("iframe, frame, object, embed") &&
+          Array.isArray(hear(since)?.timers) &&
+          !document.getAnimations().some((a) => a.playState === "running" || a.pending) &&
+          settlementClear(askPage("__sh_settle_ask", "__sh_settle_answer", {}), deadline, since);
+      } catch { return false; }
+    };
+    if (!clear()) return Promise.resolve(false);
+    const states = elements.map((el) => [el, stateOf(el).join("\n"), el.isContentEditable ? el.textContent : el.value]);
+    const same = () => states.every(([el, state, value]) => el.isConnected && stateOf(el).join("\n") === state && (el.isContentEditable ? el.textContent : el.value) === value);
+    return new Promise((resolve) => {
+      const id = ++settlementId;
+      let turned = false;
+      let open = true;
+      const finish = (value) => {
+        if (!open) return;
+        open = false;
+        observer.disconnect();
+        for (const name of ["turn", "quiet", "timeout"]) document.removeEventListener(`__sh_settle_${name}`, hear);
+        resolve(value);
+      };
+      const observer = watchPage(() => finish(false));
+      const hear = (e) => {
+        let detail;
+        try { detail = JSON.parse(e.detail); } catch { return; }
+        if (detail.id !== id) return;
+        if (e.type === "__sh_settle_timeout") return finish(false);
+        if (!same() || !clear() || observer.takeRecords().length) return finish(false);
+        if (e.type === "__sh_settle_turn") turned = true;
+        else finish(turned && Date.now() < deadline);
+      };
+      for (const name of ["turn", "quiet", "timeout"]) document.addEventListener(`__sh_settle_${name}`, hear);
+      document.dispatchEvent(new CustomEvent("__sh_settle_barrier", { detail: JSON.stringify({ id }) }));
+    });
+  }
+
   // What the page's world saw since `since`: the requests the page made,
   // those still out, and the errors it did not catch; with recent, also
   // those that failed or were thrown in the recent ms before.
@@ -5150,7 +5200,7 @@
   // tab the harness owns wakes the watch on its ticks (takeTicks), and any
   // other hidden tab on a loop of messages, which Safari does not slow; the
   // loop lasts only as long as the watch.
-  function withReceipt(run) {
+  function withReceipt(run, fast) {
     const start = Date.now();
     const url = location.href;
     const focus = focusedNow();
@@ -5316,12 +5366,21 @@
         spin.port2.postMessage(null);
       }
       wake = check;
-      check();
+      const eligible = () => !away && !added && !removed && !changed.size && !loading.size &&
+        location.href === url && focusedNow() === focus && dialogLog.length === raised &&
+        (fast === "select" || !targets.some((t) => t.before.join("\n") !== stateOf(t.el).join("\n")));
+      if (fast && eligible()) {
+        settledEarly(targets.map((t) => t.el), start + RECEIPT_SPAN.idle, start).then((early) => {
+          if (!open) return;
+          if (early && eligible()) finish();
+          else check();
+        });
+      } else check();
     });
   }
 
-  function afterward(run, opts) {
-    return opts?.noWaitAfter ? run() : withReceipt(run);
+  function afterward(run, opts, fast) {
+    return opts?.noWaitAfter ? run() : withReceipt(run, fast);
   }
 
   // ---------- wait ----------
