@@ -1434,7 +1434,7 @@ benchRows("content.js in WebKit", [
             { kind: "cards", headers: ["h3.title", "p.star-rating", "p.price"], hints: ["", "rating", ""], rows: [["A Light in the Attic", "3", "£51.77"], ["Tipping the Velvet", "1", "£53.74"], ["Soumission", "5", "£50.10"]] },
             { kind: "cards", headers: ["h3.name", "span.meta", "span.cost"], hints: ["", "rating", ""], rows: [["Kettle", "4", "$29.99"], ["Toaster", "4.5", "$31.50"], ["Blender", "0", "$27.25"]] },
             { kind: "cards", headers: ["h3.name", "span.cost"], rows: [["Two values", "$1.00"], ["Run together", "$2.00"], ["Out of ten", "$3.00"], ["A word", "$4.00"]] },
-            { kind: "cards", headers: ["h3.name", "span.cost"], rows: [["Row of stars", "$5.00"], ["One icon", "$6.00"], ["Hidden", "$7.00"]] },
+            { kind: "cards", headers: ["h3.name", "span.cost"], rows: [["Row of stars", "$5.00"], ["One icon", "$6.00"], ["Labelled stars", "$5.50"], ["Hidden", "$7.00"]] },
             { kind: "cards", headers: ["h3.name", "span.rating > span.score", "span.cost"], rows: [["Said in text", "4.6 out of 5", "$8.00"], ["Said again", "4.2 out of 5", "$9.00"], ["Said once more", "3.4 out of 5", "$10.00"]] },
             { kind: "cards", headers: ["h3.name", "span.meta", "span.rating-count", "span.cost"], hints: ["", "rating", "", ""], rows: [["Counted", "4", "(12)", "$11.00"], ["Counted again", "2", "(3)", "$12.00"], ["Counted once more", "5", "", "$13.00"]] },
           ],

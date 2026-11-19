@@ -4949,8 +4949,9 @@
   function classRating(el) {
     const classes = [...el.classList];
     if (!classes.some((c) => RATING_WORD.test(c))) return "";
-    if ([...el.querySelectorAll("*")].some((d) => drawn(d) && [...d.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && /\S/.test(n.nodeValue)))) return "";
-    const glyphs = el.parentElement ? [...el.parentElement.children].filter((sib) => !/\S/.test(sib.textContent) && drawn(sib) && [...sib.classList].some((c) => RATING_WORD.test(c))) : [];
+    const saysText = (box) => [box, ...box.querySelectorAll("*")].some((d) => drawn(d) && [...d.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && /\S/.test(n.nodeValue)));
+    if (saysText(el)) return "";
+    const glyphs = el.parentElement ? [...el.parentElement.children].filter((sib) => drawn(sib) && !saysText(sib) && [...sib.classList].some((c) => RATING_WORD.test(c))) : [];
     if (glyphs.length > 1) return "";
     const values = new Set();
     for (const c of classes) {
