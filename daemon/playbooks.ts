@@ -4,6 +4,7 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { tryLock } from "./flock.ts";
 import { alive } from "./owner.ts";
 import { dataFile } from "./phone.ts";
 import { agentOf, rpc } from "./rpc.ts";
@@ -35,12 +36,22 @@ function write(path: string, value: unknown): void {
 function remove(path: string): void {
   try { unlinkSync(path); } catch (e) { if (!missing(e)) throw e; }
 }
-async function locked<T>(path: string, run: () => Promise<T>): Promise<T> {
+// The kernel drops the lock with its process, so a caller killed mid-call
+// leaves nothing behind. Never unlink a lock file another process may hold:
+// all contenders must lock the same inode. Its suffix is not the .lock the
+// O_EXCL lock of earlier releases took, which would read it as held. wait:
+// the hold is bookkeeping of a call that already ran, so a contender waits
+// instead of failing it.
+async function locked<T>(path: string, run: () => Promise<T>, wait = false): Promise<T> {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  let lock: number;
-  try { lock = openSync(`${path}.lock`, "wx", 0o600); }
-  catch (e) { if (e instanceof Error && "code" in e && e.code === "EEXIST") throw new Error("this tab is already being learned; finish its other call first"); throw e; }
-  try { return await run(); } finally { closeSync(lock); remove(`${path}.lock`); }
+  const lock = openSync(`${path}.flock`, "a", 0o600);
+  try {
+    for (let tries = 0; !await tryLock(lock); tries++) {
+      if (!wait || tries >= 1000) throw new Error("this tab is already being learned; finish its other call first");
+      await Bun.sleep(5);
+    }
+    return await run();
+  } finally { closeSync(lock); }
 }
 async function scope(tab: unknown): Promise<{ owner: number; path: string }> {
   if (!Number.isInteger(tab) || Number(tab) <= 0 || process.env.SAFARI_HARNESS_REMOTE) throw new Error("learning needs one local numeric tab opened by this agent, never front");
@@ -64,19 +75,19 @@ export async function notePlaybookTab(tool: string, args: Record<string, unknown
     else if ((tool === "close" || tool === "keep") && fields(result).ok !== false) delete held[String(args.tab)];
     if (Object.keys(held).length > 0) write(path, held);
     else remove(path);
-  });
+  }, true);
   if ((tool === "close" || tool === "keep") && fields(result).ok !== false && Number.isInteger(args.tab)) remove(dataFile(`playbook-learning/${owner}-${args.tab}.json`));
 }
 
-// At daemon start: the files of agents that have exited, their tab lists
-// and learn sessions, which only their own calls would remove (10-21: 12
-// tab lists, one per agent since the first).
+// At daemon start: the files of agents that have exited, their tab lists,
+// learn sessions and their locks, which only their own calls would remove
+// (10-21: 12 tab lists, one per agent since the first).
 export function sweepPlaybookLearning(): void {
   const dir = dataFile("playbook-learning");
   let names: string[];
   try { names = readdirSync(dir); } catch (e) { if (missing(e)) return; throw e; }
   for (const name of names) {
-    const owner = /^(\d+)-(?:tabs|\d+)\.json$/.exec(name)?.[1];
+    const owner = /^(\d+)-(?:tabs|\d+)\.json(?:\.f?lock)?$/.exec(name)?.[1];
     if (owner !== undefined && !alive(Number(owner))) remove(join(dir, name));
   }
 }

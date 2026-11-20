@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { firstMessages, runAgent, type AgentConfig, type AgentEvent, type AgentStatus, type ChatMsg, type Control } from "./agent.ts";
 import { mintMessages, runMintAgent, type MintRequest, type MintState } from "./mint.ts";
+import { tryLock } from "./flock.ts";
 import { ompCompletion } from "./omp-provider.ts";
 
 export const SESSIONS_DIR = join(homedir(), ".local/share/safari-harness/sessions");
@@ -131,18 +132,11 @@ export async function deleteSession(id: string): Promise<void> {
   }
 }
 
-let sessionFlock: Promise<(fd: number, operation: number) => number> | undefined;
-// bun:ffi is platform-specific; libSystem is loaded only for macOS execution.
-
 async function lockSession(id: string): Promise<FileHandle> {
-  sessionFlock ??= import("bun:ffi").then(({ dlopen, FFIType }) => dlopen("/usr/lib/libSystem.B.dylib", {
-    flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
-  }).symbols.flock);
-  const flock = await sessionFlock;
   const dir = join(SESSIONS_DIR, ".locks");
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const lock = await open(join(dir, checkId(id)), "a", 0o600);
-  if (flock(lock.fd, 6) === 0) return lock;
+  if (await tryLock(lock.fd)) return lock;
   await lock.close();
   throw new Error(`session ${id} is already running`);
 }
