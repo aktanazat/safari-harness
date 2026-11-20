@@ -266,6 +266,30 @@ test("with no check on the page (a passkey prompt), the user is done once the pa
   expect(await again).toMatchObject({ done: true, joined: true, url: "https://shop.example/account" });
 });
 
+// On 11-19 a handoff on Google's passkey page ended as the page moved to
+// its error page, then again on its move to "Choose how you want to sign
+// in", each time taking the window from him while he was still signing in;
+// the page after sign-in (/signin/oauth/id) asks for nothing more.
+test("a handoff on a sign-in page stays his across its credential steps and ends once the page no longer asks for one", async () => {
+  const page: Page = { url: "https://accounts.google.com/v3/signin/challenge/pk/presend?TL=1" };
+  const m = mac(75, page);
+  let t = taken(waits("Sign in with your passkey"));
+  const handed = handoff(75, "Sign in with your passkey", 4000);
+  await t;
+  page.url = "https://accounts.google.com/v3/signin/challenge/pk/error?TL=1";
+  await ticks(2);
+  page.url = "https://accounts.google.com/v3/signin/challenge/selection?TL=1";
+  await ticks(2);
+  expect(await handed).toMatchObject({ done: false });
+  expect({ activated: m.activated, app: m.app }).toEqual({ activated: [75], app: front.SAFARI });
+  page.url = "https://accounts.google.com/signin/oauth/id?authuser=0";
+  t = taken(waits("Sign in with your passkey"));
+  const again = handoff(75, "Sign in with your passkey", 2000);
+  await t;
+  await ticks(2);
+  expect(await again).toMatchObject({ done: true, joined: true, url: page.url });
+});
+
 test("a user at the Mac gets the notice and no alert", async () => {
   const page: Page = { url: "https://shop.example/login", check: "box" };
   const m = mac(75, page);

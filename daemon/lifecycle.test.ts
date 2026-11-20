@@ -58,6 +58,13 @@ test("a returned background handoff cannot block helper completion and stays pro
   });
 });
 
+// On 11-19 each move of Google's passkey sign-in ended its handoff, which
+// left the tab to the idle close and the limit of open tabs while he was
+// still in it.
+test("a sign-in tab under a handoff outlives the tab limit and the idle close across its steps, and closes idle once it leaves sign-in", async () => {
+  expect(await fixture("signin-handoff")).toEqual({ pastLimit: true, idle: true, afterSignIn: false });
+});
+
 test("same-address sibling pages retain their task after a browser restart reverses tab ids without aliases", async () => {
   expect(await fixture("helper-reversed-restore")).toMatchObject({
     first: false, second: true, main: true, kept: true, personal: true,

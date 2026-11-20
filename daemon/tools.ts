@@ -41,7 +41,7 @@ import { createResearchReport } from "./research.ts";
 import { browserMemoryTool, researchRead, saveResearchSource, BROWSER_MEMORY_TRUST } from "./browser-memory-runtime.ts";
 import { failureOf, HarnessError, type Failure } from "./failures.ts";
 import { qaAround, refuseSlackSend, type SlackAct } from "./slack-send.ts";
-import { classifyPage, partialRead, plainState, withPageState, stateLine } from "./page-state.ts";
+import { classifyPage, partialRead, plainState, signInCheck, signInPage, withPageState, stateLine } from "./page-state.ts";
 import { admitNativeAction, admitPageObservation, admitSiteAction, finishNativeAction, missionCall, mustReadWhole, withGather, withTaskCancellation } from "./mission.ts";
 import { recoverSnapshot, SnapshotHistory, type SnapshotView, type SnapshotUpdate } from "./snapshot-updates.ts";
 import { SiteActions, type SiteActionBinding } from "./site-actions.ts";
@@ -2159,9 +2159,14 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
 // the tab to the front and posts a notification that says why, and a later
 // call joins it with no second notice, so the wait can outlast one tool call
 // (about 2 minutes). The user is done when the check is gone or, with no
-// check seen, the page has moved on; given until, once the page shows that
-// text instead, for a step that leaves the address as it was (on 09-29 a
-// GEICO card form and a Touch ID prompt each held a handoff to its 110 s).
+// check seen, the page has moved on: from a sign-in page, only to an
+// address that no longer asks for the credential, since a passkey moves
+// between such steps (on 11-19 Google's went from its passkey page to its
+// error page, then to its list of other ways in, and each move ended the
+// handoff and took the window from under him). Given until, once the page
+// shows that text instead, for a step that leaves the address as it was
+// (on 09-29 a GEICO card form and a Touch ID prompt each held a handoff to
+// its 110 s).
 // Text the page shows already is refused, since it would end the handoff at
 // once. If they are still on the tab, they get back the tab and app they had
 // in front. A block ends a handoff (no one can clear it), and so does
@@ -2259,7 +2264,7 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
       if (challenge?.where === "block") throw new Error(blocked(challenge));
       if (seen === null) seen = challenge;
       h.now = { url: now.url, title: now.title, ...(challenge ? { challenge } : {}) };
-      if (until === undefined ? challenge === undefined && (seen !== undefined || now.url !== first.url) : shows) {
+      if (until === undefined ? challenge === undefined && (seen !== undefined || (now.url !== first.url && !(signInPage(first.url) && signInCheck(now.url)))) : shows) {
         h.done = true;
         if (challenge === undefined) met(now.url ?? "", null);
         // after a skipped wait, a check could also have cleared by itself

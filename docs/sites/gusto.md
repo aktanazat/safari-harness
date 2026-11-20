@@ -9,7 +9,7 @@ This is the user's payroll: contractor payments, pay stubs, and the bank account
 ## Signing in
 - `open https://app.gusto.com/` lands on `login.gusto.com/realms/zenpayroll/...`, titled "Gusto Login - Payroll, Benefits, HR | Gusto". The first page greets the user ("Good evening") with a button for his saved email, plus "Use another email".
 - Clicking the email button goes to a password page ("Enter your password", a "Password" field, `Continue`) that also has a "Retry passkey" link.
-- The passkey worked: `Retry passkey` with the tab in front, then the user touched Touch ID (about 20 s). Now click it and call `handoff` so he can touch the sensor.
+- The passkey worked: `Retry passkey` with the tab in front, then the user touched Touch ID (about 20 s). Now call `handoff` so he presses `Retry passkey` and touches the sensor himself.
 
 ## Finding pages
 - Signed in, `https://app.gusto.com/` is "Home | Gusto", with links Home, My profile (`/profile`), Pay (`/pay`), Benefits, Documents, Help, Settings.

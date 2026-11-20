@@ -97,7 +97,7 @@ function recentLines(raw: RawReceipt): string[] {
 // WebKit refuses such a call with a NotAllowedError, and dialogs.js keeps
 // an unhandled rejection's message, which leaves the name out.
 const REFUSED = /document is not focused|NotAllowedError|not allowed by the user agent or the platform in the current context/i;
-const NEEDS_FRONT = "the page refused because Safari was not in front or the click was not real: activate, then real_input; a passkey or Touch ID prompt that then opens needs the user (handoff)";
+const NEEDS_FRONT = "the page refused because Safari was not in front or the click was not real: a passkey or Touch ID request is his, so call handoff and let him press its button himself (another press behind his windows fails it again, and the site counts each try); for anything else (the clipboard, playback), activate, then real_input";
 
 // A site that tells scripted clicks from real ones turns them away with
 // words like these, or a 429 from its own server, and each try may count
