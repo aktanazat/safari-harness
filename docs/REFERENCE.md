@@ -3475,9 +3475,11 @@ The file ids, the result, and the CLI are in `safari guide reference messages`.
 ## imessage_wait_code
 
 `imessage_wait_code` waits for a sign-in code sent by text and returns
-it, for a code that must be read. To fill a field, `type {text:
-"{{code}}"}` waits for the code itself and never shows it. Never repeat
-a code. On `timeout`, call again with its `since` to keep waiting.
+the newest one, for a code that must be read. To fill a field, `type
+{text: "{{code}}"}` waits for the code itself and never shows it. Never
+repeat a code. Every answer carries `since`; after a timeout, or when a
+code was wrong and the site sends another, call again with it to wait for
+a later code.
 
 ## imessage_send
 
