@@ -2285,7 +2285,7 @@ async function watchHandoff(tab: number, why: string, h: Handoff, until?: string
       const now = (await listTabs().catch((): TabInfo[] => [])).find((t) => t.id === tab)?.windowId ?? window;
       await release(now, tab, shown).catch(() => {});
     }
-    if (h.done) {
+    if (h.done || h.error !== undefined) {
       const mine = harnessTabs.get(tab);
       if (mine) delete mine.handoff;
       save();
