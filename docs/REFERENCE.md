@@ -1774,6 +1774,17 @@ order. The rules are fixed, so the same page always reads the same way.
   card has, and a card without one has `""` there. A list whose cards hold
   fewer than 2 pieces of text (a menu of links) is skipped, and a list
   inside a card of another list is part of that card.
+- A rating drawn only by CSS, an element with no text whose class names
+  say a rating (star, stars, rating, rated) and its value, is a field
+  holding that number: `star-rating Three` (Books to Scrape) reads `3`,
+  `rating-4` reads `4`, `a-star-4-5` reads `4.5`. Its hint for `fields`
+  is `rating`. Only a certain value from 0 to 5 counts: two values, a
+  value past 5 (another scale), digits run together (`stars-45`), a sign
+  (`rating--1`), a word that is no number, a fraction word beside the value (`star-rating Four
+  half`), a number word with no class saying rating (`icon-star one`), a
+  star among other stars in the card (one glyph of a row, however each is
+  wrapped), and a bare star icon read nothing. One that holds drawn text
+  (`4.6 out of 5`) gives that text instead.
 - `selector` narrows the read to one region, and may name the table or
   list itself. `query` keeps the rows containing the text. `maxBytes`
   (default 20000) bounds the JSON of what comes back; `truncated: true`
