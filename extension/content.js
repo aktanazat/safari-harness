@@ -852,6 +852,7 @@
   function pressMark(ref) {
     const el = resolve(ref);
     if (!el) return missing(ref);
+    if (asksPasskey(el)) return refused(el, PASSKEY_ASK);
     if (picker(el) || (el.localName === "label" && picker(el.control))) return { picker: true };
     // A page may enable a control only while its window is in front, as
     // GitHub's OAuth Authorize button does (11-18): the real mouse goes there.
@@ -1934,7 +1935,34 @@
     return { error: scroll ? "that target has no visible clickable area after scrolling; open or expand its container before clicking" : "that target has no visible clickable area; scroll it into view or open its container before clicking", reason: boxes ? "clipped" : "no_box", next: scroll ? "open or expand the target's container before clicking" : "scroll the target into view or open its container before clicking", unseen: true };
   }
 
+  // A control that asks for his passkey (WebAuthn). Safari lets a page ask
+  // only from a real press in a window he has in front, so a scripted click
+  // or a press through the accessibility tree behind his windows fails it
+  // ("The document is not focused"), and the site counts the failed try:
+  // on 11-19 Google's passkey Continue went to its error page, then to its
+  // list of other ways in. The real mouse with the tab in front (locate)
+  // still reaches it. A control named for a passkey or a security key, or
+  // one that goes on (Continue, Try again) on a page headed or titled so;
+  // never its way out (Skip, Not now, Try another way).
+  const PASSKEY = /\b(?:pass ?keys?|security keys?|touch id|face id|windows hello)\b/i;
+  const PASSKEY_EXIT = /\b(?:skip|not now|later|no thanks|cancel|remove|delete|manage|learn|instead|another|other|without)\b/i;
+  const GOES_ON = /^(?:continue|next|try again|retry|verify|confirm|sign in|log in|ok)$/i;
+  const PASSKEY_ASK = {
+    error: "that control asks for his passkey: Safari refuses a passkey to a scripted click or a press behind his windows, and the site counts each refused try",
+    reason: "passkey",
+    next: "call handoff with why, and let him press it himself",
+  };
+  function asksPasskey(el) {
+    const name = (accessibleName(el) || el.textContent || "").replace(/\s+/g, " ").trim();
+    if (!name || PASSKEY_EXIT.test(name)) return false;
+    if (PASSKEY.test(name)) return true;
+    if (!GOES_ON.test(name)) return false;
+    const doc = el.ownerDocument;
+    return PASSKEY.test(doc.title) || PASSKEY.test(doc.querySelector("h1, [role=heading][aria-level='1']")?.textContent ?? "");
+  }
+
   function clickElement(el, stopAfterEvent = null) {
+    if (asksPasskey(el)) return refused(el, PASSKEY_ASK);
     const point = clickPoint(el);
     if (point.error) return refused(el, point);
     watchTarget(el);
@@ -1958,6 +1986,7 @@
     if (guard) return guard;
     const el = kind === "select" ? fieldOf(target) : kind === "click" && target ? standIn(target) ?? target : target;
     if (!el) return missing(ref);
+    if (kind === "click" && asksPasskey(el)) return refused(el, PASSKEY_ASK);
     const point = clickPoint(el);
     if (point.error) return refused(el, point);
     let { x, y } = point;

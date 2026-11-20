@@ -75,6 +75,22 @@ const LOADING = /^(?:loading(?: (?:content|page|results))?|loading(?: [\w-]+){1,
 // like (LOCK#1865, #1875-1880).
 const SIGN_IN_HOST = /^(?:accounts|auth|login|signin|sso)\./i;
 const SIGN_IN_PATH = /^\/(?:signin|sign-in|login|log-in|auth|sso|authorize|oauth2)(?:\/|$)/i;
+// A sign-in page by its address: a sign-in host, or a path with a step that
+// names signing in or one of its checks anywhere in it.
+const SIGN_IN_STEP = /\/(?:signin|sign-in|login|log-in|logon|auth|oauth|oauth2|authorize|sso|saml)(?:\/|$)/i;
+export function signInPage(url: string | undefined): boolean {
+  const address = URL.parse(url ?? "");
+  return address !== null && (SIGN_IN_HOST.test(address.hostname) || SIGN_IN_STEP.test(address.pathname) || SIGN_IN_CHECK.test(address.pathname));
+}
+// A step of sign-in that still asks for the credential, by its address. On
+// 11-19 Google's passkey sign-in went /v3/signin/challenge/pk/presend,
+// /challenge/pk/error, then /challenge/selection and /challenge/pwd, and
+// on to /signin/oauth/id, its app's own "Sign in" page, once he was in.
+const SIGN_IN_CHECK = /\/(?:challenge|verify|mfa|2fa|two-factor|webauthn|passkey)(?:\/|$)/i;
+export function signInCheck(url: string | undefined): boolean {
+  const address = URL.parse(url ?? "");
+  return address !== null && SIGN_IN_CHECK.test(address.pathname);
+}
 // A sign-in page's own button: one through another account.
 const SIGN_IN_WITH = /^(?:(?:sign[ -]?in|log[ -]?in|continue) with .+|single sign-on\b.*)$/i;
 // A title part that names a sign-in page: "Exa Login", "Login · Nimble",

@@ -717,9 +717,9 @@ minutes, and Google then showed its human check.
 - A page error saying the page refused for want of focus or a real click
   ("The document is not focused", a `NotAllowedError`), as a passkey,
   Touch ID, or clipboard call does in a tab Safari does not have in front
-  or after a scripted click, sets `next` even beside an effect: `activate`,
-  then `real_input`; a passkey or Touch ID prompt that then opens needs the
-  user (`handoff`).
+  or after a scripted click, sets `next` even beside an effect: a passkey
+  or Touch ID request is his to press in a `handoff`; anything else
+  `activate`, then `real_input`.
 - One acting call runs on a tab at a time: `click`, `type`, `press`,
   `select`, `hover`, `goto`, `history`, `upload`, `eval`, `scroll`, `refill`,
   `login_fill`, `card_fill`, `autofill`, and `dialog` or `passwords` when they act.
@@ -2635,11 +2635,25 @@ application shares the site, and one's answers never go into another's.
   `sending; outcome not confirmed` when the call ran out first), plus
   `joined` when the tab's handoff was already running. `done` is true when
   the check is gone, when `until` shows, or, when the tab showed no check
-  at the start (a passkey sign-in), when the page's address changes; then
-  the tab and app he had in front come back, if he is still on the tab.
-  When `done` is false, the answer's `hint` says to call it again on the
-  same tab: that joins the same wait, with no second notice or alert. A
-  block fails at once. Then carry on in the same tab.
+  at the start, when the page's address changes; from a sign-in page (a
+  sign-in host such as `accounts.google.com`, or a path with a step such
+  as `/signin` or `/login`), only once the address no longer asks for the
+  credential (a step such as `/challenge`, `/verify`, `/two-factor` or
+  `/webauthn`), so his moves between passkey, error, "Try another way" and
+  password keep the tab his, and the consent page after them ends it.
+  Then the tab and app he had in front come back, if he is still on the
+  tab. When `done` is false, the answer's `hint` says to call it again on
+  the same tab: that joins the same wait, with no second notice or alert.
+  A block fails at once. Then carry on in the same tab.
+- A passkey is his to press: hand off before its button is pressed, and
+  let him press it. Safari lets a page ask for a passkey only from a real
+  press in a window he has in front, so a `click`, or a `real_input` press
+  while Safari is behind his windows, fails it ("The document is not
+  focused") and the site counts a failed try. Both refuse a control that
+  names a passkey, a security key or Touch ID, and a Continue or Try
+  again under a passkey heading, with `next` saying to hand off. The real
+  mouse with the tab in front (`activate`, then `real_input`) still
+  reaches it, where he has allowed that.
 - `handoff {tab, why, background: true}` hands the tab over the same way
   and returns once the notice is up and his phone is alerted if he is
   away. Go on with other steps, then call it again with `background: true`

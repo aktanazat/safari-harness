@@ -74,7 +74,8 @@ after a compaction. Details, one section at a time:
 ## Signing in, in this order
 1. A session: most of his sites are signed in.
 2. `passwords` `fill`: no code in chat.
-3. A passkey: click its button, then `handoff`.
+3. A passkey: `handoff` before its button is pressed; he presses it. A
+   press of yours fails it, and the site counts the failed try.
 4. A code, texted or mailed: `type {text:"{{code}}"}` types it unseen.
 Never type a password from memory or chat. Never print a password, code,
 cookie, or token, in a reply or a log line. Never sign him out.

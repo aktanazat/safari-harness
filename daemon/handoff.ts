@@ -159,7 +159,7 @@ function answer(h: Handed, first: Handed | undefined, background: boolean): Hand
 
 export const HANDOFF_TOOLS: Record<string, Tool> = {
   handoff: {
-    desc: "For a step only the user can do: a bot check (challenge in a result), passkey, Touch ID. Shows him the tab and why, alerts his phone if he is away; returns when done; done: false: call again. background: returns at once; check with its id.",
+    desc: "For a step only the user can do: a bot check (challenge in a result), a passkey he presses himself, Touch ID. Shows him the tab and why, alerts his phone when away; returns when done; done: false: call again. background: returns at once; check with its id.",
     params: {
       tab: TAB,
       why: { type: "string", description: "what to do, for the notice" },

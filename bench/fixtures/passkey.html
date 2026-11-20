@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Sign in - Accounts</title>
+<!-- Google's passkey step as on 11-19: Continue asks for the passkey, Try another way leaves it; body.dataset counts the clicks that reached each. -->
+<body data-continued="0" data-other="0">
+<h1>Use your passkey to confirm it’s really you</h1>
+<button id="continue">Continue</button>
+<button id="another">Try another way</button>
+<script>
+  const count = (key) => { document.body.dataset[key] = String(Number(document.body.dataset[key]) + 1); };
+  document.getElementById("continue").addEventListener("click", () => {
+    count("continued");
+    navigator.credentials?.get({ publicKey: { challenge: new Uint8Array(32), timeout: 1000 } }).catch(() => {});
+  });
+  document.getElementById("another").addEventListener("click", () => count("other"));
+</script>
+</body>

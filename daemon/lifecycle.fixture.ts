@@ -39,7 +39,11 @@ const extension = {
       if (op === gate?.op && (gate.tab === undefined || Number(args[0]) === gate.tab)) { gate.entered.resolve(); await gate.release.promise; }
       let value: unknown = { ok: true };
       if (op === "tabs.list") value = [...tabs.values()];
-      else if (op === "probe") value = [];
+      else if (op === "probe") {
+        // a page with no check on it; elsewhere a page that has not answered
+        const page = mode === "signin-handoff" ? tabs.get(Number(args[0])) : undefined;
+        value = page ? [{ frame: 0, url: page.url, title: "Sign in", text: "Sign in", markers: [], answered: [], frames: [] }] : [];
+      }
       else if (op === "windows.resolve") value = [...tabs.values()].some(t => t.windowId === args[0]) ? args[0] : null;
       else if (op === "windows.open") {
         const tab = { id: ++next, url: String(args[0]), windowId: ++next };
@@ -186,6 +190,30 @@ if (["deferred-restart", "deferred-resume", "deferred-same-restart", "deferred-s
     kept: tabs.has(aliases[saved.kept]), handoff: tabs.has(aliases[saved.handoff]), personal: tabs.has(aliases[saved.personal]),
     completedWindow: [...tabs.values()].some(tab => tab.windowId === saved.window),
   }));
+} else if (mode === "signin-handoff") {
+  jest.useFakeTimers();
+  jest.spyOn(front, "input").mockImplementation(async () => ({ bundleId: "com.apple.mail" }));
+  jest.spyOn(front, "notify").mockImplementation(() => {});
+  loadTabs(state); loadSpaces(join(directory, "spaces.json"), () => true);
+  const signIn = await open("signin/challenge/pk/presend");
+  await invoke("handoff_wait", { tab: signIn.id, why: "Sign in with your passkey", ms: 0, away: true, background: true });
+  const goTo = async (path: string) => {
+    const page = tabs.get(signIn.id);
+    if (page) page.url = `https://fixture.example/${path}`;
+    for (let n = 0; n < 2; n++) { jest.advanceTimersByTime(1000); await flush(); }
+  };
+  await goTo("signin/challenge/pk/error");
+  await goTo("signin/challenge/selection");
+  for (const path of ["one", "two", "three", "four"]) await open(path);
+  const pastLimit = tabs.has(signIn.id);
+  jest.advanceTimersByTime(3 * 60_000);
+  await flush();
+  const idle = tabs.has(signIn.id);
+  await goTo("welcome");
+  jest.advanceTimersByTime(3 * 60_000);
+  await flush();
+  console.log(JSON.stringify({ pastLimit, idle, afterSignIn: tabs.has(signIn.id) }));
+  jest.useRealTimers();
 } else if (mode === "live-seed") {
   loadTabs(state); loadSpaces(join(directory, "spaces.json"), () => true);
   const plain = await open("live-result");
