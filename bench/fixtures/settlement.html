@@ -1,0 +1,84 @@
+<!doctype html>
+<title>Settling controls</title>
+<style>#motion { width: 10px; transition: width 200ms linear; }</style>
+<label>Field <input id="field"></label>
+<label>Choice <select id="choice"><option>A</option><option>B</option></select></label>
+<button id="idle">Idle</button><button id="noop">Nothing</button><p id="out">Before</p><div id="motion">Motion</div>
+<script>
+  const mode = new URL(location.href).searchParams.get("mode");
+  let act = () => {};
+  let interval;
+  const reject = () => { field.value = "rewritten"; choice.value = "A"; };
+  const schedule = () => {
+    if (mode === "sync") reject();
+    else if (mode === "microtask") queueMicrotask(reject);
+    else if (mode === "raf") requestAnimationFrame(reject);
+    else if (mode === "idle") (window.requestIdleCallback ?? (fn => setTimeout(fn, 150)))(reject);
+    else if (mode === "string") setTimeout("document.querySelector('#field').value='rewritten';document.querySelector('#choice').value='A'", 200);
+    else if (mode === "fetch" || mode === "body") fetch(`/answer?mode=${mode}`).then(r => r.text()).then(reject);
+    else if (mode === "interval") interval = setInterval(reject, 150);
+    else if (mode === "channel") {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = reject;
+      setTimeout(() => channel.port2.postMessage(null), 150);
+    } else if (mode === "transition") {
+      motion.getBoundingClientRect();
+      motion.style.width = "100px";
+      motion.ontransitionend = reject;
+      setTimeout(reject, 200);
+    } else if (mode === "import") import(`/late.js?${Math.random()}`).then(reject);
+    else if (mode === "crypto") {
+      const enc = new TextEncoder();
+      crypto.subtle.importKey("raw", enc.encode("sample"), "PBKDF2", false, ["deriveBits"])
+        .then(key => crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: enc.encode("salt"), iterations: 400000 }, key, 256)).then(reject);
+    } else if (mode === "idb") {
+      const began = performance.now();
+      const open = indexedDB.open("settlement", 1);
+      open.onupgradeneeded = () => open.result.createObjectStore("rows");
+      open.onsuccess = () => {
+        const again = () => {
+          const put = open.result.transaction("rows", "readwrite").objectStore("rows").put(field.value, "draft");
+          put.onsuccess = () => performance.now() - began < 100 ? again() : reject();
+        };
+        again();
+      };
+    } else if (mode === "sw") navigator.serviceWorker.controller?.postMessage("validate");
+    else if (mode === "img") { const img = new Image(); img.onload = img.onerror = reject; img.src = `/answer?mode=img&${Math.random()}`; }
+    else if (mode === "xhr") { const xhr = new XMLHttpRequest(); xhr.onload = reject; xhr.open("GET", "/answer?mode=xhr"); xhr.send(); }
+    else if (mode === "waapi") motion.animate([{ opacity: 1 }, { opacity: 0.5 }], 150).finished.then(reject);
+    else if (mode === "ws") socket.send("validate");
+    else if (mode === "iframe") frames[0].postMessage("validate", "*");
+    else if (mode === "prefetch") earlier.then(reject);
+    else if (mode === "preexisting") act = reject;
+    else if (!mode.startsWith("quiet")) setTimeout(reject, Number(mode));
+  };
+  let socket, earlier;
+  // ready: the page's own setup is done, so an action can start
+  window.ready = Promise.resolve();
+  if (mode === "quietchannel") window.scheduler = new MessageChannel();
+  if (mode === "ws") {
+    socket = new WebSocket(`ws://${location.host}/socket`);
+    socket.onmessage = reject;
+    window.ready = new Promise(done => { socket.onopen = done; });
+  }
+  if (mode === "sw") {
+    navigator.serviceWorker.onmessage = reject;
+    window.ready = navigator.serviceWorker.register("/sw.js").then(() => navigator.serviceWorker.ready)
+      .then(() => navigator.serviceWorker.controller || new Promise(done => { navigator.serviceWorker.oncontrollerchange = done; }));
+  }
+  if (mode === "iframe") {
+    const frame = document.createElement("iframe");
+    frame.srcdoc = "<script>onmessage = () => setTimeout(() => parent.postMessage('no', '*'), 150)<\/script>";
+    window.ready = new Promise(done => { frame.onload = done; });
+    document.body.append(frame);
+    addEventListener("message", e => { if (e.data === "no") reject(); });
+  }
+  window.prepare = () => {
+    if (mode === "preexisting") setTimeout(() => act(), 200);
+    if (mode === "prefetch") earlier = fetch("/answer?mode=prefetch").then(r => r.text());
+    return mode;
+  };
+  prepare();
+  field.oninput = choice.oninput = schedule;
+  idle.onclick = () => setTimeout("document.querySelector('#out').textContent='After'", 200);
+</script>
