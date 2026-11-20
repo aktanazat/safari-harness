@@ -256,9 +256,10 @@ open after completion or owner exit.
 
 Safari opens a link from another app (a terminal, Slack) in the window it
 had in front last, which can be an agent window on the Agents display. A
-tab with an address that appears in an agent window with no agent call or
-agent page behind it is the user's: about a second after it opens, it
-moves to the window he used last, and if it was showing, it shows there.
+tab at a web or file address that appears in an agent window with no
+agent call or agent page behind it is the user's: about a second after it
+opens, it moves to the window he used last, and if it was showing, it
+shows there. Safari's blank tab and Start Page are no one's and stay.
 An agent's tab never leaves its window. When an agent's window is done and
 holds only his tabs, the window moves to the display of his front Safari
 window, and goes back to the Agents display when the agent uses it again.

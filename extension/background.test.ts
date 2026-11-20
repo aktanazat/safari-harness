@@ -563,9 +563,10 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
     },
     // Safari makes a tab: one a page opened, or one of its own making (a
     // tab group's), with its opener when Safari says it; its page reports in.
-    // A blank one loads nothing and takes no script.
-    create(opener?: Tab, blank = false, window = 1): Tab {
-      const tab = { id: nextTab++, doc: new Doc(blank ? "" : "https://example.com/popup"), window };
+    // A blank one loads nothing and takes no script; Safari's Start Page is
+    // one at a favorites: address.
+    create(opener?: Tab, blank = false, window = 1, blankUrl = ""): Tab {
+      const tab = { id: nextTab++, doc: new Doc(blank ? blankUrl : "https://example.com/popup"), window };
       tab.doc.shut = blank;
       tabs.set(tab.id, tab);
       browser.tabs.onCreated.fire({ id: tab.id, windowId: window, ...(opener ? { openerTabId: opener.id } : {}) });
@@ -1346,14 +1347,16 @@ test("a tab Safari puts in an agent window unasked goes to the user's window, in
   ]);
 });
 
-// Safari never lets a tab group empty: closing its last page leaves a blank
-// tab of its own in the agent's window, which is no link of his.
-test("a blank tab Safari makes in an agent window stays there", async () => {
+// Safari never lets a tab group empty: closing its last page leaves a tab of
+// its own in the agent's window, blank or its Start Page, which is no link
+// of his. On 11-20 a Start Page left in check-live's ended window went to
+// his window.
+test.each(["", "favorites://"])("a tab Safari makes in an agent window at %p stays there", async (url) => {
   const b = await start();
   const his = b.open("https://x.com/home");
   b.focus(his);
   const window = await b.agentWindow();
-  const blank = b.create(undefined, true, window);
+  const blank = b.create(undefined, true, window, url);
   await b.clock.advance(2000);
   const { value } = await b.request("tabs.list", []);
   expect((value as { id: number; windowId: number }[]).find((t) => t.id === blank.id)?.windowId).toBe(window);

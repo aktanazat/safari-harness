@@ -35,10 +35,11 @@ const UNPAINTED = "screenshot privacy: the protected page did not paint";
 const shared = (a: Rect, b: Rect) =>
   Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
 
-// Windows front to back; tabs, each in a window; owners, each window's agent.
-function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number, number>, moves?: Rect[], moveOffset = 0, screens = [MAIN, ABOVE]) {
+// Windows front to back; tabs, each in a window; owners, each window's agent;
+// urls, the address of a tab not at https://page.example/<tab>.
+function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number, number>, moves?: Rect[], moveOffset = 0, screens = [MAIN, ABOVE], urls: Record<number, string> = {}) {
   // A window the daemon opens shows its status page at the address asked.
-  const pages = new Map<number, string>();
+  const pages = new Map<number, string>(Object.entries(urls).map(([tab, url]) => [Number(tab), url]));
   const urlOf = (tab: number) => pages.get(tab) ?? `https://page.example/${tab}`;
   const windowOf = (tab: number) => windows.find((w) => w.id === tabs[tab])!;
   connect({
@@ -218,6 +219,35 @@ test("a done agent's window moved to his display for his tab goes back to the Ag
   const again = await runAs(process.pid, () => fresh.spaceWindow("again"));
   await fresh.sweep();
   expect([again.window, shown, onAgents(byId(windows, space.window))]).toEqual([space.window, false, true]);
+});
+
+// 11-20: check-live's ended tab group window held only the Start Page
+// Safari leaves in a group, and a sweep moved it onto his screen.
+test("a done agent's window holding only Safari's Start Page stays on the Agents display", async () => {
+  const tabs: Record<number, number> = { 11: 1 };
+  const windows = mac([{ ...HIS }], tabs, {}, undefined, 0, [MAIN, ABOVE, AGENTS], { 96: "favorites://" });
+  // Isolate this window from other tests' module records.
+  const fresh = (await import(`./spaces.ts?start`)) as typeof spaces;
+  const space = await runAs(process.pid, () => fresh.spaceWindow("start"));
+  tabs[96] = space.window;
+  await fresh.turnEnded(process.pid);
+  await fresh.sweep();
+  expect(onAgents(byId(windows, space.window))).toBe(true);
+});
+
+test("an agent window whose task ended stays on the Agents display as its page closes, when only Safari's Start Page is left in it", async () => {
+  const tabs: Record<number, number> = { 11: 1 };
+  const windows = mac([{ ...HIS }], tabs, {}, undefined, 0, [MAIN, ABOVE, AGENTS], { 95: "favorites://" });
+  // Isolate this window from other tests' module records.
+  const fresh = (await import(`./spaces.ts?startended`)) as typeof spaces;
+  let tracked = true;
+  fresh.loadSpaces(join(mkdtempSync(join(tmpdir(), "place-")), "spaces.json"), () => tracked);
+  const space = await runAs(process.pid, () => fresh.spaceWindow("startended"));
+  tabs[95] = space.window;
+  tracked = false;
+  await fresh.sweep();
+  const statusPage = space.window * 10 + 1;
+  expect([statusPage in tabs, onAgents(byId(windows, space.window))]).toEqual([false, true]);
 });
 
 test("an agent window whose task ended moves to his display as its page closes, when only a tab of the user's is left in it", async () => {
