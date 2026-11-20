@@ -2727,15 +2727,16 @@ api.tabs.onCreated.addListener(async (t) => {
 // opens from another app in the window it had in front last, which may be
 // an agent's, out of his sight on the Agents display (11-19). Once no page
 // can claim it, it goes to his window (toHis), showing there if it showed
-// where it landed, and his window comes to the front if that one was. A
-// tab with no address stays: Safari leaves a blank one in a tab group whose
-// last page closed, and a link always has one.
+// where it landed, and his window comes to the front if that one was. Only
+// a tab at a web or file address goes, as a link does: Safari leaves a
+// blank tab or its Start Page (favorites://) in a tab group whose last page
+// closed, and on 11-20 one left in check-live's ended window went to his.
 const strays = new Map(); // tabId -> the timer that moves it, until a page claims it
 async function leaveAgentWindow(tabId) {
   strays.delete(tabId);
   await Promise.all([adopted?.catch(() => {}), listsChanged, drivenRead]);
   const t = await api.tabs.get(tabId);
-  if (!(t.url || t.pendingUrl) || !windowLists.agentWindows.includes(t.windowId) || drivenTabs.has(tabId) || await ownsTab(tabId)) return;
+  if (!/^(https?|file):/i.test(t.pendingUrl || t.url || "") || !windowLists.agentWindows.includes(t.windowId) || drivenTabs.has(tabId) || await ownsTab(tabId)) return;
   const from = await api.windows.get(t.windowId);
   const { windowId } = await toHis(tabId);
   if (t.active) await api.tabs.update(tabId, { active: true });

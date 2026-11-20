@@ -123,6 +123,15 @@ function pagesIn(inWindow: TabInfo[], s: Space): TabInfo[] {
   return inWindow.length === 1 && !inWindow[0].url ? [] : inWindow.filter((t) => !isPage(t, s));
 }
 
+// Whether tabs, all in one window, are the user's: at least one at a web or
+// file address, as a link he opens is, and none the harness's. Safari's
+// blank tab and Start Page (favorites://) count for neither: on 11-20 a
+// sweep took check-live's ended window, holding only its Start Page, for
+// his and moved it onto his screen.
+function holdsUsers(tabs: TabInfo[]): boolean {
+  return tabs.some((t) => /^(https?|file):/i.test(t.url ?? "")) && !tabs.some((t) => heldTab(t.id) || isSpacePage(t));
+}
+
 // The pages in an ended group's window that hold the group: all but its
 // agent's finished tabs, which Safari may not let the extension close
 // (finishedTab in tools.ts) and the group's delete takes with it, unless
@@ -642,7 +651,7 @@ async function end(space: Space) {
   }
   // the window, no agent's now, stays for the user's tabs left in it
   const left = pagesIn(inWindow, space);
-  if (left.length > 0 && !left.some((t) => heldTab(t.id))) await toUserScreen(left[0].id).catch((e: unknown) => note("a window of the user's not moved off the agents' display", { error: e instanceof Error ? e.message : String(e) }));
+  if (holdsUsers(left)) await toUserScreen(left[0].id).catch((e: unknown) => note("a window of the user's not moved off the agents' display", { error: e instanceof Error ? e.message : String(e) }));
   unclosed.delete(space);
   unlooked.delete(space);
   ended.delete(space);
@@ -773,8 +782,7 @@ const offAgents = new Set<number>(); // windows toUserScreen found off the displ
 async function homeWindows(tabs: TabInfo[]) {
   const registered = [...spaces.values(), ...closing.values(), ...ended];
   const byWindow = Map.groupBy(tabs, (t) => t.windowId);
-  const users = (inWindow: TabInfo[]) => inWindow.length > 0 && !inWindow.some((t) => heldTab(t.id) || isSpacePage(t));
-  const his = registered.filter((s) => s.done && !s.moved && !s.shownFor?.length && users(pagesIn(byWindow.get(s.window) ?? [], s)));
+  const his = registered.filter((s) => s.done && !s.moved && !s.shownFor?.length && holdsUsers(pagesIn(byWindow.get(s.window) ?? [], s)));
   const away = [...spaces.values()].filter((s) => !s.shownFor?.length && !his.includes(s));
   const { agents, at, strays } = await agentWindows([...away, ...his].map((s) => s.size), registered.map((s) => s.size));
   if (agents === undefined) return;
@@ -794,7 +802,7 @@ async function homeWindows(tabs: TabInfo[]) {
     const agentWindowIds = new Set(registered.map((s) => s.window));
     const now = Date.now();
     for (const [windowId, inWindow] of byWindow) {
-      if (windowId === undefined || agentWindowIds.has(windowId) || offAgents.has(windowId) || !users(inWindow)) continue;
+      if (windowId === undefined || agentWindowIds.has(windowId) || offAgents.has(windowId) || !holdsUsers(inWindow)) continue;
       const seen = strayAt.get(windowId) ?? now;
       strayAt.set(windowId, seen);
       if (now - seen < STRAY_MS) continue;
