@@ -550,8 +550,8 @@ export async function waitCode(opts: { seconds?: number; since?: number } = {}) 
   const texts = codeTexts(opts.since === undefined ? {} : { after: Number(opts.since) });
   try {
     for (;;) {
-      const [first] = texts.read();
-      if (first) return { status: "received", code: first.code, from: first.from, at: new Date(first.at).toISOString(), rowid: first.rowid };
+      const newest = texts.read().at(-1);
+      if (newest) return { status: "received", code: newest.code, from: newest.from, at: new Date(newest.at).toISOString(), since: newest.rowid };
       if (Date.now() >= deadline) return { status: "timeout", since: texts.last() };
       await Bun.sleep(CODE_POLL_MS);
     }
@@ -881,10 +881,10 @@ export const IMESSAGE_TOOLS: Record<string, Tool> = {
     run: async (a) => search(a as { text?: string; from?: string; chat?: string; days?: number; limit?: number }),
   },
   imessage_wait_code: {
-    desc: "Wait for a sign-in code by text, including the last minute. Returns {status:'received',code,from} or {status:'timeout',since}; pass since back to keep waiting. Type it into the page; never repeat it in chat.",
+    desc: "Wait for the newest sign-in code texted since a minute ago. Returns {status:'received',code,from,since} or {status:'timeout',since}; pass since back for a later one. Type it into the page; never repeat it in chat.",
     params: {
       seconds: { type: "number", description: "how long to wait, default 30, max 90" },
-      since: { type: "number", description: "rowid from a previous timeout" },
+      since: { type: "number", description: "since of an earlier answer" },
     },
     run: (a) => waitCode(a as { seconds?: number; since?: number }),
   },
