@@ -649,9 +649,13 @@ async function end(space: Space) {
       }
     }
   }
-  // the window, no agent's now, stays for the user's tabs left in it
-  const left = pagesIn(inWindow, space);
-  if (holdsUsers(left)) await toUserScreen(left[0].id).catch((e: unknown) => note("a window of the user's not moved off the agents' display", { error: e instanceof Error ? e.message : String(e) }));
+  // The window, no agent's now, stays for the user's tabs left in it. It is
+  // listed again, as the agent's other tabs may have closed meanwhile: on
+  // 11-20 the move named one of them, and failed.
+  if (pagesIn(inWindow, space).length > 0) {
+    const left = (await listTabs().catch((): TabInfo[] => [])).filter((t) => t.windowId === space.window && !isPage(t, space));
+    if (holdsUsers(left)) await toUserScreen(left[0].id).catch((e: unknown) => note("a window of the user's not moved off the agents' display", { error: e instanceof Error ? e.message : String(e) }));
+  }
   unclosed.delete(space);
   unlooked.delete(space);
   ended.delete(space);

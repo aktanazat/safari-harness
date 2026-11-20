@@ -265,6 +265,29 @@ test("an agent window whose task ended moves to his display as its page closes, 
   expect([space.window * 10 + 1 in tabs, shared(moved, MAIN.frame)]).toEqual([false, moved.width * moved.height]);
 });
 
+// 11-20, work Mac: an exited agent's tabs closed while its window ended,
+// and the window, left with the user's tabs, stayed on the Agents display:
+// the move named one of the closed tabs ("that tab is gone").
+test("an agent window whose task ended moves to his display even when another tab in it closes as its page does", async () => {
+  const tabs: Record<number, number> = { 11: 1 };
+  const windows = mac([{ ...HIS }], tabs, {}, undefined, 0, [MAIN, ABOVE, AGENTS]);
+  // Isolate this window from other tests' module records.
+  const fresh = (await import(`./spaces.ts?closing`)) as typeof spaces;
+  let tracked = true;
+  fresh.loadSpaces(join(mkdtempSync(join(tmpdir(), "place-")), "spaces.json"), () => tracked);
+  const space = await runAs(process.pid, () => fresh.spaceWindow("closing"));
+  // the one look at untracked windows a load asks for, while its task runs
+  await fresh.sweep();
+  const statusPage = space.window * 10 + 1;
+  // tab 93 is listed while the status page is open and gone once it closes
+  Object.defineProperty(tabs, 93, { enumerable: true, configurable: true, get: () => (statusPage in tabs ? space.window : undefined) });
+  tabs[94] = space.window;
+  tracked = false;
+  await fresh.sweep();
+  const moved = byId(windows, space.window);
+  expect([statusPage in tabs, shared(moved, MAIN.frame)]).toEqual([false, moved.width * moved.height]);
+});
+
 test("an agent window the user moves off the Agents display stays where he put it, through an activate and its turn's end", async () => {
   const windows = mac([{ ...HIS }], { 11: 1 }, {}, undefined, 0, [MAIN, ABOVE, AGENTS]);
   const fresh = (await import(`./spaces.ts?moved`)) as typeof spaces;

@@ -2715,7 +2715,7 @@ api.tabs.onCreated.addListener(async (t) => {
   const opener = t.openerTabId ?? pairIn(recent(announced, at), t.windowId, recent(unclaimed, at).length === 0);
   if (opener === undefined) {
     unclaimed.set(t.id, { tab: t, windowId: t.windowId, at });
-    strays.set(t.id, setTimeout(() => leaveAgentWindow(t.id).catch((e) => log("tab not moved out of an agent window", String(e))), Math.max(0, at + POPUP_MS - Date.now())));
+    strays.set(t.id, setTimeout(() => leaveAgentWindow(t.id, at).catch((e) => log("tab not moved out of an agent window", String(e))), Math.max(0, at + POPUP_MS - Date.now())));
     return;
   }
   announced.delete(opener);
@@ -2731,18 +2731,36 @@ api.tabs.onCreated.addListener(async (t) => {
 // a tab at a web or file address goes, as a link does: Safari leaves a
 // blank tab or its Start Page (favorites://) in a tab group whose last page
 // closed, and on 11-20 one left in check-live's ended window went to his.
+// A link may show no address yet: on 11-20 the work Mac's showed none for
+// over 740 ms after its tab appeared, and one by 1.5 s. A tab with none is
+// looked at again when Safari reports its address, until ADDRESS_MS after
+// it appeared; a blank tab Safari made itself and a page loads in later
+// stays.
 const strays = new Map(); // tabId -> the timer that moves it, until a page claims it
-async function leaveAgentWindow(tabId) {
+const ADDRESS_MS = 15_000;
+const addressless = new Map(); // tabId -> when Safari told of it, while it waits for an address
+async function leaveAgentWindow(tabId, at) {
   strays.delete(tabId);
   await Promise.all([adopted?.catch(() => {}), listsChanged, drivenRead]);
   const t = await api.tabs.get(tabId);
-  if (!/^(https?|file):/i.test(t.pendingUrl || t.url || "") || !windowLists.agentWindows.includes(t.windowId) || drivenTabs.has(tabId) || await ownsTab(tabId)) return;
+  if (!windowLists.agentWindows.includes(t.windowId) || drivenTabs.has(tabId) || await ownsTab(tabId)) return;
+  if (!/^(https?|file):/i.test(t.pendingUrl || t.url || "")) {
+    if (Date.now() - at < ADDRESS_MS) addressless.set(tabId, at);
+    return;
+  }
   const from = await api.windows.get(t.windowId);
   const { windowId } = await toHis(tabId);
   if (t.active) await api.tabs.update(tabId, { active: true });
   if (from.focused) await api.windows.update(windowId, { focused: true });
   send({ op: "note", kind: "user tab moved", tab: tabId, from: t.windowId, to: windowId });
 }
+api.tabs.onUpdated.addListener((id, info) => {
+  const at = addressless.get(id);
+  if (at === undefined || !info.url) return;
+  addressless.delete(id);
+  if (Date.now() - at < ADDRESS_MS) leaveAgentWindow(id, at).catch((e) => log("tab not moved out of an agent window", String(e)));
+});
+api.tabs.onRemoved.addListener((id) => { addressless.delete(id); });
 
 // ---------- keeping owned tabs running ----------
 // Safari draws nothing in a hidden tab and soon nearly stops its timers, so
