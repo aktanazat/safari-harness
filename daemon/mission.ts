@@ -122,6 +122,13 @@ export function tracksOwner(owner: number | undefined): boolean | undefined {
   return alive(owner) ? undefined : false;
 }
 
+// Whether an unanswered call of owner's names tab, including one the user
+// holds (admit) before it reaches the tab.
+export function callNamesTab(owner: number, tab: number): boolean {
+  for (const call of agents.get(owner)?.running ?? []) if (call.tab !== undefined && followTab(call.tab) === tab) return true;
+  return false;
+}
+
 export function openMissionHistory(path: string): void {
   try {
     history = new MissionHistory(path);
