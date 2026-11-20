@@ -1362,6 +1362,36 @@ test.each(["", "favorites://"])("a tab Safari makes in an agent window at %p sta
   expect((value as { id: number; windowId: number }[]).find((t) => t.id === blank.id)?.windowId).toBe(window);
 });
 
+test("a blank tab Safari made in an agent window stays there when a page loads in it a minute later", async () => {
+  const b = await start();
+  const his = b.open("https://x.com/home");
+  b.focus(his);
+  const window = await b.agentWindow();
+  const blank = b.create(undefined, true, window);
+  await b.clock.advance(60_000);
+  b.navigate(blank, new Doc("https://example.com/later"));
+  await b.clock.advance(100);
+  const { value } = await b.request("tabs.list", []);
+  expect((value as { id: number; windowId: number }[]).find((t) => t.id === blank.id)?.windowId).toBe(window);
+});
+
+// 11-20, work Mac: a link opened from the terminal showed no address to the
+// extension for over 740 ms after its tab appeared, and a web address by
+// 1.5 s, so a look at 1 s found nothing to move and the tab stayed.
+test("a link whose tab shows its address only after the popup window still goes to the user's window", async () => {
+  const b = await start();
+  const his = b.open("https://x.com/home");
+  b.focus(his);
+  const window = await b.agentWindow();
+  const link = b.create(undefined, true, window);
+  b.focus(link);
+  await b.clock.advance(1500);
+  b.navigate(link, new Doc("https://example.com/?landed=after"));
+  await b.clock.advance(100);
+  const { value } = await b.request("tabs.list", []);
+  expect((value as { id: number; windowId: number; shown?: true }[]).find((t) => t.id === link.id)).toMatchObject({ windowId: 1, active: true, shown: true });
+});
+
 // 09-30: a blank tab taken as an owned page's popup never reported in, and
 // each request to it waited 15 s for a page before failing (01a0f14c).
 test("a blank tab a click opens answers a request at once once the click has taken it", async () => {
