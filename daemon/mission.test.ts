@@ -1009,6 +1009,50 @@ test("giveback protects a task tab whose already-running open finishes during ta
   }
 });
 
+test("the tab limit keeps a tab a paused call of its agent names", async () => {
+  const a = agent();
+  const opened: number[] = [];
+  for (const n of [1, 2, 3, 4]) opened.push(await open(a.pid, `https://cap.example/${n}`));
+  const [oldest] = opened;
+  const page = pageOf(oldest);
+  const entered = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  const request = bridge.request.bind(bridge);
+  const relay = spyOn(bridge, "request").mockImplementation(async (...args) => {
+    if (args[0] === "tabs.open" && args[1]?.[0] === "https://cap.example/5") {
+      entered.resolve();
+      await finish.promise;
+    }
+    return request(...args);
+  });
+  const opening = open(a.pid, "https://cap.example/5");
+  try {
+    await entered.promise;
+    await press(page, "pause");
+    const reading = call(a.pid, "snapshot", { tab: oldest });
+    finish.resolve();
+    await opening;
+    await press(page, "resume");
+    expect(await reading).not.toHaveProperty("replaced");
+    expect(s.tabs.has(oldest)).toBe(true);
+  } finally {
+    finish.resolve();
+    relay.mockRestore();
+    await press(page, "resume");
+    await opening;
+  }
+});
+
+test("a call naming a tab as its agent's turn ends still lets the turn close it, and reads it reopened", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://turn-race.example/");
+  const ending = endTurn(a.pid);
+  const reading = call(a.pid, "snapshot", { tab });
+  expect(await ending).toMatchObject({ closed: 1, retained: 0 });
+  expect(s.tabs.has(tab)).toBe(false);
+  expect(await reading).toMatchObject({ replaced: { from: tab } });
+});
+
 async function resourceTab(owner: number, url: string): Promise<number> {
   const tab = await runAs(owner, () => callTool("open", { url, background: true })) as { id: number };
   fixtureTabs.add(tab.id);

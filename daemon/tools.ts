@@ -42,7 +42,7 @@ import { browserMemoryTool, researchRead, saveResearchSource, BROWSER_MEMORY_TRU
 import { failureOf, HarnessError, type Failure } from "./failures.ts";
 import { qaAround, refuseSlackSend, type SlackAct } from "./slack-send.ts";
 import { classifyPage, partialRead, plainState, signInCheck, signInPage, withPageState, stateLine } from "./page-state.ts";
-import { admitNativeAction, admitPageObservation, admitSiteAction, finishNativeAction, missionCall, mustReadWhole, withGather, withTaskCancellation } from "./mission.ts";
+import { admitNativeAction, admitPageObservation, admitSiteAction, callNamesTab, finishNativeAction, missionCall, mustReadWhole, withGather, withTaskCancellation } from "./mission.ts";
 import { recoverSnapshot, SnapshotHistory, type SnapshotView, type SnapshotUpdate } from "./snapshot-updates.ts";
 import { SiteActions, type SiteActionBinding } from "./site-actions.ts";
 import { createVideoTool } from "./video-observation.ts";
@@ -908,11 +908,11 @@ function busyFree(tab: number, t: HarnessTab, now: number): boolean {
   return !(t.handoff || (handoff && !handoff.done && handoff.error === undefined));
 }
 
-// Whether an idle close or the tab limit may take tab: as busyFree, and its
-// page is one a later call can open again (no site-global tab, no address
-// that cannot be kept).
+// Whether an idle close or the tab limit may take tab: as busyFree, none
+// of its agent's calls names it, and its page is one a later call can open
+// again (no site-global tab, no address that cannot be kept).
 function idleClosable(tab: number, t: HarnessTab, now: number): boolean {
-  return busyFree(tab, t, now) && (t.search === true || (!t.site && !t.unsafe && (t.url === undefined || resumeAddress(t.url) !== undefined)));
+  return busyFree(tab, t, now) && !(t.owner !== undefined && callNamesTab(t.owner, tab)) && (t.search === true || (!t.site && !t.unsafe && (t.url === undefined || resumeAddress(t.url) !== undefined)));
 }
 
 // Whether the harness holds tab as one of its own: an agent's, a popup an
