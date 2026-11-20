@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { DEFAULT_PORT } from "../daemon/bridge.ts";
+import { tryLock } from "../daemon/flock.ts";
 import { connectHost } from "../daemon/host.ts";
 import { heliumProfile, quitHelium } from "../daemon/passwords.ts";
 import { alert } from "../daemon/phone.ts";
@@ -214,20 +215,12 @@ async function writeMeta(meta: RoutineMeta): Promise<void> {
   await rename(tmp, path);
 }
 
-let kernelLock: Promise<(fd: number, operation: number) => number> | undefined;
-// bun:ffi is platform-specific; load libSystem only when running macOS jobs.
-
 async function acquireLock(n: string, kind: "run" | "state"): Promise<FileHandle | undefined> {
-  kernelLock ??= import("bun:ffi").then(({ dlopen, FFIType }) => dlopen("/usr/lib/libSystem.B.dylib", {
-    flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
-  }).symbols.flock);
-  const flock = await kernelLock;
   const dir = join(ROUTINES, ".locks");
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const file = await open(join(dir, `${n}.${kind}`), "a", 0o600);
   // Never unlink a lock file: all contenders must lock the same inode.
-  // The kernel releases it on the last close, including after a crash.
-  if (flock(file.fd, 6) === 0) return file;
+  if (await tryLock(file.fd)) return file;
   await file.close();
   return undefined;
 }

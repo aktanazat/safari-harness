@@ -240,7 +240,7 @@ test.each([
 test("an agent's list of learnable tabs goes once its last one closes", async () => {
   await notePlaybookTab("open", { url, background: true }, { id: 7 });
   await notePlaybookTab("close", { tab: 7 }, { ok: true });
-  expect(readdirSync(join(home, "playbook-learning"))).toEqual([]);
+  expect(readdirSync(join(home, "playbook-learning"))).toEqual(["42-tabs.json.flock"]);
 });
 
 test("the daemon's start removes the learning files of agents that have exited, and keeps a running agent's", async () => {
@@ -248,7 +248,55 @@ test("the daemon's start removes the learning files of agents that have exited, 
   await exited.exited;
   const dir = join(home, "playbook-learning");
   mkdirSync(dir);
-  for (const name of [`${exited.pid}-tabs.json`, `${exited.pid}-7.json`, `${process.pid}-tabs.json`]) writeFileSync(join(dir, name), "{}");
+  for (const name of [`${exited.pid}-tabs.json`, `${exited.pid}-7.json`, `${exited.pid}-7.json.lock`, `${exited.pid}-7.json.flock`, `${process.pid}-tabs.json`]) writeFileSync(join(dir, name), "{}");
   sweepPlaybookLearning();
   expect(readdirSync(dir)).toEqual([`${process.pid}-tabs.json`]);
+});
+
+// A child process of the agent, run with the test's home. It prints the
+// owner it resolves first; the test then answers as that owner.
+async function agentProcess(code: string) {
+  const child = Bun.spawn([process.execPath, "-e", code], { cwd: import.meta.dir, env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "pipe" });
+  const reader = child.stdout.getReader();
+  let out = "";
+  while (!out.endsWith("\n")) {
+    const { done, value } = await reader.read();
+    if (done) throw new Error(`the agent's process ended before it said its owner: ${await new Response(child.stderr).text()}`);
+    out += new TextDecoder().decode(value);
+  }
+  spyOn(client, "agentOf").mockResolvedValue(Number(out));
+  spyOn(phone, "dataFile").mockImplementation((name) => join(home, ".local", "share", "safari-harness", name));
+  return child;
+}
+
+test("a caller killed while learning a tab leaves the tab usable", async () => {
+  const child = await agentProcess(`
+    import { writeFileSync, mkdirSync } from "node:fs";
+    import { agentOf } from "./rpc.ts";
+    import { dataFile } from "./phone.ts";
+    import { learnAgentAction } from "./playbooks.ts";
+    const owner = await agentOf();
+    mkdirSync(dataFile("playbook-learning"), { recursive: true });
+    writeFileSync(dataFile(\`playbook-learning/\${owner}-7.json\`), JSON.stringify({ tab: 7, url: "${url}", goal: "g", params: [], before: {}, startedAt: Date.now(), steps: [] }));
+    await learnAgentAction("snapshot", { tab: 7 }, () => { console.log(owner); return new Promise(() => {}); });
+  `);
+  await expect(playbooksTool({ do: "cancel", tab: 7 })).rejects.toThrow("already being learned");
+  child.kill("SIGKILL");
+  await child.exited;
+  expect(await playbooksTool({ do: "cancel", tab: 7 })).toEqual({ ok: true, cancelled: true });
+});
+
+test("opens another process of the agent notes at the same time are noted, not failed", async () => {
+  const child = await agentProcess(`
+    import { agentOf } from "./rpc.ts";
+    import { notePlaybookTab } from "./playbooks.ts";
+    console.log(await agentOf());
+    for (let id = 1000; ; id++) await notePlaybookTab("open", { url: "${url}", background: true }, { id }).catch(() => {});
+  `);
+  try {
+    for (let id = 1; id <= 50; id++) await notePlaybookTab("open", { url, background: true }, { id });
+  } finally {
+    child.kill();
+    await child.exited;
+  }
 });
