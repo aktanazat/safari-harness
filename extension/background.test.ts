@@ -296,6 +296,13 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
         }
         return row(tab);
       },
+      // A tab goes to the end of another window, in front of none.
+      move: async (id: number, { windowId }: { windowId: number }) => {
+        const tab = tabOf(id);
+        if (actives.get(tab.window ?? 1) === id) actives.delete(tab.window ?? 1);
+        tab.window = windowId;
+        return row(tab);
+      },
       remove: async (id: number) => {
         if (heldCloses.has(id)) return never();
         tabs.delete(tabOf(id).id);
@@ -386,11 +393,15 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
         copyIn(tab, tab.doc);
         return { id: tab.window, tabs: [row(tab)] };
       },
-      update: async (id: number, { width, height }: { width?: number; height?: number } = {}) => {
+      update: async (id: number, { width, height, focused: focus }: { width?: number; height?: number; focused?: boolean } = {}) => {
         if (width !== undefined && height !== undefined) sizes.set(id, { width, height });
+        if (focus && focused !== id) {
+          focused = id;
+          browser.windows.onFocusChanged.fire(id);
+        }
         return { id, ...sizes.get(id) };
       },
-      get: async (id: number) => ({ id }),
+      get: async (id: number) => ({ id, focused: id === focused }),
       getAll: async () => (windowsStalled ? never() : [...new Set([...tabs.values()].map((t) => t.window ?? 1))].map((id) => ({ id, ...sizes.get(id) }))),
       getLastFocused: async () => {
         const held = focusRead;
@@ -1309,6 +1320,43 @@ test("a popup an owned page opens on its own goes to the agent, and one the user
     { op: "tab", kind: "popup", tab: first.id, opener: owned.id, url: "https://example.com/popup" },
     { op: "tab", kind: "popup", tab: second.id, opener: owned.id, url: "https://example.com/popup" },
   ]);
+});
+
+// 11-19: a link he opened from the terminal landed in the agent window
+// Safari had in front last, out of his sight on the Agents display.
+test("a tab Safari puts in an agent window unasked goes to the user's window, in front as it landed, and a popup an agent's page opens there stays", async () => {
+  const b = await start();
+  const his = b.open("https://x.com/home");
+  b.focus(his);
+  const window = await b.agentWindow();
+  const agents = b.open("https://example.com/", true, window);
+  await b.own(agents);
+  const link = b.create(undefined, false, window);
+  b.focus(link);
+  await b.clock.advance(2000);
+  b.announce(agents);
+  const popup = b.create(undefined, false, window);
+  await b.clock.advance(2000);
+  const { value } = await b.request("tabs.list", []);
+  const listed = new Map((value as { id: number; windowId: number; shown?: true }[]).map((t) => [t.id, t]));
+  expect([listed.get(link.id), listed.get(popup.id)?.windowId, listed.get(agents.id)?.windowId]).toEqual([
+    { id: link.id, url: "https://example.com/popup", title: "", active: true, windowId: 1, front: true, shown: true },
+    window,
+    window,
+  ]);
+});
+
+// Safari never lets a tab group empty: closing its last page leaves a blank
+// tab of its own in the agent's window, which is no link of his.
+test("a blank tab Safari makes in an agent window stays there", async () => {
+  const b = await start();
+  const his = b.open("https://x.com/home");
+  b.focus(his);
+  const window = await b.agentWindow();
+  const blank = b.create(undefined, true, window);
+  await b.clock.advance(2000);
+  const { value } = await b.request("tabs.list", []);
+  expect((value as { id: number; windowId: number }[]).find((t) => t.id === blank.id)?.windowId).toBe(window);
 });
 
 // 09-30: a blank tab taken as an owned page's popup never reported in, and

@@ -254,6 +254,18 @@ with the existing form, front-page, kept-page and handoff protections.
 Those form and front-page protections do not keep disposable agent tabs
 open after completion or owner exit.
 
+Safari opens a link from another app (a terminal, Slack) in the window it
+had in front last, which can be an agent window on the Agents display. A
+tab with an address that appears in an agent window with no agent call or
+agent page behind it is the user's: about a second after it opens, it
+moves to the window he used last, and if it was showing, it shows there.
+An agent's tab never leaves its window. When an agent's window is done and
+holds only his tabs, the window moves to the display of his front Safari
+window, and goes back to the Agents display when the agent uses it again.
+A window of no agent's on the Agents display moves the same way, at the
+first check after it has been there 10 seconds; the checks run once a
+minute while agent windows are open.
+
 For five minutes after a recoverable tab closes, its safe address is
 available through Recently closed on `/agents` or the original agent tab
 id. Then the recovery metadata expires, even with no harness window open.

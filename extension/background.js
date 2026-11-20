@@ -1992,23 +1992,8 @@ async function handle(msg) {
       await bounded(Promise.allSettled(creatingIn.get(id) ?? []), "opens under way", Date.now() + OPEN_MS).catch(() => {});
       return { ok: true };
     }
-    // A tab kept for the user leaves the agent's window, which sits on the
-    // Agents display he does not look at (daemon/place.ts), for the end of
-    // the window he had in front last, taking no focus. Only a normal,
-    // shown window as private as the tab takes it: Safari refuses to move a
-    // tab into a popup or across private browsing. With no such window, it
-    // goes to a new one. Answers where it went.
-    case "tabs.toHis": {
-      const [tabId] = args;
-      const until = Date.now() + LIST_MS;
-      if (adopted) await bounded(adopted.catch(() => {}), "adopt", until);
-      const [tab, open] = await Promise.all([api.tabs.get(tabId), bounded(api.windows.getAll({ windowTypes: ["normal"] }), "windows.getAll", until), bounded(listsChanged, "window lists", until)]);
-      const fits = new Set(open.filter((w) => !windowLists.agentWindows.includes(w.id) && w.state !== "minimized" && !!w.incognito === !!tab.incognito).map((w) => w.id));
-      const his = [...windowLists.focusOrder, ...fits].find((id) => fits.has(id));
-      if (his === undefined) return { windowId: (await api.windows.create({ tabId, focused: false })).id };
-      await api.tabs.move(tabId, { windowId: his, index: -1 });
-      return { windowId: his };
-    }
+    case "tabs.toHis":
+      return toHis(args[0]);
     case "ping":
       return "pong";
     default:
@@ -2488,6 +2473,24 @@ async function frontWindow(agents, until = Date.now() + LIST_MS) {
   return [...focusOrder, last, ...ids].find((id) => ids.has(id) && (agents || !agentWindows.includes(id)));
 }
 
+// A tab of the user's leaves an agent window, which sits on the Agents
+// display he does not look at (daemon/place.ts), for the end of the window
+// he had in front last, taking no focus: a tab kept for him, or one Safari
+// put there (leaveAgentWindow). Only a normal, shown window as private as
+// the tab takes it: Safari refuses to move a tab into a popup or across
+// private browsing. With no such window, it goes to a new one. Answers
+// where it went.
+async function toHis(tabId) {
+  const until = Date.now() + LIST_MS;
+  if (adopted) await bounded(adopted.catch(() => {}), "adopt", until);
+  const [tab, open] = await Promise.all([api.tabs.get(tabId), bounded(api.windows.getAll({ windowTypes: ["normal"] }), "windows.getAll", until), bounded(listsChanged, "window lists", until)]);
+  const fits = new Set(open.filter((w) => !windowLists.agentWindows.includes(w.id) && w.state !== "minimized" && !!w.incognito === !!tab.incognito).map((w) => w.id));
+  const his = [...windowLists.focusOrder, ...fits].find((id) => fits.has(id));
+  if (his === undefined) return { windowId: (await api.windows.create({ tabId, focused: false })).id };
+  await api.tabs.move(tabId, { windowId: his, index: -1 });
+  return { windowId: his };
+}
+
 // ---------- tabs agents work in ----------
 // A tab the harness owns, opened, or sent a page request, and a tab one of
 // those opened, keeps a request log on each new page (dialogs.js) and gets
@@ -2692,6 +2695,8 @@ function announce(opener, windowId) {
   }
   const { tab } = unclaimed.get(id);
   unclaimed.delete(id);
+  clearTimeout(strays.get(id));
+  strays.delete(id);
   adoptPopup(tab, opener);
 }
 
@@ -2710,11 +2715,33 @@ api.tabs.onCreated.addListener(async (t) => {
   const opener = t.openerTabId ?? pairIn(recent(announced, at), t.windowId, recent(unclaimed, at).length === 0);
   if (opener === undefined) {
     unclaimed.set(t.id, { tab: t, windowId: t.windowId, at });
+    strays.set(t.id, setTimeout(() => leaveAgentWindow(t.id).catch((e) => log("tab not moved out of an agent window", String(e))), Math.max(0, at + POPUP_MS - Date.now())));
     return;
   }
   announced.delete(opener);
   adoptPopup(t, opener);
 });
+
+// A tab Safari made in an agent window that no call of the harness's made
+// and no page claimed (announce) is the user's: Safari puts a link he
+// opens from another app in the window it had in front last, which may be
+// an agent's, out of his sight on the Agents display (11-19). Once no page
+// can claim it, it goes to his window (toHis), showing there if it showed
+// where it landed, and his window comes to the front if that one was. A
+// tab with no address stays: Safari leaves a blank one in a tab group whose
+// last page closed, and a link always has one.
+const strays = new Map(); // tabId -> the timer that moves it, until a page claims it
+async function leaveAgentWindow(tabId) {
+  strays.delete(tabId);
+  await Promise.all([adopted?.catch(() => {}), listsChanged, drivenRead]);
+  const t = await api.tabs.get(tabId);
+  if (!(t.url || t.pendingUrl) || !windowLists.agentWindows.includes(t.windowId) || drivenTabs.has(tabId) || await ownsTab(tabId)) return;
+  const from = await api.windows.get(t.windowId);
+  const { windowId } = await toHis(tabId);
+  if (t.active) await api.tabs.update(tabId, { active: true });
+  if (from.focused) await api.windows.update(windowId, { focused: true });
+  send({ op: "note", kind: "user tab moved", tab: tabId, from: t.windowId, to: windowId });
+}
 
 // ---------- keeping owned tabs running ----------
 // Safari draws nothing in a hidden tab and soon nearly stops its timers, so

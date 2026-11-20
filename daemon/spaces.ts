@@ -37,8 +37,8 @@ import { lastRaised } from "./front.ts";
 import { groupsOff, keeperRunning, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
 import { alive, currentOwner, currentTask, inTurn, matchesTask, runAs, taskFamily, watchOwner } from "./owner.ts";
-import { agentWindows, toAgentScreen } from "./place.ts";
-import { closeTab, endUntrackedTurns, finishedTab, linkDropped, stillFinding, windowPageClosed, type TabInfo } from "./tools.ts";
+import { agentWindows, toAgentScreen, toUserScreen } from "./place.ts";
+import { closeTab, endUntrackedTurns, finishedTab, heldTab, linkDropped, stillFinding, windowPageClosed, type TabInfo } from "./tools.ts";
 
 type Size = { width: number; height: number };
 type Group = "waiting" | "making" | "grouped" | "plain";
@@ -640,6 +640,9 @@ async function end(space: Space) {
       }
     }
   }
+  // the window, no agent's now, stays for the user's tabs left in it
+  const left = pagesIn(inWindow, space);
+  if (left.length > 0 && !left.some((t) => heldTab(t.id))) await toUserScreen(left[0].id).catch((e: unknown) => note("a window of the user's not moved off the agents' display", { error: e instanceof Error ? e.message : String(e) }));
   unclosed.delete(space);
   unlooked.delete(space);
   ended.delete(space);
@@ -755,12 +758,50 @@ async function sweepOnce() {
 // is found on the display again is back home, his no more: on 11-18 the
 // daemon's search window, moved by another program and put back, stayed
 // marked as his.
+//
+// A window on the Agents display that holds only the user's tabs goes to
+// his screen (toUserScreen), where he can see them: a done agent's window
+// whose other tabs are all his (on 11-19 one held his hub page and an X
+// post), until its agent works in it again, or a window of no agent's.
+// Safari is asked which window of no agent's that is only while the
+// display holds a Safari window of a size no agent window has, once for
+// each window, and only for one seen so at least STRAY_MS before: an
+// agent's popup window is the extension's to report, which takes up to 3 s.
+const STRAY_MS = 10_000;
+const strayAt = new Map<number, number>(); // window -> when first seen as maybe a stray
+const offAgents = new Set<number>(); // windows toUserScreen found off the display or could not tell
 async function homeWindows(tabs: TabInfo[]) {
-  const away = [...spaces.values()].filter((s) => !s.shownFor?.length);
-  if (away.length === 0) return;
-  const { agents, at } = await agentWindows(away.map((s) => s.size));
+  const registered = [...spaces.values(), ...closing.values(), ...ended];
+  const byWindow = Map.groupBy(tabs, (t) => t.windowId);
+  const users = (inWindow: TabInfo[]) => inWindow.length > 0 && !inWindow.some((t) => heldTab(t.id) || isSpacePage(t));
+  const his = registered.filter((s) => s.done && !s.moved && !s.shownFor?.length && users(pagesIn(byWindow.get(s.window) ?? [], s)));
+  const away = [...spaces.values()].filter((s) => !s.shownFor?.length && !his.includes(s));
+  const { agents, at, strays } = await agentWindows([...away, ...his].map((s) => s.size), registered.map((s) => s.size));
   if (agents === undefined) return;
   let changed = false;
+  for (const [i, s] of his.entries()) {
+    if (at[away.length + i] !== "agents") continue;
+    const inWindow = pagesIn(byWindow.get(s.window) ?? [], s);
+    if (!(await toUserScreen(inWindow[0].id))) continue;
+    delete s.home;
+    changed = true;
+    note("a done agent window holding only the user's tabs moved off the agents' display", { name: s.name, tabs: inWindow.length });
+  }
+  if (strays === 0) {
+    strayAt.clear();
+    offAgents.clear();
+  } else {
+    const agentWindowIds = new Set(registered.map((s) => s.window));
+    const now = Date.now();
+    for (const [windowId, inWindow] of byWindow) {
+      if (windowId === undefined || agentWindowIds.has(windowId) || offAgents.has(windowId) || !users(inWindow)) continue;
+      const seen = strayAt.get(windowId) ?? now;
+      strayAt.set(windowId, seen);
+      if (now - seen < STRAY_MS) continue;
+      if (await toUserScreen(inWindow[0].id)) note("a window of the user's moved off the agents' display", { tabs: inWindow.length });
+      else offAgents.add(windowId);
+    }
+  }
   for (const [i, s] of away.entries()) {
     if (at[i] === "agents") {
       if (s.home !== agents || s.moved) {
