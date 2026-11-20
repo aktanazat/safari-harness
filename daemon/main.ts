@@ -18,7 +18,7 @@
 //     /space         the live page an agent window opens on, with its state
 //                    and controls; /agents, every agent at work (mission.ts)
 
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { bridge, DEFAULT_PORT, MESSAGE_MAX } from "./bridge.ts";
 import { TOOLS, callTool, endTurn, prepareTurnEnd, loadTabs, type TurnPreparation } from "./tools.ts";
@@ -31,7 +31,8 @@ import { ownerOf, runAs } from "./owner.ts";
 import { missionRoute, tracksOwner, watched } from "./mission.ts";
 import { saveRecording } from "./recordings.ts";
 import { notify } from "./front.ts";
-import { loadSpaces } from "./spaces.ts";
+import { displaysChanged, loadSpaces } from "./spaces.ts";
+import { watchDisplayChanges } from "./display-watch.ts";
 import { loadsFile, openLoads } from "./loads.ts";
 import { fromAutomation } from "./automation.ts";
 import { failureOf, HarnessError, type Failure } from "./failures.ts";
@@ -70,6 +71,8 @@ note("start", {
 });
 loadTabs(join(homedir(), ".local/share/safari-harness", `tabs-${httpPort}.json`));
 loadSpaces(join(homedir(), ".local/share/safari-harness", `spaces-${httpPort}.json`), tracksOwner);
+// The agent screen companion's folder, under the account's own home as it reads it.
+watchDisplayChanges(join(userInfo().homedir, ".agent-display"), displaysChanged);
 openMissionHistory(join(homedir(), ".local/share/safari-harness", `history-${httpPort}.json`));
 // The extension reports every load in its owned tabs (bridge.ts), including
 // loads no tool caused, so browsing_history can leave those visits out.
