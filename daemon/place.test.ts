@@ -1,4 +1,4 @@
-import { afterEach, expect, mock, spyOn, test } from "bun:test";
+import { afterEach, expect, mock, setSystemTime, spyOn, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,7 +37,9 @@ const shared = (a: Rect, b: Rect) =>
 
 // Windows front to back; tabs, each in a window; owners, each window's agent.
 function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number, number>, moves?: Rect[], moveOffset = 0, screens = [MAIN, ABOVE]) {
-  const urlOf = (tab: number) => `https://page.example/${tab}`;
+  // A window the daemon opens shows its status page at the address asked.
+  const pages = new Map<number, string>();
+  const urlOf = (tab: number) => pages.get(tab) ?? `https://page.example/${tab}`;
   const windowOf = (tab: number) => windows.find((w) => w.id === tabs[tab])!;
   connect({
     send(data: string) {
@@ -49,6 +51,7 @@ function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number
         const opened = { id: Math.max(...windows.map((w) => w.id)) + 1, safari: true, ...SAFARI_PUT, width, height };
         windows.splice(1, 0, opened);
         tabs[opened.id * 10 + 1] = opened.id;
+        pages.set(opened.id * 10 + 1, String(args[0]));
         return reply({ value: { windowId: opened.id, tabId: opened.id * 10 + 1 } });
       }
       const tab = args[0] as number;
@@ -66,6 +69,11 @@ function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number
         const w = windowOf(tab);
         const coveredWhole = windows.slice(0, windows.indexOf(w)).some((f) => shared(w, f) === w.width * w.height);
         return reply(coveredWhole ? { error: UNPAINTED } : { value: captureFixture(urlOf(tab)) });
+      }
+      if (op === "dialogs") return reply({ value: { ok: true } });
+      if (op === "tabs.close") {
+        delete tabs[tab];
+        return reply({ value: { ok: true } });
       }
       reply({ error: `no ${op} here` });
     },
@@ -162,6 +170,69 @@ test("an agent window opened while the Agents display was down goes there once a
   screens.push(AGENTS);
   await fresh.sweep();
   expect([before, onAgents(byId(windows, space.window))]).toEqual([false, true]);
+});
+
+// 11-19: a window holding only his hub page and an X post sat on the
+// Agents display, out of his sight, until another agent moved it by hand.
+test("a sweep moves a window of only the user's tabs off the Agents display to the display of his front window once it has been there 10 s, and leaves the agent window there", async () => {
+  const strayWindow = { id: 3, safari: true, x: AGENTS.visible.x + 1400, y: AGENTS.visible.y, width: 900, height: 700 };
+  const windows = mac([{ ...HIS }, { ...strayWindow }], { 11: 1, 31: 3, 32: 3 }, {}, undefined, 0, [MAIN, ABOVE, AGENTS]);
+  // Isolate this window from other tests' module records.
+  const fresh = (await import(`./spaces.ts?stray`)) as typeof spaces;
+  const space = await runAs(process.pid, () => fresh.spaceWindow("stray"));
+  try {
+    await fresh.sweep();
+    const first = onAgents(byId(windows, 3));
+    setSystemTime(Date.now() + 11_000);
+    await fresh.sweep();
+    const moved = byId(windows, 3);
+    expect([first, shared(moved, MAIN.frame), onAgents(byId(windows, space.window))]).toEqual([true, moved.width * moved.height, true]);
+  } finally {
+    setSystemTime();
+  }
+});
+
+test("a done agent's window on the Agents display that still holds a tab of the user's moves to his display, the tab still in it", async () => {
+  const tabs: Record<number, number> = { 11: 1 };
+  const windows = mac([{ ...HIS }], tabs, {}, undefined, 0, [MAIN, ABOVE, AGENTS]);
+  // Isolate this window from other tests' module records.
+  const fresh = (await import(`./spaces.ts?done`)) as typeof spaces;
+  const space = await runAs(process.pid, () => fresh.spaceWindow("done"));
+  tabs[99] = space.window;
+  await fresh.turnEnded(process.pid);
+  await fresh.sweep();
+  const moved = byId(windows, space.window);
+  expect([shared(moved, MAIN.frame), tabs[99]]).toEqual([moved.width * moved.height, space.window]);
+});
+
+test("a done agent's window moved to his display for his tab goes back to the Agents display once its agent works in it again", async () => {
+  const tabs: Record<number, number> = { 11: 1 };
+  const windows = mac([{ ...HIS }], tabs, {}, undefined, 0, [MAIN, ABOVE, AGENTS]);
+  // Isolate this window from other tests' module records.
+  const fresh = (await import(`./spaces.ts?again`)) as typeof spaces;
+  const space = await runAs(process.pid, () => fresh.spaceWindow("again"));
+  tabs[97] = space.window;
+  await fresh.turnEnded(process.pid);
+  await fresh.sweep();
+  const shown = onAgents(byId(windows, space.window));
+  const again = await runAs(process.pid, () => fresh.spaceWindow("again"));
+  await fresh.sweep();
+  expect([again.window, shown, onAgents(byId(windows, space.window))]).toEqual([space.window, false, true]);
+});
+
+test("an agent window whose task ended moves to his display as its page closes, when only a tab of the user's is left in it", async () => {
+  const tabs: Record<number, number> = { 11: 1 };
+  const windows = mac([{ ...HIS }], tabs, {}, undefined, 0, [MAIN, ABOVE, AGENTS]);
+  // Isolate this window from other tests' module records.
+  const fresh = (await import(`./spaces.ts?ended`)) as typeof spaces;
+  let tracked = true;
+  fresh.loadSpaces(join(mkdtempSync(join(tmpdir(), "place-")), "spaces.json"), () => tracked);
+  const space = await runAs(process.pid, () => fresh.spaceWindow("ended"));
+  tabs[98] = space.window;
+  tracked = false;
+  await fresh.sweep();
+  const moved = byId(windows, space.window);
+  expect([space.window * 10 + 1 in tabs, shared(moved, MAIN.frame)]).toEqual([false, moved.width * moved.height]);
 });
 
 test("an agent window the user moves off the Agents display stays where he put it, through an activate and its turn's end", async () => {

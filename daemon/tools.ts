@@ -915,6 +915,12 @@ function idleClosable(tab: number, t: HarnessTab, now: number): boolean {
   return busyFree(tab, t, now) && (t.search === true || (!t.site && !t.unsafe && (t.url === undefined || resumeAddress(t.url) !== undefined)));
 }
 
+// Whether the harness holds tab as one of its own: an agent's, a popup an
+// agent's page opened, or a search tab. Any other tab is the user's.
+export function heldTab(tab: number): boolean {
+  return harnessTabs.has(tab);
+}
+
 // Whether tab is one a sweep closes as finished: its agent's turn ended or
 // the agent exited, no handoff or call is on it, Safari listed it on the
 // extension's current connection (a Safari that started again may give its
