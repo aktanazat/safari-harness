@@ -221,6 +221,28 @@ test("completion preserves a pending human handoff and closes it only after the 
   }
 });
 
+test("a handoff that fails on a block page leaves its tab to close at the turn's end", async () => {
+  const tab = 30077;
+  const m = mac(tab, { url: "https://fixture.example/blocked", check: "block" });
+  const agent = Bun.spawn(["sleep", "600"]);
+  try {
+    const build = join(import.meta.dir, "../.build");
+    mkdirSync(build, { recursive: true });
+    const checkpointDir = mkdtempSync(join(build, "handoff-state-"));
+    process.once("exit", () => rmSync(checkpointDir, { recursive: true, force: true }));
+    const checkpoint = join(checkpointDir, "tabs.json");
+    writeFileSync(checkpoint, JSON.stringify({ [tab]: { owner: agent.pid, used: Date.now() } }));
+    loadTabs(checkpoint);
+    await expect(runAs(agent.pid, () => callTool("handoff_wait", { tab, why: "Finish the fixture check", ms: 0, away: true }))).rejects.toThrow("is a block");
+    await endTurn(agent.pid);
+    expect(m.closed).toContain(tab);
+  } finally {
+    agent.kill();
+    await agent.exited;
+    jest.advanceTimersByTime(1000);
+  }
+});
+
 test.each([
   ["stays on the tab", () => {}, { activated: [72, 3], app: MAIL }],
   ["has gone to another app", (m: Mac) => { m.app = "com.apple.Notes"; }, { activated: [72], app: "com.apple.Notes" }],
