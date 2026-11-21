@@ -783,6 +783,33 @@ async function sweepOnce() {
 const STRAY_MS = 10_000;
 const strayAt = new Map<number, number>(); // window -> when first seen as maybe a stray
 const offAgents = new Set<number>(); // windows toUserScreen found off the display or could not tell
+
+// After a display change (display-watch.ts) macOS may have moved the user's
+// Safari windows onto the Agents display, and with no agent window open no
+// sweep runs to find them. A pass now notes them; one STRAY_MS later moves
+// those still there. A change while that is pending adds nothing. Answers
+// the first pass, which never fails.
+let strayCheck: Timer | undefined;
+export function displaysChanged(): Promise<void> | undefined {
+  if (strayCheck) return undefined;
+  strayCheck = setTimeout(() => {
+    strayCheck = undefined;
+    void strayPass();
+  }, STRAY_MS + 1000);
+  strayCheck.unref();
+  return strayPass();
+}
+
+async function strayPass(): Promise<void> {
+  if (spaceSweeping) await spaceSweeping.catch(() => {});
+  if (!bridge.connected) return;
+  try {
+    await homeWindows(await listTabs());
+  } catch (e) {
+    note("windows not checked for the agents' display after a display change", { error: e instanceof Error ? e.message : String(e) });
+  }
+}
+
 async function homeWindows(tabs: TabInfo[]) {
   const registered = [...spaces.values(), ...closing.values(), ...ended];
   const byWindow = Map.groupBy(tabs, (t) => t.windowId);
