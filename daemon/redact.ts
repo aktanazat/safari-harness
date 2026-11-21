@@ -45,12 +45,18 @@ function redactTitle(title: string): string {
 // returned, each step of run and page of map. A page with no title of its
 // own is titled with its address (GEDmatch's sign-in, 09-30). Only plain
 // objects and arrays are walked; any other value is returned as it is.
-export function redacted(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redacted);
+export function redacted(value: unknown, mode: RedactionMode = "mask"): unknown {
+  if (Array.isArray(value)) return value.map((entry) => redacted(entry, mode));
   if (value === null || typeof value !== "object") return value;
   const proto = Object.getPrototypeOf(value);
   if (proto !== Object.prototype && proto !== null) return value;
-  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, typeof v !== "string" ? redacted(v) : k === "title" ? redactTitle(v) : k === "snapshot" ? redactSnapshot(v) : k === "url" ? redactUrl(v) : v]));
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => {
+    if (typeof v !== "string") return [k, redacted(v, mode)];
+    const masked = k === "title" ? redactTitle(v) : k === "snapshot" ? redactSnapshot(v)
+      : k === "url" || (mode === "reject" && (k === "document" || k === "destination")) ? redactUrl(v) : v;
+    if (mode === "reject" && masked !== v) throw new Error("The form contains protected data and cannot be reviewed exactly.");
+    return [k, masked];
+  }));
 }
 
 // A snapshot opens with "# <title> — <address>", then its lines.
@@ -84,16 +90,22 @@ function secretPattern(t: string): string {
   return /^\d+$/.test(t) ? `(?<!\\d|\\d[.,])${t}(?![.,]?\\d)` : t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+export type RedactionMode = "mask" | "reject";
+
 // value with each secret typed into tab cut from its strings, however
 // deep, the longest first, so a code inside a longer secret cannot split
 // it; but for a file's bytes (a top-level data, in base64), which a cut
 // would break.
-export function unsecret(tab: number, value: unknown): unknown {
+export function unsecret(tab: number, value: unknown, mode: RedactionMode = "mask"): unknown {
   const kept = tabSecrets.get(tab);
   if (!kept) return value;
   const secrets = new RegExp([...kept].sort((a, b) => b.length - a.length).map(secretPattern).join("|"), "g");
   const cut = (v: unknown, top: boolean): unknown => {
-    if (typeof v === "string") return v.replace(secrets, "...");
+    if (typeof v === "string") {
+      const masked = v.replace(secrets, "...");
+      if (mode === "reject" && masked !== v) throw new Error("The form contains protected data and cannot be reviewed exactly.");
+      return masked;
+    }
     if (Array.isArray(v)) return v.map((x) => cut(x, false));
     if (v === null || typeof v !== "object") return v;
     return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, top && k === "data" && typeof x === "string" ? x : cut(x, false)]));

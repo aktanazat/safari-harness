@@ -292,13 +292,20 @@
   // value with each kept text cut to "...", however deep, the longest
   // first, so a code inside a longer secret cannot split it; but for a
   // file's bytes (a top-level data, in base64), which a cut would break.
-  function unsecret(value) {
+  /** @param {unknown} value @param {"mask" | "reject"} [mode] */
+  function unsecret(value, mode = "mask") {
     if (!secretTexts.size) return value;
     const secrets = new RegExp([...secretTexts].sort((a, b) => b.length - a.length).map(secretPattern).join("|"), "g");
-    const cut = (v, top) => typeof v === "string" ? v.replace(secrets, "...")
-      : Array.isArray(v) ? v.map((x) => cut(x, false))
-      : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, top && k === "data" && typeof x === "string" ? x : cut(x, false)]))
-      : v;
+    const cut = (v, top) => {
+      if (typeof v === "string") {
+        const masked = v.replace(secrets, "...");
+        if (mode === "reject" && masked !== v) throw new Error("The form contains protected data and cannot be reviewed exactly.");
+        return masked;
+      }
+      if (Array.isArray(v)) return v.map((x) => cut(x, false));
+      if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, top && k === "data" && typeof x === "string" ? x : cut(x, false)]));
+      return v;
+    };
     return cut(value, true);
   }
 
@@ -4290,9 +4297,18 @@
     // Handlers report expected failures (stale ref, no such option) as
     // { error }; send those as errors so callers never mistake them for success.
     // Neither carries a secret the harness typed on this page (unsecret).
-    const settle = (value) => value && typeof value === "object" && typeof value.error === "string"
-      ? { id: msg.id, error: unsecret(value.error) }
-      : { id: msg.id, value: msg.op === "capturePrivacy" ? safeClone(value) : unsecret(safeClone(withHeal(value, healed))) };
+    const settle = (value) => {
+      if (value && typeof value === "object" && typeof value.error === "string") {
+        return { id: msg.id, error: unsecret(value.error) };
+      }
+      try {
+        const mode = msg.redaction === "reject" ? "reject" : "mask";
+        const result = msg.op === "capturePrivacy" ? safeClone(value) : unsecret(safeClone(withHeal(value, healed)), mode);
+        return mode === "reject" ? { id: msg.id, value: result, redaction: mode } : { id: msg.id, value: result };
+      } catch (error) {
+        return { id: msg.id, error: unsecret(String(error && error.message || error)) };
+      }
+    };
     let out;
     healedNow = null;
     adopt(msg.kept);

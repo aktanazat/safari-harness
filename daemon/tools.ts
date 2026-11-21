@@ -2,6 +2,8 @@
 // Every consumer (CLI, MCP server, agent loop, CDP shim) calls these.
 
 import { bridge } from "./bridge.ts";
+import { readFormResource, type FormReadResult, type FormResource } from "./form-inspection.ts";
+import { readFormExecution, type FormExecution } from "./form-execution.ts";
 import { localTime, loginForm, passwords } from "./passwords.ts";
 import { challengeOf, PASS_MS, passesByItself, settledChallenge, type Challenge } from "./challenge.ts";
 import { followTab, queuePopup, recordRenumbered, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
@@ -232,14 +234,17 @@ export async function closeTab(tab: number, why = "by a close call", only?: "idl
 // started again (restored). done: cleanup was explicitly admitted for it.
 // failed: its last close at a turn's end did not close it; retry: how many
 // of those closes threw, and when the next may go (sweepOnce).
-type HarnessTab = { owner?: number; used: number; orphan?: true; done?: true; closing?: true; acted?: true; site?: true; handoff?: true; unsafe?: true; failed?: true; retry?: { tries: number; at: number }; url?: string; seen?: number };
+type HarnessTab = { owner?: number; used: number; orphan?: true; done?: true; closing?: true; acted?: true; site?: true; handoff?: true; unsafe?: true; failed?: true; retry?: { tries: number; at: number }; url?: string; seen?: number; resource?: CreatedFormResource };
+type CreatedFormResource = { receipt: FormResource; connection: NonNullable<typeof bridge.extensionInfo> };
+type CallingScope = { epoch: string; capture: boolean; created?: FormResource };
+export type ToolCallOptions = { signal?: AbortSignal; resource?: unknown; created?: (resource: FormResource) => void };
 const harnessTabs = new Map<number, HarnessTab>();
 const watches = new Map<number, () => void>();
 let tabsFile: string | undefined;
 let sweeper: Timer | undefined;
 type OwnerCalls = { epoch: string; pending: Set<Promise<void>> };
 const activeCalls = new Map<number, OwnerCalls>();
-const calling = new AsyncLocalStorage<boolean>();
+const calling = new AsyncLocalStorage<CallingScope>();
 export type TurnPreparation = { owner: number; epoch: string; tabs: number[] };
 type TurnReceipt = { ok: true; closed: number; retained: number; failed: number; deferred: boolean; invalidated?: true };
 const endingTurns = new Map<number, Promise<TurnReceipt>>();
@@ -323,7 +328,7 @@ export function loadTabs(path: string): void {
   tabsFile = path;
   mkdirSync(dirname(path), { recursive: true });
   // A file written before 10-07 holds each tab's owner alone.
-  type SavedTab = Omit<HarnessTab, "owner" | "closing" | "done" | "failed" | "retry"> & { owner?: number | null };
+  type SavedTab = Omit<HarnessTab, "owner" | "closing" | "done" | "failed" | "retry" | "resource"> & { owner?: number | null };
   type Saved = { version: 2; tabs: Record<string, SavedTab>; closed?: Record<string, Closed>; keepers?: Record<string, number> };
   let saved: Saved | Record<string, { owner: number | null; used: number } | number | null> = {};
   try {
@@ -336,7 +341,7 @@ export function loadTabs(path: string): void {
   for (const [tab, kept] of Object.entries(rows)) {
     const t: SavedTab = typeof kept === "object" && kept !== null ? kept : { owner: kept, used: Date.now() };
     remember(Number(tab), typeof t.owner === "number" ? t.owner : undefined, t.used);
-    if (state) Object.assign(harnessTabs.get(Number(tab))!, { ...t, done: undefined, owner: t.owner ?? undefined, url: resumeAddress(t.url) });
+    if (state) Object.assign(harnessTabs.get(Number(tab))!, { ...t, done: undefined, resource: undefined, owner: t.owner ?? undefined, url: resumeAddress(t.url) });
   }
   for (const [tab, closed] of Object.entries(state?.closed ?? {})) closedTabs.set(Number(tab), { ...closed, url: resumeAddress(closed.url) });
   for (const [tab, keeper] of Object.entries(state?.keepers ?? {})) keptBy(Number(tab), keeper);
@@ -353,6 +358,82 @@ function remember(tab: number, owner: number | undefined, used = Date.now()) {
   if (owner !== undefined && !watches.has(owner)) watches.set(owner, watchOwner(owner, () => exited(owner)));
   sweeper ??= setInterval(sweep, 60_000);
   sweeper.unref();
+}
+
+// A fresh physical resource receipt, not task/source permission. The native
+// owner keeps runtime registration on its canonical observation, not here.
+function captureCreatedResource(tab: number, held: HarnessTab | undefined,
+  connection: NonNullable<typeof bridge.extensionInfo> | null, page: object): void {
+  const scope = calling.getStore();
+  const owner = currentOwner();
+  if (!scope?.capture || owner === undefined || !held || !connection || connection.connectedAt === undefined ||
+      harnessTabs.get(tab) !== held || held.resource || held.owner !== owner || held.closing || held.done ||
+      held.orphan || held.handoff || held.site || reusing.has(tab) || followTab(tab) !== tab ||
+      bridge.extensionInfo !== connection || held.seen !== connection.connectedAt ||
+      activeCalls.get(owner)?.epoch !== scope.epoch || endingTurns.has(owner) ||
+      !("id" in page) || page.id !== tab || !("windowId" in page) || typeof page.windowId !== "number" ||
+      !Number.isSafeInteger(page.windowId) || page.windowId <= 0 || !("url" in page) || typeof page.url !== "string" ||
+      "challenge" in page) return;
+  const document = URL.parse(page.url);
+  if (!document || !["https:", "http:"].includes(document.protocol) || document.username || document.password) return;
+  try {
+    redacted({ document: page.url }, "reject");
+    unsecret(tab, page.url, "reject");
+  } catch {
+    // Preserve the successful open. An unavailable private receipt is not an
+    // opening failure and must not prompt a duplicate open or source adoption.
+    return;
+  }
+  const receipt: FormResource = Object.freeze({ tab, token: randomUUID(), owner, epoch: scope.epoch,
+    connection: connection.connectedAt, window: page.windowId, document: page.url });
+  held.url = page.url;
+  held.resource = { receipt, connection };
+  scope.created = receipt;
+}
+
+function assertFormResource(held: HarnessTab, binding: CreatedFormResource, epoch: string, signal: AbortSignal): void {
+  const source = binding.receipt;
+  if (signal.aborted || currentOwner() !== source.owner || calling.getStore()?.epoch !== epoch ||
+      activeCalls.get(source.owner)?.epoch !== epoch || endingTurns.has(source.owner) ||
+      harnessTabs.get(source.tab) !== held || held.resource !== binding || held.owner !== source.owner ||
+      held.closing || held.done || held.orphan || held.handoff || held.site || reusing.has(source.tab) ||
+      followTab(source.tab) !== source.tab || bridge.extensionInfo !== binding.connection ||
+      binding.connection.connectedAt !== source.connection || held.seen !== source.connection || held.url !== source.document) {
+    throw new Error("The exact original browser resource is no longer available.");
+  }
+}
+
+async function inspectFormResource(raw: unknown, form: unknown, signal: AbortSignal, execution?: FormExecution): Promise<FormReadResult> {
+  const source = readFormResource(raw);
+  if (typeof form !== "number" || !Number.isSafeInteger(form) || form < 0) throw new Error("Choose an actual form occurrence.");
+  const held = harnessTabs.get(source.tab);
+  const binding = held?.resource;
+  const epoch = calling.getStore()?.epoch;
+  if (!held || !binding || !epoch) throw new Error("The original fresh browser resource is unavailable.");
+  const receipt = binding.receipt;
+  if (source.tab !== receipt.tab || source.token !== receipt.token || source.owner !== receipt.owner ||
+      source.epoch !== receipt.epoch || source.connection !== receipt.connection ||
+      source.window !== receipt.window || source.document !== receipt.document) {
+    throw new Error("The browser resource does not match its original creation receipt.");
+  }
+  assertFormResource(held, binding, epoch, signal);
+  // Use the existing lane without invoking eval, aliases, reopen or revived.
+  // inLane may discard a resolver failure, so the callback checks again.
+  return inLane("eval", { tab: source.tab }, async () => {
+    assertFormResource(held, binding, epoch, signal);
+    return source.tab;
+  }, async () => {
+    assertFormResource(held, binding, epoch, signal);
+    if (execution?.mode === "execute") {
+      held.acted = true;
+      save();
+    }
+    const json = execution
+      ? await bridge.executeForm(source.tab, { document: source.document, form }, execution, signal, source.window)
+      : await bridge.inspectForm(source.tab, { document: source.document, form }, signal, source.window);
+    assertFormResource(held, binding, epoch, signal);
+    return { resource: receipt, form, json };
+  });
 }
 
 function orphan(owner: number) {
@@ -659,6 +740,8 @@ function restored(lost: [number, HarnessTab][], tabs: TabInfo[]): void {
 
 // Says whether the tab is one the harness opened.
 function moveKept(from: number, to: number): boolean {
+  const held = harnessTabs.get(from);
+  if (held) delete held.resource;
   move(lastSnapshot, from, to);
   move(handoffs, from, to);
   move(tabSecrets, from, to);
@@ -675,7 +758,11 @@ function move<V>(map: Map<number, V>, from: number, to: number): boolean {
 }
 
 export async function navigate(tab: number, url: string): Promise<TabInfo> {
-  const t = (await bridge.request("tabs.navigate", [num(tab, "tab"), webAddress(url)])) as TabInfo;
+  const id = num(tab, "tab");
+  const address = webAddress(url);
+  const held = harnessTabs.get(id);
+  if (held) delete held.resource;
+  const t = (await bridge.request("tabs.navigate", [id, address])) as TabInfo;
   const mine = harnessTabs.get(t.id);
   if (mine && t.url !== undefined) mine.url = t.url;
   if (mine && t.url !== undefined) mine.unsafe = resumeAddress(t.url) === undefined ? true : undefined;
@@ -932,6 +1019,8 @@ const HISTORY = new Set(["back", "forward", "reload"]);
 export async function history(opts: { tab?: number; do: string }) {
   const tab = await resolveTab(opts.tab);
   if (!HISTORY.has(opts.do)) throw new HarnessError("invalid_argument", "do must be back, forward, or reload");
+  const held = harnessTabs.get(tab);
+  if (held) delete held.resource;
   return relay(tab, "history", [opts.do]);
 }
 
@@ -2128,11 +2217,14 @@ export const TOOLS: Record<string, Tool> = {
       if (a.keep) keepTab(t.id);
       else own(t.id, currentOwner());
       const held = harnessTabs.get(t.id);
+      const connection = bridge.extensionInfo;
       if (held) held.url = t.url;
       if (a.site === true && held) held.site = true;
       save();
-      const result = await withPage(withNotes(flagged(await afterWall(t, t.id))), t.id, a.snapshot);
+      const page = await afterWall(t, t.id);
+      const result = await withPage(withNotes(flagged(page)), t.id, a.snapshot);
       const had = a.site === true || fromModel() ? undefined : await alsoOn(t.id, address);
+      captureCreatedResource(t.id, held, connection, page);
       return had === undefined ? result : beside(result, "hint", had);
     },
   },
@@ -2762,27 +2854,37 @@ export function formatResult(value: unknown): string {
 // answer has the secrets in its addresses cut (redact.ts). A call with news
 // false leaves its caller's news (continuity.ts) to a later call, as
 // real_input's steps do (input.ts).
-export async function callTool(name: string, args: Record<string, unknown> = {}, model = fromModel(), news = true): Promise<unknown> {
+export async function callTool(name: string, args: Record<string, unknown> = {}, model = fromModel(), news = true, options?: ToolCallOptions): Promise<unknown> {
   const owner = currentOwner();
-  if (owner === undefined || calling.getStore()) return invokeTool(name, args, model, news);
+  const fixed = name === "form_inspect" || name === "form_execute";
+  if (fixed && (model || owner === undefined || calling.getStore() || !options?.signal || options.resource === undefined || endingTurns.has(owner))) {
+    throw new Error("The fixed resource read requires its original direct caller and live request.");
+  }
+  if (owner === undefined || calling.getStore()) return invokeTool(name, args, model, news, options);
   const ending = endingTurns.get(owner);
   if (ending) await ending;
-  if (harnessTabs.get(followTab(Number(args.tab)))?.closing && sweepingTabs) await sweepingTabs;
+  if (!fixed && harnessTabs.get(followTab(Number(args.tab)))?.closing && sweepingTabs) await sweepingTabs;
   const settled = Promise.withResolvers<void>();
-  const active = activeCalls.get(owner) ?? { epoch: randomUUID(), pending: new Set<Promise<void>>() };
-  active.epoch = randomUUID();
+  const epoch = randomUUID();
+  const active = activeCalls.get(owner) ?? { epoch, pending: new Set<Promise<void>>() };
+  active.epoch = epoch;
   active.pending.add(settled.promise);
   activeCalls.set(owner, active);
-  for (const t of harnessTabs.values()) {
-    if (t.owner !== owner) continue;
-    delete t.done;
-    // the turn's end tries a close that failed afresh (sweepOnce)
-    delete t.retry;
+  if (!fixed) {
+    for (const t of harnessTabs.values()) {
+      if (t.owner !== owner) continue;
+      delete t.done;
+      // the turn's end tries a close that failed afresh (sweepOnce)
+      delete t.retry;
+    }
+    turnResumed(owner);
+    save();
   }
-  turnResumed(owner);
-  save();
+  const scope: CallingScope = { epoch, capture: name === "open" && options?.created !== undefined };
   try {
-    return await calling.run(true, () => invokeTool(name, args, model, news));
+    const value = await calling.run(scope, () => invokeTool(name, args, model, news, options));
+    if (scope.created) options?.created?.(scope.created);
+    return value;
   } finally {
     active.pending.delete(settled.promise);
     if (active.pending.size === 0 && tabsOpenedBy(owner) === 0) activeCalls.delete(owner);
@@ -2790,7 +2892,13 @@ export async function callTool(name: string, args: Record<string, unknown> = {},
   }
 }
 
-async function invokeTool(name: string, args: Record<string, unknown>, model: boolean, news: boolean): Promise<unknown> {
+async function invokeTool(name: string, args: Record<string, unknown>, model: boolean, news: boolean, options?: ToolCallOptions): Promise<unknown> {
+  // This closed transport operation is absent from TOOLS and model schemas.
+  // Its descriptor is private resource comparison data, never source authority.
+  if (name === "form_inspect" || name === "form_execute") {
+    if (model || !options?.signal || options.resource === undefined) throw new Error("The fixed resource operation is unavailable.");
+    return inspectFormResource(options.resource, args.form, options.signal, name === "form_execute" ? readFormExecution(args.execution) : undefined);
+  }
   const call = checkCall(TOOLS, name, args, model);
   try {
     let back = await reopen(call.tool, call.args);
@@ -2907,7 +3015,10 @@ async function revived(tool: string, args: Record<string, unknown>): Promise<unk
     // A goto, or an action that led to another page, leaves a fresh page.
     const mine = harnessTabs.get(tab);
     const went = navigatedOf(result)?.url;
-    if (mine && went !== undefined) mine.url = went;
+    if (mine && went !== undefined) {
+      delete mine.resource;
+      mine.url = went;
+    }
     if (mine && acts(tool, args)) {
       mine.acted = tool === "goto" || went !== undefined ? undefined : true;
       if (tool === "goto") delete mine.handoff;

@@ -134,11 +134,12 @@ const CHAT_COLS = "c.ROWID id, c.guid, c.chat_identifier ident, c.display_name d
 // wins over group chats they are in; if that person has several direct chats
 // (different numbers), the most recent one is theirs. Anything else ambiguous
 // is an error listing the candidates.
-function resolveChat(db: Database, q: string, names: Map<string, string>): ChatRow {
+function resolveChat(db: Database, q: string, names: Map<string, string>, exactOnly = false): ChatRow {
   const needle = String(q ?? "").trim();
   if (!needle) throw new Error("give a chat: its id from imessage_chats, a phone number, an email, or a contact name");
   const exact = db.query(`SELECT ${CHAT_COLS} FROM chat c WHERE c.guid = ?`).get(needle) as ChatRow | null;
   if (exact) return exact;
+  if (exactOnly) throw new Error("the selected Messages conversation is no longer available; no other conversation was read");
   const key = handleKey(needle);
   const lower = needle.toLowerCase();
   const all = db.query(`SELECT ${CHAT_COLS}, (SELECT MAX(message_date) FROM chat_message_join j WHERE j.chat_id = c.ROWID) d FROM chat c ORDER BY d DESC`).all() as (ChatRow & { d: number | null })[];
@@ -181,10 +182,19 @@ export function chats(opts: { limit?: number } = {}) {
 }
 
 type MsgRow = { rowid: number; date: number; me: number; text: string | null; body: Uint8Array | null; att: number; handle: string | null };
+type HistoryRow = MsgRow & { guid: string; sent: number | null; delivered: number | null; error: number | null };
 
-function toMessage(r: MsgRow, names: Map<string, string>) {
+function toMessage(r: MsgRow | HistoryRow, names: Map<string, string>) {
   return {
     rowid: r.rowid,
+    ...("guid" in r ? {
+      guid: r.guid,
+      handle: r.handle,
+      fromMe: r.me === 1,
+      isSent: r.sent === null ? null : r.sent === 1,
+      isDelivered: r.delivered === null ? null : r.delivered === 1,
+      error: r.error,
+    } : {}),
     at: toDate(r.date),
     from: r.me === 1 ? "me" : r.handle ? names.get(handleKey(r.handle)) ?? r.handle : "unknown",
     text: messageText(r.text, r.body),
@@ -194,17 +204,39 @@ function toMessage(r: MsgRow, names: Map<string, string>) {
 
 const MSG_COLS = "m.ROWID rowid, m.date, m.is_from_me me, m.text, m.attributedBody body, m.cache_has_attachments att, h.id handle";
 
-export function history(opts: { chat: string; limit?: number; since?: number }) {
+export function history(opts: { chat: string; limit?: number; since?: number; exact?: boolean; message?: number; guid?: string }) {
   const limit = Math.min(Math.max(Number(opts.limit ?? 30), 1), 200);
+  if (opts.exact === true && (!Number.isSafeInteger(opts.message) || (opts.message ?? 0) <= 0 || !opts.guid)) {
+    throw new Error("exact history requires the original message rowid and GUID");
+  }
   const db = openChatDb();
   try {
-    const names = nameIndex(loadContacts());
-    const c = resolveChat(db, opts.chat, names);
-    const rows = db.query(`
-      SELECT ${MSG_COLS} FROM chat_message_join j JOIN message m ON m.ROWID = j.message_id LEFT JOIN handle h ON h.ROWID = m.handle_id
-      WHERE j.chat_id = ? AND m.ROWID > ? AND ${REAL} ORDER BY m.date DESC LIMIT ?`).all(c.id, Number(opts.since ?? 0), limit) as MsgRow[];
-    const files = messageFiles(db, rows.map((r) => r.rowid));
-    return { ...describe(db, c, names), messages: rows.reverse().map((r) => ({ ...toMessage(r, names), ...(files.has(r.rowid) ? { files: files.get(r.rowid) } : {}) })) };
+    return db.transaction(() => {
+      const names = nameIndex(loadContacts());
+      const c = resolveChat(db, opts.chat, names, opts.exact === true);
+      if (opts.exact === true) {
+        const selected = db.query<{ rowid: number }, [number, number, string]>(`
+          SELECT m.ROWID rowid FROM chat_message_join j JOIN message m ON m.ROWID = j.message_id
+          WHERE j.chat_id = ? AND m.ROWID = ? AND m.guid = ? AND ${REAL}`)
+          .get(c.id, opts.message ?? 0, opts.guid ?? "");
+        if (!selected) throw new Error("the original message rowid and GUID no longer match this exact conversation");
+      }
+      const columns = opts.exact === true
+        ? `${MSG_COLS}, m.guid, m.is_sent sent, m.is_delivered delivered, m.error`
+        : MSG_COLS;
+      const rows = db.query<MsgRow | HistoryRow, [number, number, number]>(`
+        SELECT ${columns} FROM chat_message_join j JOIN message m ON m.ROWID = j.message_id LEFT JOIN handle h ON h.ROWID = m.handle_id
+        WHERE j.chat_id = ? AND m.ROWID > ? AND ${REAL} ORDER BY m.date DESC${opts.exact === true ? ", m.ROWID DESC" : ""} LIMIT ?`).all(c.id, Number(opts.since ?? 0), limit);
+      if (opts.exact === true && !rows.some((row) => "guid" in row && row.rowid === opts.message && row.guid === opts.guid)) {
+        throw new Error("the selected original message is outside this bounded history; no attachment metadata was read");
+      }
+      const files = messageFiles(db, rows.map((r) => r.rowid));
+      return {
+        ...describe(db, c, names),
+        ...(opts.exact === true ? { exact: true } : {}),
+        messages: rows.reverse().map((r) => ({ ...toMessage(r, names), ...(files.has(r.rowid) ? { files: files.get(r.rowid) } : {}) })),
+      };
+    })();
   } finally {
     db.close();
   }
@@ -649,9 +681,12 @@ export const IMESSAGE_TOOLS: Record<string, Tool> = {
       chat: { type: "string", description: "chat id, phone, email, or contact name" },
       limit: { type: "number", description: "default 30, max 200" },
       since: { type: "number", description: "only messages after this rowid" },
+      exact: { type: "boolean", description: "Only this exact chat GUID; requires the original message rowid and GUID. No contact fallback." },
+      message: { type: "number", description: "Original selected message rowid, required with exact." },
+      guid: { type: "string", description: "Original message GUID paired with message, required with exact." },
     },
     required: ["chat"],
-    run: async (a) => history(a as { chat: string; limit?: number; since?: number }),
+    run: async (a) => history(a as { chat: string; limit?: number; since?: number; exact?: boolean; message?: number; guid?: string }),
   },
   imessage_files: {
     desc: "Fetch history/search file ids, including iCloud. Opens Messages (may mark read). out saves originals without overwriting; clipboard copies verified file URLs.",

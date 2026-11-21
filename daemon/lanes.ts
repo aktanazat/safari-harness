@@ -42,7 +42,8 @@ export const acts = (tool: string, args: Record<string, unknown>) => Object.hasO
 const EXTRA_EFFECTS: Record<string, true> = { real_input: true, close: true, window: true, activate: true, select_tab: true, type_mark: true, press_mark: true, replay: true, download: true };
 
 export function affectsPage(tool: string, args: Record<string, unknown>): boolean {
-  return acts(tool, args) || Object.hasOwn(EXTRA_EFFECTS, tool) || tool === "cookies" && (args.do === "set" || args.do === "clear");
+  return acts(tool, args) || Object.hasOwn(EXTRA_EFFECTS, tool) || tool === "cookies" && (args.do === "set" || args.do === "clear") ||
+    tool === "form_execute" && typeof args.execution === "object" && args.execution !== null && "mode" in args.execution && args.execution.mode === "execute";
 }
 
 type Holder = { tool: string; owner: number | undefined; since: number };

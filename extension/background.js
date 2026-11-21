@@ -1437,6 +1437,60 @@ async function handle(msg) {
       await api.tabs.update(tabId, { active: true });
       return { ok: true };
     }
+    // The daemon constructs the sole fixed program. This route never invokes
+    // the acting/retrying relay, adopts a popup or installs a content script.
+    case "form.inspect":
+    case "form.execute": {
+      const [tabId, document, form, program, timeoutMs, windowId] = args;
+      if (!Number.isSafeInteger(tabId) || tabId <= 0 || typeof document !== "string" ||
+          !Number.isSafeInteger(form) || form < 0 || typeof program !== "string" || timeoutMs !== 10000 ||
+          !Number.isSafeInteger(windowId) || windowId <= 0) {
+        throw new Error("Invalid fixed form read.");
+      }
+      const route = ways.get(tabId);
+      if (route?.get(0) !== "message") throw new Error("The original document has no existing isolated receiver.");
+      let changed = false;
+      const off = onNewDocument(tabId, 0, () => { changed = true; });
+      try {
+        const before = await api.tabs.get(tabId);
+        if (changed || ways.get(tabId) !== route || route.get(0) !== "message" ||
+            before.id !== tabId || before.windowId !== windowId || before.url !== document || before.status !== "complete") {
+          throw new Error("The original form document is unavailable or changed.");
+        }
+        const msg = { __safariHarness: 1, id: nextId(), op: "eval", args: [program], redaction: "reject" };
+        const res = await sendUntilNavigation(tabId, msg, timeoutMs, 0, false);
+        if (op === "form.execute") {
+          if (!res || res.id !== msg.id || res.error || res.redaction !== "reject" ||
+              res.value?.ok !== true || !["ready", "failed", "dispatched", "unknown"].includes(res.value.result?.phase) ||
+              typeof res.value.result?.detail !== "string") throw new Error("The form result is unknown. Do not repeat the action.");
+          if (res.value.result.phase === "ready") {
+            const after = await api.tabs.get(tabId);
+            if (changed || ways.get(tabId) !== route || route.get(0) !== "message" ||
+                after.id !== tabId || after.windowId !== before.windowId || after.url !== document || after.status !== "complete") {
+              throw new Error("The original form document changed during preflight.");
+            }
+          }
+          return res.value.result;
+        }
+        const after = await api.tabs.get(tabId);
+        if (changed || ways.get(tabId) !== route || route.get(0) !== "message" ||
+            after.id !== tabId || after.windowId !== before.windowId ||
+            after.url !== document || after.status !== "complete") {
+          throw new Error("The original form document changed during inspection.");
+        }
+        if (!res || res.id !== msg.id) throw new Error("The original document did not answer the fixed read.");
+        if (res.error) throw new Error(String(res.error));
+        if (res.redaction !== "reject") throw new Error("The existing document receiver cannot verify an exact protected form read.");
+        const value = res.value;
+        if (!value || value.ok !== true || !value.result || typeof value.result !== "object" ||
+            value.result.version !== 1 || value.result.document !== document || value.result.form?.index !== form) {
+          throw new Error("The fixed form read returned no complete source observation.");
+        }
+        return value.result;
+      } finally {
+        off();
+      }
+    }
     case "relay": {
       const [tabId, domOp, domArgs, timeoutMs, frameId] = args;
       if (domOp in CAPTURE) return capture(tabId, domOp, domArgs);

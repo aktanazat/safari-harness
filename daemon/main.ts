@@ -19,6 +19,7 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { FormResource } from "./form-inspection.ts";
 import { bridge, DEFAULT_PORT } from "./bridge.ts";
 import { TOOLS, callTool, endTurn, prepareTurnEnd, loadTabs, type TurnPreparation } from "./tools.ts";
 import { handleCdp, stopConnPumps, stopAllPumps, type CdpMsg } from "./cdp.ts";
@@ -222,7 +223,7 @@ const rpcServer = Bun.serve({
         const failure = failureOf(new HarnessError("invalid_argument", "bad json"));
         return Response.json({ ok: false, error: failure.message, failure }, { status: 400 });
       }
-      const { tool, args, caller, own, model, news } = (body ?? {}) as { tool?: string; args?: Record<string, unknown>; caller?: unknown; own?: unknown; model?: unknown; news?: unknown };
+      const { tool, args, caller, own, model, news, resource } = (body ?? {}) as { tool?: string; args?: Record<string, unknown>; caller?: unknown; own?: unknown; model?: unknown; news?: unknown; resource?: unknown };
       if (!tool) {
         const failure = failureOf(new HarnessError("invalid_argument", "missing tool"));
         return Response.json({ ok: false, error: failure.message, failure }, { status: 400 });
@@ -234,8 +235,16 @@ const rpcServer = Bun.serve({
         // news: false leaves the agent's news to a later call (rpc.ts).
         const pid = Number.isInteger(caller) && Number(caller) > 1 ? Number(caller) : undefined;
         const owner = pid === undefined ? undefined : own === true ? pid : await ownerOf(pid);
-        const value = await watched(owner, tool, args ?? {}, () => runAs(owner, () => callTool(tool, args ?? {}, model === true, news !== false)));
-        return Response.json({ ok: true, value });
+        let created: FormResource | undefined;
+        const run = () => runAs(owner, () => callTool(tool, args ?? {}, model === true, news !== false, {
+          signal: req.signal,
+          ...(tool === "form_inspect" || tool === "form_execute" ? { resource } : {}),
+          ...(tool === "open" ? { created: (value: FormResource) => { created = value; } } : {}),
+        }));
+        // Fixed-source descriptors/body stay out of ordinary tool watchers.
+        // The original HTTP owner scope is resource ownership, not native auth.
+        const value = tool === "form_inspect" || tool === "form_execute" ? await run() : await watched(owner, tool, args ?? {}, run);
+        return Response.json({ ok: true, value, ...(created ? { resource: created } : {}) });
       } catch (e) {
         const failure = failureOf(e, { effectful: affectsPage(tool, args ?? {}) });
         return Response.json({ ok: false, error: failure.message, failure });

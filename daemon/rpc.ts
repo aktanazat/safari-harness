@@ -13,8 +13,15 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { ownerOf } from "./owner.ts";
+import { readFormResource, type FormResource } from "./form-inspection.ts";
 import { HarnessError, readFailure } from "./failures.ts";
 import { affectsPage } from "./lanes.ts";
+
+export type RpcOptions = {
+  signal?: AbortSignal;
+  resource?: FormResource;
+  onCreatedResource?: (resource: FormResource) => void;
+};
 
 export function daemonHttp(): string {
   return process.env.SAFARI_HARNESS_HTTP ?? "http://127.0.0.1:37334";
@@ -54,11 +61,15 @@ type Missed = "refused" | "restarting";
 // first finishes its calls in flight, for up to a minute.
 const BACK_MS: Record<Missed, number> = { refused: 15000, restarting: 75000 };
 
-async function attempt(base: string, body: string, effectful: boolean): Promise<Response | Missed> {
+async function attempt(base: string, body: string, effectful: boolean, signal?: AbortSignal): Promise<Response | Missed> {
   try {
-    const res = await fetch(`${base}/rpc`, { method: "POST", headers: { "content-type": "application/json" }, body });
+    const res = await fetch(`${base}/rpc`, { method: "POST", headers: { "content-type": "application/json" }, body, signal });
     return res.status === 503 ? "restarting" : res;
   } catch (e) {
+    if (signal?.aborted) throw new HarnessError("aborted", "the request was cancelled before its result was received", {
+      effect: effectful ? "possibly_effected" : "none",
+      next: effectful ? "read the page before trying the action again" : "retry the read when it is still needed",
+    });
     const code = e instanceof Error && "code" in e ? e.code : undefined;
     if (code === "ConnectionRefused") return "refused";
     // The daemon took the call and ended before it answered: the call may
@@ -100,20 +111,24 @@ export function takesNews(): boolean {
 
 // model: the call is one a model wrote, which the daemon checks and
 // watches (guard.ts).
-export async function rpc(tool: string, args: Record<string, unknown> = {}, model = false): Promise<unknown> {
+export async function rpc(tool: string, args: Record<string, unknown> = {}, model = false, options?: RpcOptions): Promise<unknown> {
+  const fixed = tool === "form_inspect" || tool === "form_execute";
+  if (fixed && (model || !options?.signal || !options.resource)) throw new Error("The fixed resource read requires its original request signal and receipt.");
+  if (!fixed && options?.resource !== undefined) throw new Error("A resource comparison is only valid for the fixed form read.");
   const base = daemonHttp();
   const asked = asker.getStore();
-  const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : (asked ?? ownsCalls ?? process.pid), ...(ownsCalls !== undefined && asked === undefined ? { own: true } : {}), ...(model ? { model } : {}), ...(takesNews() ? {} : { news: false }) });
+  const body = JSON.stringify({ tool, args, caller: process.env.SAFARI_HARNESS_REMOTE ? undefined : (asked ?? ownsCalls ?? process.pid), ...(ownsCalls !== undefined && asked === undefined ? { own: true } : {}), ...(model ? { model } : {}), ...(takesNews() ? {} : { news: false }), ...(fixed ? { resource: options?.resource } : {}) });
   const effectful = affectsPage(tool, args);
-  let res = await attempt(base, body, effectful);
-  if (typeof res === "string" && (await back(base, BACK_MS[res]))) res = await attempt(base, body, effectful);
+  let res = await attempt(base, body, effectful, options?.signal);
+  if (!fixed && options?.signal === undefined && typeof res === "string" && (await back(base, BACK_MS[res]))) res = await attempt(base, body, effectful);
   if (res === "refused") throw new HarnessError("unavailable", `safari daemon not reachable at ${base}; check it with: safari status (install it with: safari daemon install)`, { effect: "none", retryable: true, next: "check safari status and start the daemon if needed" });
   if (res === "restarting") throw new HarnessError("unavailable", `the safari daemon at ${base} is restarting and did not answer again within ${BACK_MS.restarting / 1000} s; check it with: safari status`, { effect: "none", retryable: true, next: "wait for the daemon to finish restarting" });
-  const out = (await res.json()) as { ok: boolean; value?: unknown; error?: string; failure?: unknown };
+  const out = (await res.json()) as { ok: boolean; value?: unknown; error?: string; resource?: unknown; failure?: unknown };
   if (!out.ok) {
     const failure = readFailure(out.failure);
     if (failure) throw new HarnessError(failure.code, failure.message, { retryable: failure.retryable, effect: failure.effect, next: failure.next });
     throw new HarnessError("command_failed", out.error ?? "rpc failed", { effect: effectful ? "possibly_effected" : "none", next: effectful ? "read the page before repeating the action" : "check the error before trying again" });
   }
+  if (tool === "open" && options?.onCreatedResource && out.resource !== undefined) options.onCreatedResource(readFormResource(out.resource));
   return out.value;
 }

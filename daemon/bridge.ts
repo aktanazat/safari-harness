@@ -21,8 +21,11 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { note } from "./journal.ts";
-import { unsecret } from "./redact.ts";
+import { redacted, unsecret } from "./redact.ts";
 import { noteLoad } from "./loads.ts";
+import { Buffer } from "node:buffer";
+import { FORM_SOURCE_MAX_BYTES, formInspectionProgram, type FormSelection } from "./form-inspection.ts";
+import { formExecutionProgram, type FormExecution } from "./form-execution.ts";
 
 export const DEFAULT_PORT = 37333;
 
@@ -174,6 +177,7 @@ type Pending = {
   // the socket the request went out on: only that extension can answer it
   sock: ExtSocket;
   asked?: Asked;
+  strict?: true;
 };
 
 // A request on the wire and the callers waiting on it, each until its own
@@ -199,7 +203,7 @@ type Said = { ua?: string; ticks: boolean; renumbered?: TabEvent };
 // its dialogs, and its frames (probe). Each answer has what the harness
 // typed there as a secret cut (redact.ts): a request log, a console, and
 // the page's own script answer here without passing content.js's cut.
-const FROM_TAB: Record<string, true> = { relay: true, evalPage: true, pageData: true, dialogs: true, probe: true };
+const FROM_TAB: Record<string, true> = { relay: true, evalPage: true, pageData: true, dialogs: true, probe: true, "form.inspect": true, "form.execute": true };
 
 // The requests whose time is a page's or a site's, not the extension's: a
 // tab's (FROM_TAB, and shot, window, storage.clear, which reach into its
@@ -375,7 +379,7 @@ export class Bridge {
     const p = this.pending.get(key);
     // an answer the daemon gave up on still shows the extension answers
     if (from === this.sock) this.heard(key, p?.asked, msg.error === undefined);
-    if (!p) return;
+    if (!p || (p.strict && p.sock !== from)) return;
     this.pending.delete(key);
     clearTimeout(p.timer);
     if (msg.error !== undefined) p.reject(new Error(String(msg.error)));
@@ -421,11 +425,88 @@ export class Bridge {
   }
 
   async request(op: string, args: unknown[] = [], timeoutMs = op === "tabs.list" ? LIST_MS : 30000): Promise<unknown> {
+    if (op === "form.inspect" || op === "form.execute") throw new Error("Use the fixed form operation.");
     const sock = await this.socket();
     const answer = this.ask(sock, op, args, timeoutMs);
     if (!Object.hasOwn(FROM_TAB, op)) return answer;
     const tab = Number(args[0]);
     return answer.then((v) => unsecret(tab, v), (e: unknown) => {
+      if (e instanceof Error) e.message = String(unsecret(tab, e.message));
+      throw e;
+    });
+  }
+
+  // Transport only. The existing resource owner checks the exact record and
+  // serializes this read; native task authority remains in the owning OMP
+  // callback. No adoption, launch, recovery, reload or second attempt.
+  async inspectForm(tab: number, selection: FormSelection, signal: AbortSignal, window: number): Promise<string> {
+    if (!Number.isSafeInteger(tab) || tab <= 0) throw new Error("Choose an exact existing tab.");
+    if (!Number.isSafeInteger(window) || window <= 0) throw new Error("The original browser window is unavailable.");
+    const sock = this.sock;
+    const connection = this.extensionInfo;
+    if (!sock || !connection) throw new Error("The existing Safari connection is unavailable.");
+    if (signal.aborted) throw new Error("The original form read was cancelled.");
+    const program = formInspectionProgram(selection);
+    const result = await this.send(sock, "form.inspect", [tab, selection.document, selection.form, program, 10000, window], 12000, { signal, connection });
+    const json = JSON.stringify(redacted(result, "reject"));
+    if (json === undefined || Buffer.byteLength(json, "utf8") > FORM_SOURCE_MAX_BYTES) {
+      throw new Error("The complete form source is too large to review without omitting content.");
+    }
+    if (signal.aborted || this.sock !== sock || this.extensionInfo !== connection) {
+      throw new Error("The original form read is no longer current.");
+    }
+    return json;
+  }
+
+  async executeForm(tab: number, selection: FormSelection, execution: FormExecution, signal: AbortSignal, window: number): Promise<string> {
+    if (!Number.isSafeInteger(tab) || tab <= 0 || !Number.isSafeInteger(window) || window <= 0) throw new Error("The original browser resource is unavailable.");
+    const sock = this.sock;
+    const connection = this.extensionInfo;
+    if (!sock || !connection || signal.aborted) throw new Error("The original form operation is unavailable.");
+    const program = formExecutionProgram(selection, execution);
+    const result = await this.send(sock, "form.execute", [tab, selection.document, selection.form, program, 10000, window], 12000, { signal, connection });
+    const json = JSON.stringify(redacted(result, "reject"));
+    if (!json || Buffer.byteLength(json, "utf8") > FORM_SOURCE_MAX_BYTES || signal.aborted ||
+        this.sock !== sock || this.extensionInfo !== connection) throw new Error("The form result is unknown.");
+    return json;
+  }
+
+  // A form read or action goes out on the socket its caller found, not
+  // through ask: it waits for no socket, shares no other request's answer,
+  // and takes only that socket's answer, while that connection and its
+  // caller's request last. Its answer counts as any request's (heard); its
+  // timeout is its page's (ELSEWHERE), so it makes no kind stuck and asks
+  // no reload.
+  private send(sock: ExtSocket, op: string, args: unknown[], timeoutMs: number,
+    strict: { signal: AbortSignal; connection: NonNullable<Bridge["extensionInfo"]> }): Promise<unknown> {
+    if (strict.signal.aborted || this.sock !== sock || this.extensionInfo !== strict.connection) {
+      return Promise.reject(new Error("The original form read is no longer current."));
+    }
+    const id = `d${++this.seq}`;
+    const asked: Asked = { id, op, latencyKey: op, detail: {}, sock, sent: Date.now(), epoch: this.epoch, ms: 0, waiters: new Set() };
+    const answer = this.wait(asked, timeoutMs);
+    const abort = () => {
+      this.pending.delete(id);
+      this.settle(asked, (w) => w.reject(new Error("The original form read was cancelled.")));
+    };
+    this.pending.set(id, {
+      resolve: (v) => this.settle(asked, (w) => strict.signal.aborted || this.sock !== sock || this.extensionInfo !== strict.connection
+        ? w.reject(new Error("The original Safari connection changed during the form read."))
+        : w.resolve(v)),
+      reject: (e) => this.settle(asked, (w) => w.reject(e)),
+      sock,
+      asked,
+      strict: true,
+    });
+    strict.signal.addEventListener("abort", abort, { once: true });
+    try {
+      sock.send(JSON.stringify({ id, op, args }));
+    } catch (e) {
+      this.pending.delete(id);
+      this.settle(asked, (w) => w.reject(e instanceof Error ? e : new Error(String(e))));
+    }
+    const tab = Number(args[0]);
+    return answer.finally(() => strict.signal.removeEventListener("abort", abort)).then((v) => unsecret(tab, v, "reject"), (e: unknown) => {
       if (e instanceof Error) e.message = String(unsecret(tab, e.message));
       throw e;
     });
@@ -474,23 +555,16 @@ export class Bridge {
     const id = `d${++this.seq}`;
     const relay = op === "relay";
     const asked: Asked = { id, op, latencyKey: relay ? `relay ${String(args[1])}` : op, detail: relay ? { tab: args[0], dom: args[1] } : {}, sock, sent: now, epoch: this.epoch, ms: 0, waiters: new Set() };
-    const each = (settle: (w: Waiter) => void) => {
-      for (const w of asked.waiters) {
-        clearTimeout(w.timer);
-        settle(w);
-      }
-      asked.waiters.clear();
-    };
     // The caller waits before the request goes out: an answer may come
     // inside send (a test's extension answers there).
     const answer = this.wait(asked, timeoutMs);
     if (list) this.listing = asked;
-    this.pending.set(id, { resolve: (v) => each((w) => w.resolve(v)), reject: (e) => each((w) => w.reject(e)), sock, asked });
+    this.pending.set(id, { resolve: (v) => this.settle(asked, (w) => w.resolve(v)), reject: (e) => this.settle(asked, (w) => w.reject(e)), sock, asked });
     try {
       sock.send(JSON.stringify({ id, op, args }));
     } catch (e) {
       this.pending.delete(id);
-      each((w) => w.reject(e instanceof Error ? e : new Error(String(e))));
+      this.settle(asked, (w) => w.reject(e instanceof Error ? e : new Error(String(e))));
     }
     return answer;
   }
@@ -509,6 +583,15 @@ export class Bridge {
     };
     asked.waiters.add(waiter);
     return promise;
+  }
+
+  // Settles each caller still waiting on asked (wait).
+  private settle(asked: Asked, fn: (w: Waiter) => void) {
+    for (const w of asked.waiters) {
+      clearTimeout(w.timer);
+      fn(w);
+    }
+    asked.waiters.clear();
   }
 
   // The connected extension answered request id (asked, unless the daemon
