@@ -14,6 +14,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { luhn } from "./card-vault.ts";
 import { markLines } from "./injection.ts";
 import { currentOwner, processName, watchOwner } from "./owner.ts";
 import { redactUrl, tabSecrets, unsecret } from "./redact.ts";
@@ -363,15 +364,6 @@ function password(s: string): boolean {
 function code(s: string): boolean {
   return /(?<!\b(?:zip|postal|area|country|promo|coupon|discount|error|status|source|product|style) )\b(?:code|otp|pin|passcode)\b\D{0,12}(?<!\d)\d{4,8}(?!\d)/i.test(s)
     || /(?<!\d)\d{4,8}(?!\d)\s+is\s+(?:the|my|your)\s+(?:\w+\s+)?(?:code|otp|pin)\b/i.test(s);
-}
-
-function luhn(digits: string): boolean {
-  let sum = 0;
-  for (let i = 0; i < digits.length; i++) {
-    const d = Number(digits[digits.length - 1 - i]) * (i % 2 === 1 ? 2 : 1);
-    sum += d > 9 ? d - 9 : d;
-  }
-  return sum % 10 === 0;
 }
 
 function card(s: string): boolean {

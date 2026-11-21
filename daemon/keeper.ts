@@ -17,8 +17,9 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { alive, changeQueue, check, deleteGroup, deletesOff, files, groupsOff, guarded, makeGroup, readQueue, startHelper, turnOff, type Answer, type Gate, type Helper, type Outcome } from "./groups.ts";
+import { changeQueue, check, deleteGroup, deletesOff, files, groupsOff, guarded, makeGroup, readQueue, startHelper, turnOff, type Answer, type Gate, type Helper, type Outcome } from "./groups.ts";
 import { trimLog } from "./journal.ts";
+import { alive } from "./owner.ts";
 import { rpc } from "./rpc.ts";
 
 // A window as the space tool's state lists it; tabs, the extension's count

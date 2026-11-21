@@ -35,6 +35,7 @@ import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "no
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import { alive } from "./owner.ts";
 
 export type Answer = Record<string, unknown> & { ok: boolean; error?: string; closed?: boolean };
 export type Helper = (op: string, args?: Record<string, unknown>) => Promise<Answer>;
@@ -355,15 +356,6 @@ export function changeQueue(change: (q: Record<string, Entry>) => void) {
   mkdirSync(dirname(files.queue), { recursive: true });
   writeFileSync(`${files.queue}.${process.pid}`, JSON.stringify(q));
   renameSync(`${files.queue}.${process.pid}`, files.queue);
-}
-
-export function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return e instanceof Error && "code" in e && e.code === "EPERM";
-  }
 }
 
 // Whether a keeper runs, by the pid it wrote as it took the lock.

@@ -47,7 +47,7 @@ const mm = (month: number) => String(month).padStart(2, "0");
 const text = (v: unknown) => (typeof v === "string" ? v.trim() : "");
 
 // The checksum every card number carries, which catches a mistyped digit.
-function luhn(number: string): boolean {
+export function luhn(number: string): boolean {
   let sum = 0;
   for (let i = 0; i < number.length; i++) {
     const d = Number(number[number.length - 1 - i]) * (i % 2 ? 2 : 1);
