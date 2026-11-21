@@ -168,6 +168,10 @@ import { TOOLS } from "./tools.ts";
 // (415, trimmed from 699) brought it to 29,274 on 11-18: agents had no way
 // to read a listing's later pages or the JSON feed behind them, or to name
 // the fields they wanted as rows.
+// imessage_history's replyTo and reactions, handoff's passkey wording, and
+// imessage_wait_code's newest code (90) went in past the limit on 11-19 and
+// 11-20; dropping the text those tools' parameters and imessage_files
+// already say (-90) leaves it at 29,274.
 const TOOL_LIST_MAX_BYTES = 29_274;
 
 async function toolList(): Promise<unknown> {

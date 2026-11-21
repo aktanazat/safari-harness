@@ -850,7 +850,7 @@ export const IMESSAGE_TOOLS: Record<string, Tool> = {
     run: async (a) => chats({ limit: a.limit as number | undefined }),
   },
   imessage_history: {
-    desc: "Conversation messages and files, oldest first; replyTo is the message a reply answers, reactions the tapbacks on it. Missing files: imessage_files.",
+    desc: "Conversation messages and files, oldest first; replyTo is the message a reply answers, reactions the tapbacks on it.",
     params: {
       chat: { type: "string", description: "chat id, phone, email, or contact name" },
       limit: { type: "number", description: "default 30, max 200" },
@@ -881,10 +881,10 @@ export const IMESSAGE_TOOLS: Record<string, Tool> = {
     run: async (a) => search(a as { text?: string; from?: string; chat?: string; days?: number; limit?: number }),
   },
   imessage_wait_code: {
-    desc: "Wait for the newest sign-in code texted since a minute ago. Returns {status:'received',code,from,since} or {status:'timeout',since}; pass since back for a later one. Type it into the page; never repeat it in chat.",
+    desc: "Wait for the newest sign-in code texted since a minute ago. Returns {status:'received',code,from,since} or {status:'timeout',since}. Type it into the page; never repeat it in chat.",
     params: {
       seconds: { type: "number", description: "how long to wait, default 30, max 90" },
-      since: { type: "number", description: "since of an earlier answer" },
+      since: { type: "number", description: "since of an earlier answer, for a later code" },
     },
     run: (a) => waitCode(a as { seconds?: number; since?: number }),
   },
