@@ -7,35 +7,8 @@
 //   bun scripts/import-apple-passwords.ts /path/to/Passwords.csv
 
 import { readFileSync, rmSync } from "node:fs";
+import { parseCsv } from "../daemon/csv.ts";
 import { type Login, memSecretVault, refusal } from "../daemon/vault.ts";
-
-// RFC 4180: quoted fields may hold commas, doubled quotes, and line breaks.
-function rows(text: string): string[][] {
-  const out: string[][] = [];
-  let row: string[] = [];
-  let field = "";
-  let quoted = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (quoted) {
-      if (c !== '"') field += c;
-      else if (text[i + 1] === '"') field += text[++i];
-      else quoted = false;
-    } else if (c === '"') quoted = true;
-    else if (c === ",") {
-      row.push(field);
-      field = "";
-    } else if (c === "\n" || c === "\r") {
-      if (c === "\r" && text[i + 1] === "\n") i++;
-      row.push(field);
-      out.push(row);
-      row = [];
-      field = "";
-    } else field += c;
-  }
-  if (field || row.length) out.push([...row, field]);
-  return out;
-}
 
 const file = process.argv[2];
 if (!file) {
@@ -43,7 +16,7 @@ if (!file) {
   process.exit(2);
 }
 try {
-  const [header = [], ...records] = rows(readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
+  const [header = [], ...records] = parseCsv(readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
   const column = (name: string) => {
     const i = header.indexOf(name);
     if (i < 0) throw new Error(`not an Apple Passwords export: no ${name} column`);
