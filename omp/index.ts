@@ -143,7 +143,7 @@ const DEV_NULL = /^(?:\d|&)?>>?\/dev\/null$|^>&\/dev\/null$/;
 const QUOTED = "\u0000";
 const CARD_PIPE = "\"Read the whole output. Narrow with `query` or `root`, never `| head`, `| grep`, `sed`, or `>/dev/null`, which hide a failed call.\"";
 const CARD_QUIET = "\"A CLI step whose answer you do not need takes `-q`: silent when it works, one line and exit 1 when it misses.\"";
-const CARD_LOOP = "\"More than three pages of one kind: one `map` call (up to 20 addresses), ... never a loop of `goto` or a bash loop of `map` or `eval`.\" and \"Screenshots of pages at several widths: one `shots` call (`safari shots --widths 390,1440 --out DIR URL...`), not a loop of `window` and `shot`.\"";
+const CARD_LOOP = "\"More than three pages of one kind: one `map` call (up to 20 addresses), ... never a loop of `goto` or a bash loop of `map` or `eval`.\" and \"Screenshots of several pages: one `shots` call (`safari shots --widths 1440 --out DIR URL...`), not a loop of `window` and `shot`.\"";
 
 type Command = string[];
 

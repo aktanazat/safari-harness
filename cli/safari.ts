@@ -157,7 +157,7 @@ const USAGE = `safari — drive Safari from the terminal
   safari shot --tab N [--out file.png | file.png] [--ref R] [--annotate] [--full] [--live] [--tiles] [--ifChanged]
                                              protected screenshot and source receipt;
                                              unchanged pixels can return the prior receipt
-  safari shots <url>... --widths 390,1440 --out folder [--full] [--tiles]
+  safari shots <url>... --widths 1440 --out folder [--full] [--tiles]
                                              capture each page and width with its receipt
 
   safari report --out folder --answer text --findings '[{"claim":"…","evidence":"/absolute/receipt.json"}]'
