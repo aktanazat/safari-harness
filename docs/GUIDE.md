@@ -1,7 +1,7 @@
 # Safari Harness: the rules
 
 The tools drive the user's real Safari: his logins, cookies, and tabs.
-Read this card once; it is also the safari skill. Do not read it again
+Read this card once. Do not read it again
 after a compaction. Details, one section at a time:
 - `safari guide <tool>`: one tool (`safari guide click`); `safari guide
   reference` lists the sections, `safari guide repl` the script API.
@@ -45,8 +45,8 @@ after a compaction. Details, one section at a time:
   `| grep`, `sed`, or `>/dev/null`, which hide a failed call. A CLI step
   whose answer you do not need takes `-q`: silent when it works, one line
   and exit 1 when it misses.
-- Screenshots of pages at several widths: one `shots` call (`safari shots
-  --widths 390,1440 --out DIR URL...`), not a loop of `window` and `shot`.
+- Screenshots of several pages: one `shots` call (`safari shots
+  --widths 1440 --out DIR URL...`), not a loop of `window` and `shot`.
 - A ref is the number alone: `safari click 15 --tab N` (in zsh an
   unquoted `[15]` is a file pattern and the command never runs).
 
@@ -59,7 +59,7 @@ after a compaction. Details, one section at a time:
   with `read: true`, and an edited eval file is a new call.
 - A read of a sign-in, subscriber, consent or region wall (`pageState`)
   is not a read of the content.
-- `extension stuck:`: try once more a minute later, then tell the user.
+- `extension stuck:`: try once more, then tell the user.
   Never run `safari extension reload`. A failure with no reason: `safari
   doctor` once, never as a ritual.
 
@@ -67,9 +67,6 @@ after a compaction. Details, one section at a time:
 - The first call on a site names its guide (`guide: safari guide <name>`)
   and `notes`: read them first. Learned something the hard way? `learn
   {site, fact, source}`, one sentence, never a secret.
-- Call a page blocked, paywalled or behind a login only after Safari also
-  failed on it, and quote what Safari answered. A `read` that met a wall
-  comes back with a `safari:` line holding Safari's copy.
 
 ## Signing in, in this order
 1. A session: most of his sites are signed in.
@@ -96,7 +93,6 @@ cookie, or token, in a reply or a log line. Never sign him out.
   messages go only through the slack global's drafts (`safari guide
   slack`); a click on Slack's Send button, Return in its message box, or a
   script that clicks or presses them is refused.
-- Report what the page shows, not what you expected.
 - Browser memory is off until he enables it at
   `http://127.0.0.1:37334/memory`; never enable it yourself. A read with
   `memoryReceipt` you used: `save_source` it (`safari guide memory`).
