@@ -25,7 +25,9 @@
 // Fills and codes come only from the logins engram's vault keeps
 // (vault.ts), which need neither the pairing nor Touch ID: the user's order
 // of 11-13, after his Apple Passwords were imported there. Apple Passwords
-// still lists logins and saves a changed password, and the vault keeps it.
+// still lists logins and saves a changed password, and the vault keeps it:
+// a change starts only once the vault opens, and types the new password
+// only once the vault keeps it.
 //
 // Protocol follows open-passwords (Apache-2.0), itself derived from
 // au2001/icloud-passwords-firefox.
@@ -41,7 +43,7 @@ import { currentOwner, watchOwner } from "./owner.ts";
 import { filledOf, type Navigated } from "./navigated.ts";
 import { site as siteOf } from "./receipt.ts";
 import { keepSecret } from "./redact.ts";
-import { memSecretVault, totp, type Vault } from "./vault.ts";
+import { memSecretVault, REBUILD, totp, type Vault } from "./vault.ts";
 
 export const BRIDGE_ORIGIN = "chrome-extension://pejdijmoenmkgeppbflobdenhhabjlaj";
 export const HELIUM = "/Applications/Helium.app/Contents/MacOS/Helium";
@@ -169,7 +171,8 @@ type Waiter = { cmd: number; resolve: (m: HelperMsg) => void; reject: (e: Error)
 // What the bridge says as it connects: whether its helper, and so any
 // pairing, still runs, and the sealed session it keeps.
 type Hello = { helper?: unknown; stash?: unknown };
-type Status = { unlocked: boolean; reason?: string; sessions?: number; ends?: string; helper?: number };
+type Pairing = { unlocked: boolean; reason?: string; sessions?: number; ends?: string; helper?: number };
+type Status = Pairing & { vault: { ok: boolean; detail: string } };
 
 // A pairing message from the helper: base64 JSON under payload.PAKE.
 function pakeOf(reply: HelperMsg): Record<string, unknown> {
@@ -453,7 +456,7 @@ export class ApplePasswords {
     this.link.send(JSON.stringify({ stash: sealKept(this.stashKey, { ...this.state.session, holders: [...this.holders.keys()] }) }));
   }
 
-  status(): Promise<Status> {
+  private pairing(): Promise<Pairing> {
     return this.serial(async () => {
       await this.settle().catch(() => false);
       if (this.state.kind !== "unlocked") return { unlocked: false, reason: this.why };
@@ -465,6 +468,11 @@ export class ApplePasswords {
         ...(helper ? { helper } : {}),
       };
     });
+  }
+
+  async status(): Promise<Status> {
+    const [pairing, vault] = await Promise.all([this.pairing(), this.vault.health()]);
+    return { ...pairing, vault };
   }
 
   private fail(e: Error) {
@@ -535,10 +543,10 @@ export class ApplePasswords {
 
   // Lets go of the calling session's hold. Other sessions' holds stay, and
   // the pairing with them.
-  async done(): Promise<{ released: boolean } & Status> {
+  async done(): Promise<{ released: boolean } & Pairing> {
     const pid = currentOwner();
     const released = pid !== undefined && this.release(pid);
-    return { released, ...(await this.status()) };
+    return { released, ...(await this.pairing()) };
   }
 
   // ---------- reaching the helper ----------
@@ -715,7 +723,7 @@ export class ApplePasswords {
   // The password the vault keeps for username on host.
   private async password(host: string, username: string): Promise<string> {
     const kept = (await this.vault.logins(host)).find((l) => l.username === username);
-    if (!kept) throw new HarnessError("not_content", `the vault keeps no password for ${username} on ${host}`, { next: "import his Apple Passwords export again (bun scripts/import-apple-passwords.ts <file>), or sign in another way" });
+    if (!kept) throw new HarnessError("not_content", `the vault keeps no password for ${username} on ${host}`, { next: `${REBUILD}, or sign in another way` });
     return kept.password;
   }
 
@@ -806,7 +814,7 @@ export class ApplePasswords {
     const kept = await this.vault.logins(site);
     if (username === undefined && kept.length > 1) throw new HarnessError("invalid_argument", `several saved logins for ${site}; pass username: ${kept.map((l) => l.username).join(", ")}`);
     const login = kept.find((l) => username === undefined || l.username === username);
-    if (!login) throw new HarnessError("not_content", `no saved login${username === undefined ? "" : ` ${username}`} for ${site} in the vault${kept.length ? `; kept: ${kept.map((l) => l.username).join(", ")}` : ""}`, { next: "sign in another way, or import his Apple Passwords export again (bun scripts/import-apple-passwords.ts <file>)" });
+    if (!login) throw new HarnessError("not_content", `no saved login${username === undefined ? "" : ` ${username}`} for ${site} in the vault${kept.length ? `; kept: ${kept.map((l) => l.username).join(", ")}` : ""}`, { next: `sign in another way, or ${REBUILD}` });
     const secret = form.password ? login.password : null;
     keepSecret(tab, secret);
     const res = await bridge.tab(tab, "fillLogin", [site, login.username, secret], 30000, form.frame);
@@ -825,7 +833,7 @@ export class ApplePasswords {
     const keys = (await this.vault.logins(site)).filter((l) => l.otpauth !== undefined && (username === undefined || l.username === username));
     if (keys.length > 1) throw new HarnessError("invalid_argument", `several logins on ${site} have verification-code keys; pass username: ${keys.map((l) => l.username).join(", ")}`);
     const key = keys[0];
-    if (key?.otpauth === undefined) throw new HarnessError("not_content", `the vault keeps no verification-code key for ${username ?? "any login"} on ${site}`, { next: "use the code the site emails or texts, or import his Apple Passwords export again" });
+    if (key?.otpauth === undefined) throw new HarnessError("not_content", `the vault keeps no verification-code key for ${username ?? "any login"} on ${site}`, { next: `use the code the site emails or texts, or ${REBUILD}` });
     const code = totp(key.otpauth);
     const login = key.username;
     keepSecret(tab, code);
@@ -872,8 +880,14 @@ export class ApplePasswords {
   // is typed, as Safari saves the one it suggests, so no password the site
   // takes lives only in the page; the current password is read first,
   // while the saved one is still it, as the vault keeps it for the host the
-  // login is saved for: never for a site the caller names.
+  // login is saved for: never for a site the caller names. A vault that
+  // cannot keep the new password stops the change before anything is made
+  // or saved: on 11-20 one saved to Apple Passwords alone left every fill
+  // after it without the password.
   async change(tab: number, username?: string, entry?: string, shared = false): Promise<{ username: string; site: string; newLogin?: true; helper?: number }> {
+    await this.vault.ready().catch((e: Error) => {
+      throw new HarnessError("unavailable", `the vault cannot keep a new password (${e.message}), so none was made, saved, or typed`, { effect: "none", retryable: false, next: "fix what the login vault line of safari doctor names, then call change again" });
+    });
     await this.session();
     const form = (await probe(tab, "change")).find((f) => (f.fresh ?? 0) > 0);
     if (!form) throw new Error("no new-password field on this page; if its one unmarked password field takes the new password, set autocomplete=\"new-password\" on it with eval, then call change again");
@@ -897,17 +911,35 @@ export class ApplePasswords {
   // Changing a password, second half, once its save was confirmed: keeps
   // the new password in the vault, for every website a shared login is
   // saved for, then types it into the tab's new-password fields, and the
-  // saved current one into an empty current-password field. The result
-  // never carries either password.
-  async typeChange(tab: number): Promise<{ filled: string[]; navigated?: Navigated; username: string; site: string; sharedWith?: string[]; saved: true; vault?: string }> {
+  // saved current one into an empty current-password field. A vault that
+  // refuses it then gets nothing typed. The result never carries either
+  // password.
+  async typeChange(tab: number): Promise<{ filled: string[]; navigated?: Navigated; username: string; site: string; sharedWith?: string[]; saved: true; ifRefused: string }> {
     const c = this.pendingChanges.get(tab);
     if (!c) throw new Error("no password change waiting to be typed into this tab; call change again");
     this.dropChange(tab);
-    const { vault } = await keeping(this.vault.keep([c.site, ...c.sharedWith].map((host) => ({ host, username: c.login, password: c.secret }))));
+    await this.vault.keep([c.site, ...c.sharedWith].map((host) => ({ host, username: c.login, password: c.secret }))).catch(async (e: Error) => {
+      // A keep stopped at its time limit may have written all the same.
+      const kept = await this.vault.logins(c.site).catch(() => []);
+      if (kept.some((l) => l.username === c.login && l.password === c.secret)) return;
+      throw new HarnessError("unavailable", `the vault did not keep the new password for ${c.login} on ${c.site} (${e.message}), so nothing was typed: the site keeps its old password and the vault what it kept before, and Apple Passwords now holds a new one the site never took`, { effect: "none", retryable: false, next: "fix what the login vault line of safari doctor names, then call change again: its new password replaces the one Apple Passwords holds" });
+    });
     keepSecret(tab, c.current, c.secret);
-    const res = await bridge.tab(tab, "fillNewPassword", [c.host, c.current, c.secret], 30000, c.frame);
     const sent = [...(c.current ? ["current password"] : []), "new password", ...(c.fresh === 1 ? [] : ["confirm password"])];
-    return { ...filledOf(res, sent, "new password"), username: c.login, site: c.site, ...(c.sharedWith.length ? { sharedWith: c.sharedWith } : {}), saved: true, ...(vault ? { vault } : {}) };
+    const filled = await bridge
+      .tab(tab, "fillNewPassword", [c.host, c.current, c.secret], 30000, c.frame)
+      .then((res) => filledOf(res, sent, "new password"))
+      .catch((e: unknown) => {
+        throw new HarnessError("command_failed", `typing the new password for ${c.login} on ${c.site} into the page failed (${e instanceof Error ? e.message : String(e)}): Apple Passwords and the vault both hold a new password the site never took, and neither holds the old one`, { effect: e instanceof HarnessError ? e.effect : "possibly_effected", next: "read the page; if its form is still there and filled, submit it, else reset the password through the site's email link and call change on its form" });
+      });
+    return {
+      ...filled,
+      username: c.login,
+      site: c.site,
+      ...(c.sharedWith.length ? { sharedWith: c.sharedWith } : {}),
+      saved: true,
+      ifRefused: "Apple Passwords and the vault both hold the new password now; the site takes it only once this form is submitted. If the site refuses it, neither store has the old password: get a reset link from the site and call change on its form",
+    };
   }
 
   dropChange(tab: number): void {

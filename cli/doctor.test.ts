@@ -13,7 +13,7 @@ function healthy(): Probes {
     roundTrip: async () => 640,
     accessibility: async () => {},
     messages: async () => {},
-    passwords: async () => ({ unlocked: false, reason: "it has not been paired since the harness started at 09:17" }),
+    passwords: async () => ({ unlocked: false, reason: "it has not been paired since the harness started at 09:17", vault: { ok: true, detail: "mem-secret /Users/aktan/.local/bin/mem-secret, key from the Keychain; it opens and keeps 469 logins" } }),
     safaridriverMcp: async () => true,
     remoteAutomation: async () => false,
     freeBytes: async () => 150e9,
@@ -53,6 +53,14 @@ test("a working Mac fails nothing; Apple's lane off, an idle pairing, or no host
   expect(statuses(await examine({ ...healthy(), swapMb: async () => undefined })).swap).toBe("skip");
   // A flag that turned tab groups off is the owner's to clear, so it shows here.
   expect(statuses(await examine({ ...healthy(), groupsOff: () => "tab groups are off: Safari came to the front" }))["tab groups"]).toBe("warn");
+});
+
+// 11-20: the work Mac's daemon had no mem-secret where it looked and no
+// login store, so every fill failed while doctor said nothing.
+test("a login vault the daemon cannot open fails, naming why; an older daemon that does not report it is skipped", async () => {
+  const broken = await examine({ ...healthy(), passwords: async () => ({ unlocked: false, vault: { ok: false, detail: "mem-secret is not on this process's PATH (/usr/bin:/bin)" } }) });
+  expect(broken["login vault"]).toMatchObject({ status: "fail", detail: expect.stringContaining("mem-secret is not on this process's PATH") });
+  expect((await examine({ ...healthy(), passwords: async () => ({ unlocked: false }) }))["login vault"].status).toBe("skip");
 });
 
 test("with the daemon down, the fix fits why, and nothing that needs the daemon is asked", async () => {

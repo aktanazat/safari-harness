@@ -49,7 +49,9 @@ export type Check = { name: string; status: Status; detail: string; fix?: string
 // as the bridge tells it (bridge.ts health), null from an older daemon
 // while it is not connected.
 export type Health = { pid?: number; stopping?: string; extension: { connected: boolean; stuck: boolean; reloadIgnored?: boolean; timeouts: Record<string, number>; connectedAt?: number } | null };
-export type Pairing = { unlocked: boolean; reason?: string; sessions?: number };
+// vault: the login vault as the daemon reaches it (vault.ts health); an
+// older daemon sends none.
+export type Pairing = { unlocked: boolean; reason?: string; sessions?: number; vault?: { ok: boolean; detail: string } };
 
 // One fact each. The ones that can fail throw with the reason; the rest
 // always answer.
@@ -246,6 +248,17 @@ function passwordsCheck(got: Outcome<Pairing> | undefined): Check {
   return { name, status: "ok", detail: `not paired now (${got.value.reason ?? "no reason given"}); the next passwords call that needs Apple Passwords pairs, reading the code off the Mac` };
 }
 
+// Fills, codes, and changes need it; a change refuses to start without it.
+function vaultCheck(got: Outcome<Pairing> | undefined): Check {
+  const name = "login vault";
+  if (got === undefined) return { name, status: "skip", detail: "needs the daemon" };
+  if ("error" in got) return { name, status: "warn", detail: got.error };
+  const { vault } = got.value;
+  if (vault === undefined) return { name, status: "skip", detail: "the running daemon does not report it" };
+  if (vault.ok) return { name, status: "ok", detail: vault.detail };
+  return { name, status: "fail", detail: `${vault.detail}; passwords fill, code, and change fail until it opens`, fix: "the daemon's PATH (its launchd plist) must reach mem-secret, and mem-secret doctor must find this Mac's age key" };
+}
+
 // Group work turns off for good once Safari's menu stays open or it comes
 // to the front (groups.ts), until someone who has looked removes the flag:
 // agents only see it as a plain window, so the owner reads it here.
@@ -332,6 +345,7 @@ export async function doctor(probe: Probes = LIVE, { deep = false }: { deep?: bo
       ? { name: "messages", status: "fail", detail: "cannot read the Messages database, so codes sent by text are not found", fix: `System Settings > Privacy & Security > Full Disk Access: ${TERMINAL}` }
       : { name: "messages", status: "ok", detail: "the Messages database is readable, so codes sent by text are found" },
     passwordsCheck(pairing),
+    vaultCheck(pairing),
     alertsCheck(probe.alerts()),
     free < LOW_DISK_BYTES
       ? { name: "disk", status: "fail", detail: `${(free / 1024 ** 3).toFixed(1)} GB free`, fix: "free up space: downloads, saved PDFs, and deploys need it" }

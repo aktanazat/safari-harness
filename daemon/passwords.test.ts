@@ -190,6 +190,8 @@ function memoryVault(logins: Record<string, Kept[]> = { [SITE]: [{ username: USE
         kept.set(host, [...was.filter((l) => l !== old), { ...old, ...login }]);
       }
     },
+    ready: async () => {},
+    health: async () => ({ ok: true, detail: "kept in memory" }),
   };
   return { kept, vault };
 }
@@ -392,7 +394,7 @@ test("change saves a new password and types nothing; typeChange then types the s
   expect(asked).toMatchObject({ username: USER, site: SITE });
   expect(asked).not.toHaveProperty("newLogin");
   expect(page.fresh).toBeUndefined();
-  expect(await p.typeChange(7)).toEqual({ filled: ["current password", "new password", "confirm password"], username: USER, site: SITE, saved: true });
+  expect(await p.typeChange(7)).toEqual({ filled: ["current password", "new password", "confirm password"], username: USER, site: SITE, saved: true, ifRefused: expect.stringContaining("neither store has the old password") });
   expect(page.current).toBe(SECRET);
   expect(page.fresh).not.toBe(SECRET);
   expect(await bridge.tab(7, "extract")).toEqual({ text: "... ..." });
@@ -424,15 +426,61 @@ test("a fill naming a login nobody saved types nothing and says nothing happened
   expect(page).toEqual({});
 });
 
-// Apple Passwords has saved the new password by the time it is typed, so
-// a vault that cannot keep it must not keep it out of the page.
-test("a changed password the vault cannot keep is still typed, and the result says why", async () => {
-  const { p } = scratch(undefined, { logins: async (host) => [{ username: USER, password: SECRET, host }], keep: async () => Promise.reject(new Error("the vault refused: locked")) });
+// 11-20: a change on a Mac whose vault did not exist saved the new
+// password to Apple Passwords alone and typed it, and every fill after it
+// failed. A vault that cannot keep a password stops the change before
+// Apple Passwords is asked to save one.
+test("change on a Mac whose vault cannot keep a password refuses before saving or typing anything", async () => {
+  const { p } = scratch(undefined, { ...memoryVault().vault, ready: async () => Promise.reject(new Error("mem-secret is not on this process's PATH")) });
+  const page = fakeTab(`https://${SITE}/account/password`);
+  const { helper } = await paired(p);
+  const error = await p.change(7).catch((e: unknown) => e);
+  expect((error as Error).message).toBe("the vault cannot keep a new password (mem-secret is not on this process's PATH), so none was made, saved, or typed");
+  expect(failureOf(error, { effectful: true })).toMatchObject({ effect: "none" });
+  expect(helper.queries.filter((q) => q.startsWith("6 "))).toEqual([]);
+  await expect(p.typeChange(7)).rejects.toThrow("no password change waiting");
+  expect(page).toEqual({});
+});
+
+// A vault that opened for change but refuses the keep: the page must not
+// take a password only Apple Passwords holds.
+test("a changed password the vault does not keep is never typed, and the error says what each store holds", async () => {
+  const { p } = scratch(undefined, { ...memoryVault().vault, keep: async () => Promise.reject(new Error("the vault refused: locked")) });
   const page = fakeTab(`https://${SITE}/account/password`);
   await paired(p);
   await p.change(7);
-  expect(await p.typeChange(7)).toMatchObject({ filled: ["current password", "new password", "confirm password"], vault: "not kept in the vault: the vault refused: locked" });
-  expect(page.fresh).toBeString();
+  const error = await p.typeChange(7).catch((e: unknown) => e);
+  expect((error as Error).message).toBe(`the vault did not keep the new password for ${USER} on ${SITE} (the vault refused: locked), so nothing was typed: the site keeps its old password and the vault what it kept before, and Apple Passwords now holds a new one the site never took`);
+  expect(failureOf(error, { effectful: true })).toMatchObject({ effect: "none" });
+  expect(page).toEqual({});
+});
+
+// mem-secret stopped at its time limit after its write landed: the vault
+// holds the new password, so the page gets it.
+test("a keep that fails after its write landed still types the new password", async () => {
+  const memory = memoryVault().vault;
+  const { p } = scratch(undefined, { ...memory, keep: async (logins) => { await memory.keep(logins); throw new Error("the vault did not answer within 15 s"); } });
+  const page = fakeTab(`https://${SITE}/account/password`);
+  await paired(p);
+  await p.change(7);
+  expect(await p.typeChange(7)).toMatchObject({ filled: ["current password", "new password", "confirm password"], saved: true });
+  expect(page.fresh).toBe((await memory.logins(SITE))[0].password);
+});
+
+// The tab moved on between the save and the typing: the stores already
+// hold the new password, and the error says so rather than the page's.
+test("typing that fails after the vault kept the new password says what each store holds", async () => {
+  const { kept, vault } = memoryVault();
+  const { p } = scratch(undefined, vault);
+  fakeTab(`https://${SITE}/account/password`);
+  await paired(p);
+  await p.change(7);
+  const page = fakeTab("https://elsewhere.example.net/");
+  const error = await p.typeChange(7).catch((e: unknown) => e);
+  expect((error as Error).message).toEndWith(`: Apple Passwords and the vault both hold a new password the site never took, and neither holds the old one`);
+  expect((error as Error).message).toStartWith(`typing the new password for ${USER} on ${SITE} into the page failed (`);
+  expect(kept.get(SITE)?.[0].password).not.toBe(SECRET);
+  expect(page).toEqual({});
 });
 
 test("a changed password is kept in the vault, so the next fill types the new one with no pairing", async () => {

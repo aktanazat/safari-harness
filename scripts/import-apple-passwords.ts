@@ -6,10 +6,8 @@
 //
 //   bun scripts/import-apple-passwords.ts /path/to/Passwords.csv
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { LOGINS_DIR, type Login, memSecretVault, refusal } from "../daemon/vault.ts";
+import { readFileSync, rmSync } from "node:fs";
+import { type Login, memSecretVault, refusal } from "../daemon/vault.ts";
 
 // RFC 4180: quoted fields may hold commas, doubled quotes, and line breaks.
 function rows(text: string): string[][] {
@@ -39,20 +37,6 @@ function rows(text: string): string[][] {
   return out;
 }
 
-// The store opens with the key mem-secret uses on this Mac: the key file
-// when there is one, else the Keychain's.
-function sealToThisMac(): void {
-  if (existsSync(join(LOGINS_DIR, "recipients.txt"))) return;
-  const keyFile = join(homedir(), ".config", "sops", "age", "keys.txt");
-  const read = existsSync(keyFile)
-    ? Bun.spawnSync(["age-keygen", "-y", keyFile])
-    : Bun.spawnSync(["sh", "-c", `"$0" | age-keygen -y`, join(homedir(), "memory", "bin", "_age-key-cmd")]);
-  const recipient = read.stdout.toString().trim();
-  if (!read.success || !recipient.startsWith("age1")) throw new Error("this Mac's age key could not be read");
-  mkdirSync(LOGINS_DIR, { recursive: true, mode: 0o700 });
-  writeFileSync(join(LOGINS_DIR, "recipients.txt"), `${recipient}  # this Mac only\n`, { mode: 0o600 });
-}
-
 const file = process.argv[2];
 if (!file) {
   console.error("usage: bun scripts/import-apple-passwords.ts /path/to/Passwords.csv");
@@ -78,7 +62,6 @@ try {
     if (why) skipped.set(why, [...(skipped.get(why) ?? []), host]);
     else logins.set(`${host}\n${login.username}`, login);
   }
-  sealToThisMac();
   await memSecretVault().rebuild([...logins.values()]);
   console.log(`kept ${logins.size} logins for ${new Set([...logins.values()].map((l) => l.host)).size} sites, ${[...logins.values()].filter((l) => l.otpauth).length} with a verification-code key`);
   for (const [why, hosts] of skipped) {

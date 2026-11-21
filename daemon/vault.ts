@@ -7,15 +7,15 @@
 // user chose fewer prompts over Apple Passwords asking on every fill; on
 // 10-23, that no website login sit where the VPS can read it; on 11-13, that
 // Apple Passwords never be asked for a password or a code.
-//
-// mem-secret never prints a value: run hands the wanted variables to env,
-// whose output only this process reads, and batch takes new values on
-// stdin. Nothing here logs or returns a password to a caller.
+// 11-20: a change made on a Mac whose store did not exist yet saved the new
+// password to Apple Passwords alone, and every fill after it failed; the
+// first keep now makes the store, and change proves it can keep one before
+// it makes any (passwords.ts).
 
 import { createHmac } from "node:crypto";
-import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { memSecretStore } from "./mem-secret.ts";
 import { site as siteOf } from "./receipt.ts";
 
 // otpauth: the login's verification-code key, an otpauth://totp/ URI.
@@ -26,18 +26,25 @@ export type Vault = {
   // within its site that keeps any; none when none is kept.
   logins(host: string): Promise<Login[]>;
   // Keeps each login for its host, less a leading www., replacing the
-  // password kept for the same username there.
+  // password kept for the same username there. The first keep makes the
+  // store.
   keep(logins: Login[]): Promise<void>;
+  // Makes the store if need be and proves a write to it lands, or throws
+  // why it cannot keep a login.
+  ready(): Promise<void>;
+  // Where mem-secret is, the key's source, and the store's state, in plain
+  // words, for status and doctor; never throws.
+  health(): Promise<{ ok: boolean; detail: string }>;
 };
 
-const MEM_SECRET = join(homedir(), "memory", "bin", "mem-secret");
-export const LOGINS_DIR = join(homedir(), ".config", "engram-logins");
-// With the key file named, sops never reads the key from the Keychain, which
-// could ask the user to allow it. A key the daemon's environment names wins.
-const AGE_KEY = join(homedir(), ".config", "sops", "age", "keys.txt");
-// A vault call still running then waits on something nobody answers; the
-// fill fails rather than hang.
-const VAULT_MS = 15000;
+const LOGINS_DIR = join(homedir(), ".config", "engram-logins");
+
+// How a login missing from the copy gets there, as an error's next step.
+export const REBUILD = `rebuild the copy from Apple Passwords: in the Passwords app, File > Export All Passwords to File, then bun ${join(import.meta.dir, "..", "scripts", "import-apple-passwords.ts")} <that file>`;
+
+// What ready writes to prove a write lands: the time of the last proof,
+// no secret, and no login (logins are LOGIN_ names).
+const PROBE = "HARNESS_VAULT_PROBE";
 
 const HOST = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
 
@@ -98,23 +105,10 @@ export function totp(uri: string, now = Date.now()): string {
 }
 
 export function memSecretVault(dir = LOGINS_DIR): Vault & { rebuild(logins: Login[]): Promise<void> } {
-  async function memSecret(args: string[], stdin?: string): Promise<string> {
-    const proc = Bun.spawn([MEM_SECRET, ...args], {
-      env: { ...(existsSync(AGE_KEY) ? { SOPS_AGE_KEY_FILE: AGE_KEY } : {}), ...process.env, ENGRAM_SECRETS_DIR: dir },
-      stdin: stdin === undefined ? "ignore" : Buffer.from(stdin),
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: VAULT_MS,
-    });
-    const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-    if (proc.signalCode) throw new Error(`the vault did not answer within ${VAULT_MS / 1000} s`);
-    if (code !== 0) throw new Error(`the vault refused: ${err.trim().split("\n").pop() || `mem-secret exited ${code}`}`);
-    return out;
-  }
+  const store = memSecretStore(dir, "vault");
 
-  const listed = async (): Promise<string[]> => (await memSecret(["list"])).split("\n").filter(Boolean);
-
-  async function write(logins: Login[], remove: string[]): Promise<void> {
+  // Removes the names stale picks from those the store keeps.
+  async function write(logins: Login[], stale: (kept: string[]) => string[]): Promise<void> {
     const set: Record<string, string> = {};
     for (const login of logins) {
       const why = refusal(login);
@@ -124,17 +118,18 @@ export function memSecretVault(dir = LOGINS_DIR): Vault & { rebuild(logins: Logi
       set[v.password] = login.password;
       if (login.otpauth !== undefined) set[v.otpauth] = login.otpauth;
     }
-    await memSecret(["batch"], JSON.stringify({ version: 1, set, remove: remove.filter((n) => !(n in set)) }));
+    const { names: kept = [] } = await store.open(true);
+    await store.call(["batch"], JSON.stringify({ version: 1, set, remove: stale(kept).filter((n) => !(n in set)) }));
   }
 
   return {
     async logins(host) {
-      const all = await listed();
+      const all = (await store.call(["list"])).split("\n").filter(Boolean);
       for (const h of hostsOf(host)) {
         const p = prefix(h);
         const vars = all.filter((n) => n.startsWith(p));
         if (!vars.length) continue;
-        const out = await memSecret(["run", ...vars, "--", "/usr/bin/env"]);
+        const out = await store.call(["run", ...vars, "--", "/usr/bin/env"]);
         const wanted = new Set(vars);
         const env = new Map<string, string>();
         for (const line of out.split("\n")) {
@@ -154,9 +149,25 @@ export function memSecretVault(dir = LOGINS_DIR): Vault & { rebuild(logins: Logi
       return [];
     },
 
-    keep: (logins) => write(logins, []),
+    keep: (logins) => write(logins, () => []),
+
+    // A store that only reads (its folder not writable, say) fails here,
+    // through the same mem-secret batch a keep runs.
+    ready: async () => {
+      await store.open(true);
+      await store.call(["batch"], JSON.stringify({ version: 1, set: { [PROBE]: new Date().toISOString() }, remove: [] }));
+    },
+
+    health: () =>
+      store.open(false).then(
+        ({ memSecret, key, names }) => ({
+          ok: true,
+          detail: `mem-secret ${memSecret}, key from ${key}; ${names === undefined ? `${dir} is not made yet: the first changed password makes it` : `${dir} opens and keeps ${names.filter((n) => n.endsWith("_USERNAME")).length} logins`}`,
+        }),
+        (e: Error) => ({ ok: false, detail: e.message }),
+      ),
 
     // Replaces every login kept with logins.
-    rebuild: async (logins) => write(logins, (await listed()).filter((n) => n.startsWith("LOGIN_"))),
+    rebuild: (logins) => write(logins, (kept) => kept.filter((n) => n.startsWith("LOGIN_"))),
   };
 }
