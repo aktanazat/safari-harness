@@ -5,19 +5,16 @@
 // keychain helper that kept them asked Touch ID for fills.
 // scripts/import-cards.ts moved that helper's cards here once.
 //
-// mem-secret never prints a value: run hands the wanted variables to env,
-// whose output only this process reads, and batch takes new values on
-// stdin. A list reads only what names each card; a fill reads its one
-// card's digits, which go back to the fill alone (cards.ts). Nothing here
-// logs a value. The store opens to anything running as the user on this
-// Mac, as his logins' does: what keeps digits from agents is that the tools
-// never answer with one, not a lock on the store.
+// A list reads only what names each card; a fill reads its one card's
+// digits, which go back to the fill alone (cards.ts). Nothing here logs a
+// value (mem-secret.ts). The store opens to anything running as the user on
+// this Mac, as his logins' does: what keeps digits from agents is that the
+// tools never answer with one, not a lock on the store.
 
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { memSecretStore } from "./mem-secret.ts";
 
 // What names a saved card: all an agent sees of one.
 export type Listed = { id: string; label: string; brand: string; last4: string; exp: string; name: string };
@@ -35,13 +32,7 @@ export type CardVault = {
   remove(id: string): Promise<void>;
 };
 
-const MEM_SECRET = join(homedir(), "memory", "bin", "mem-secret");
 export const CARDS_DIR = join(homedir(), ".config", "engram-cards");
-// With the key file named, sops never reads the key from the Keychain, which
-// could ask the user to allow it. A key the daemon's environment names wins.
-const AGE_KEY = join(homedir(), ".config", "sops", "age", "keys.txt");
-// A vault call still running then waits on something nobody answers.
-const VAULT_MS = 15000;
 
 // CARD_<ID>_<PART>, with ID random: the names sit in the clear beside the
 // sealed values, so none says anything of the card. The expiry is kept as
@@ -107,22 +98,10 @@ export function cardOf(input: { number?: unknown; exp?: unknown; csc?: unknown; 
 }
 
 export function memSecretCards(dir = CARDS_DIR): CardVault {
-  async function memSecret(args: string[], stdin?: string): Promise<string> {
-    const proc = Bun.spawn([MEM_SECRET, ...args], {
-      env: { ...(existsSync(AGE_KEY) ? { SOPS_AGE_KEY_FILE: AGE_KEY } : {}), ...process.env, ENGRAM_SECRETS_DIR: dir },
-      stdin: stdin === undefined ? "ignore" : Buffer.from(stdin),
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: VAULT_MS,
-    });
-    const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-    if (proc.signalCode) throw new Error(`the card vault did not answer within ${VAULT_MS / 1000} s`);
-    if (code !== 0) throw new Error(`the card vault refused: ${err.trim().split("\n").pop() || `mem-secret exited ${code}`}`);
-    return out;
-  }
+  const store = memSecretStore(dir, "card vault");
 
   async function values(vars: string[]): Promise<(name: string) => string> {
-    const out = await memSecret(["run", ...vars, "--", "/usr/bin/env"]);
+    const out = await store.call(["run", ...vars, "--", "/usr/bin/env"]);
     const wanted = new Set(vars);
     const env = new Map<string, string>();
     for (const line of out.split("\n")) {
@@ -132,21 +111,8 @@ export function memSecretCards(dir = CARDS_DIR): CardVault {
     return (name) => env.get(name) ?? "";
   }
 
-  // The store opens with the key mem-secret uses on this Mac: the one the
-  // environment names, the key file, else the Keychain's.
-  async function seal(): Promise<void> {
-    if (existsSync(join(dir, "recipients.txt"))) return;
-    const keyFile = process.env.SOPS_AGE_KEY_FILE ?? (existsSync(AGE_KEY) ? AGE_KEY : undefined);
-    const proc = Bun.spawn(keyFile ? ["age-keygen", "-y", keyFile] : ["sh", "-c", `"$0" | age-keygen -y`, join(homedir(), "memory", "bin", "_age-key-cmd")], { stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: VAULT_MS });
-    const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
-    const recipient = out.trim();
-    if (code !== 0 || !recipient.startsWith("age1")) throw new Error("this Mac's age key could not be read");
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    await writeFile(join(dir, "recipients.txt"), `${recipient}  # this Mac only\n`, { mode: 0o600 });
-  }
-
   async function list(): Promise<Listed[]> {
-    const ids = (await memSecret(["list"])).split("\n").flatMap((n) => ID.exec(n)?.[1] ?? []);
+    const ids = (await store.call(["list"])).split("\n").flatMap((n) => ID.exec(n)?.[1] ?? []);
     if (!ids.length) return [];
     const get = await values(ids.flatMap((id) => NAMING.map((p) => part(id, p))));
     return ids
@@ -170,7 +136,7 @@ export function memSecretCards(dir = CARDS_DIR): CardVault {
 
     async keep(cards) {
       if (!cards.length) return [];
-      await seal();
+      await store.open(true);
       const saved = await list();
       const set: Record<string, string> = {};
       const remove = new Set<string>();
@@ -191,12 +157,12 @@ export function memSecretCards(dir = CARDS_DIR): CardVault {
         });
         kept.push({ id, label: c.label, brand: c.brand, last4, exp: `${mm(c.month)}/${String(c.year).slice(-2)}`, name: c.name });
       }
-      await memSecret(["batch"], JSON.stringify({ version: 1, set, remove: [...remove] }));
+      await store.call(["batch"], JSON.stringify({ version: 1, set, remove: [...remove] }));
       return kept;
     },
 
     async remove(id) {
-      await memSecret(["batch"], JSON.stringify({ version: 1, set: {}, remove: PARTS.map((p) => part(id, p)) }));
+      await store.call(["batch"], JSON.stringify({ version: 1, set: {}, remove: PARTS.map((p) => part(id, p)) }));
     },
   };
 }

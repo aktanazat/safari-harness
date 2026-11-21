@@ -1,14 +1,13 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { cardOf, memSecretCards } from "./card-vault.ts";
 
 // The card vault as cards.ts reaches it: the real mem-secret, on scratch
 // stores under a scratch age key, so the user's own cards are never read or
 // written. Each store starts unsealed, as the first save on a Mac finds it.
-const ready = existsSync(join(homedir(), "memory", "bin", "mem-secret")) && Bun.which("sops") !== null && Bun.which("age-keygen") !== null;
-const NAMES = ["ENGRAM_ROOT", "SOPS_AGE_KEY_FILE"] as const;
+const ready = Bun.which("mem-secret") !== null && Bun.which("sops") !== null && Bun.which("age-keygen") !== null;
+const NAMES = ["ENGRAM_ROOT", "SOPS_AGE_KEY_FILE", "SOPS_AGE_KEY_CMD"] as const;
 const before = Object.fromEntries(NAMES.map((n) => [n, process.env[n]]));
 let dir = "";
 let recipient = "";
@@ -22,6 +21,7 @@ beforeAll(() => {
   Bun.spawnSync(["age-keygen", "-o", key], { stderr: "ignore" });
   recipient = /# public key: (\S+)/.exec(readFileSync(key, "utf8"))?.[1] ?? "";
   Object.assign(process.env, { ENGRAM_ROOT: dir, SOPS_AGE_KEY_FILE: key });
+  delete process.env.SOPS_AGE_KEY_CMD;
 });
 
 afterAll(() => {

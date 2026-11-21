@@ -2955,12 +2955,21 @@ pairing and no Touch ID: the user's order of 11-13, since all his Apple
 Passwords were imported there. Nothing asks Apple Passwords for a password
 or a code. Where several logins are kept for the site, `fill` names them
 until `username` picks one; a login the copy lacks fails `not_content`
-and fills nothing. `bun scripts/import-apple-passwords.ts <file>` rebuilds
-the whole copy, verification-code keys included, from Apple Passwords'
-File > Export All Passwords to File, and deletes the file.
+and fills nothing; its `next` says how to rebuild the copy. `bun
+scripts/import-apple-passwords.ts <file>` rebuilds the whole copy,
+verification-code keys included, from Apple Passwords' File > Export All
+Passwords to File, and deletes the file. The copy is a mem-secret store
+in `~/.config/engram-logins`, run with the `mem-secret` on the daemon's
+PATH and opened with this Mac's age key: `SOPS_AGE_KEY_CMD` or
+`SOPS_AGE_KEY_FILE` from the daemon's environment, else
+`~/.config/sops/age/keys.txt`, else the Keychain's through the
+`_age-key-cmd` installed beside `mem-secret`. The first kept password
+makes the store, sealed to that key alone.
 - `passwords {do: "status"}` returns `{unlocked, sessions, ends}` for the
   pairing that `logins`, `change` and `setup-code` use, or `{unlocked:
-  false, reason}`.
+  false, reason}`, and `vault: {ok, detail}`: where `mem-secret` is, the
+  key's source, and whether the copy opens and how many logins it keeps,
+  or why it cannot be used. `safari doctor` shows it as `login vault`.
 - `passwords {do: "logins", tab}` lists the usernames Apple Passwords
   saves for the sign-in form's site, and `{do: "logins", site:
   "accounts.google.com"}` those saved for a host before its page is open.
@@ -2978,11 +2987,15 @@ File > Export All Passwords to File, and deletes the file.
   app's, then `code` again. A site whose key the copy lacks fails
   `not_content`: use the code it emails or texts.
 - `passwords {do: "change", tab}` changes the password on a
-  change-password, reset, or sign-up form: it makes a strong password in
+  change-password, reset, or sign-up form. It first makes sure the vault
+  takes a write (making the copy on its first use, then writing the
+  `HARNESS_VAULT_PROBE` marker, no secret, through mem-secret); when it
+  cannot, it fails with nothing made, saved, or typed, naming why. It makes a
+  strong password in
   Safari's shape (shorter, without hyphens, when the fields allow fewer
   than 20 characters), saves it to Apple Passwords as the password of
-  the one login saved on the page's site (and keeps it in the vault, so
-  the next `fill` has it; this is how a new account's
+  the one login saved on the page's site, keeps it in the vault, so
+  the next `fill` has it (this is how a new account's
   password is made), for the page's host or for
   another of the site's hosts (FHDA and ETS reset on a host of their
   own), and types it into every new-password field. An empty
@@ -3010,12 +3023,17 @@ File > Export All Passwords to File, and deletes the file.
   only in the window naming the login's site. For a new login the window
   asks only "Save Password?", naming no site; the call presses Save
   Password when exactly one such window is up. Both need the calling
-  terminal's Accessibility permission. It saves before it types, as Safari does, so submit
-  the form next; if the site refuses the new password, the saved one is
-  already new, so reset the password through the site's email link and
-  call `change` again on its form. The result names the fields filled,
-  with `saved: true`, never a password. A Flutter form gets each field
-  once the page has taken it, as `fill` does.
+  terminal's Accessibility permission. It saves before it types, as Safari
+  does, and types only once the vault keeps the new password: a vault
+  that refuses it fails the call with nothing typed, and says Apple
+  Passwords now holds a password the site never took, while the site and
+  the vault keep the old one. Submit the form next; the result's
+  `ifRefused` says what each store holds: if the site refuses the new
+  password, both stores already hold it, so reset the password through
+  the site's email link and call `change` again on its form. The result
+  names the fields filled, with `saved: true`, never a password. A
+  Flutter form gets each field once the page has taken it, as `fill`
+  does.
 - `passwords {do: "setup-code", tab}` turns on an authenticator-app
   code: with the site's QR code in view, it reads the code's key off a
   screenshot inside the daemon, keeps it in the vault with the login kept
