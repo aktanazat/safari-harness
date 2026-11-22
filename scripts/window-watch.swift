@@ -4,6 +4,9 @@ import QuartzCore
 import ScreenCaptureKit
 import CoreMedia
 
+@_silgen_name("_AXUIElementGetWindow")
+func nativeWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
+
 final class WindowWatch: NSObject, SCStreamOutput, SCStreamDelegate {
     static let shared = WindowWatch()
     var baseline: [CGWindowID: CGRect] = [:]
@@ -26,6 +29,16 @@ final class WindowWatch: NSObject, SCStreamOutput, SCStreamDelegate {
     let background = CGColor(red: 0, green: 0, blue: 0, alpha: 0)
     var waitingForPixels = false
     var safariPID: pid_t = 0
+    var browserWindows: [CGWindowID: AXUIElement] = [:]
+
+    func track(_ window: AXUIElement) {
+        var id: CGWindowID = 0
+        guard nativeWindow(window, &id) == .success else {
+            emit(["error": "A Safari Accessibility window has no native window ID"])
+            exit(1)
+        }
+        browserWindows[id] = window
+    }
 
     func emit(_ value: [String: Any]) {
         let data = try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
@@ -40,11 +53,15 @@ final class WindowWatch: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         for info in list {
             guard (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == safariPID,
-                  (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
-                  let id = info[kCGWindowNumber as String] as? NSNumber,
+                  let number = info[kCGWindowNumber as String] as? NSNumber,
                   let bounds = info[kCGWindowBounds as String] as? NSDictionary,
-                  let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { continue }
-            result[id.uint32Value] = rect
+                  let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary), !rect.isEmpty else { continue }
+            let id = number.uint32Value
+            let visible = (info[kCGWindowIsOnscreen as String] as? Bool) == true
+                && (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0
+                && ((info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0
+            guard browserWindows[id] != nil || visible else { continue }
+            result[id] = rect
         }
         return result
     }
@@ -59,7 +76,7 @@ final class WindowWatch: NSObject, SCStreamOutput, SCStreamDelegate {
         let now = windows()
         for (id, rect) in baseline where now[id] != rect {
             if !violations.contains(where: { ($0["changedBaseline"] as? CGWindowID) == id }) {
-                violations.append(["changedBaseline": id])
+                violations.append(["changedBaseline": id, "before": [rect.minX, rect.minY, rect.width, rect.height], "after": now[id].map { [$0.minX, $0.minY, $0.width, $0.height] } ?? []])
             }
         }
         for (id, rect) in now where baseline[id] == nil {
@@ -178,27 +195,36 @@ final class WindowWatch: NSObject, SCStreamOutput, SCStreamDelegate {
             exit(1)
         }
         safariPID = safari.processIdentifier
-        baseline = windows()
         guard AXObserverCreate(safariPID, { observer, window, notification, _ in
+                  let watch = WindowWatch.shared
                   if notification as String == kAXWindowCreatedNotification {
+                      watch.track(window)
                       AXObserverAddNotification(observer, window, kAXMovedNotification as CFString, nil)
                       AXObserverAddNotification(observer, window, kAXResizedNotification as CFString, nil)
+                      AXObserverAddNotification(observer, window, kAXUIElementDestroyedNotification as CFString, nil)
+                  } else if notification as String == kAXUIElementDestroyedNotification,
+                            let id = watch.browserWindows.first(where: { CFEqual($0.value, window) })?.key {
+                      watch.browserWindows.removeValue(forKey: id)
                   }
-                  WindowWatch.shared.sample()
+                  watch.sample()
               }, &observer) == .success, let observer,
               AXObserverAddNotification(observer, AXUIElementCreateApplication(safari.processIdentifier), kAXWindowCreatedNotification as CFString, nil) == .success else {
             emit(["error": "Window creation observation needs Accessibility permission"])
             exit(1)
         }
         var held: CFTypeRef?
-        if AXUIElementCopyAttributeValue(AXUIElementCreateApplication(safari.processIdentifier), kAXWindowsAttribute as CFString, &held) == .success,
-           let windows = held as? [AXUIElement] {
-            for window in windows {
-                AXObserverAddNotification(observer, window, kAXMovedNotification as CFString, nil)
-                AXObserverAddNotification(observer, window, kAXResizedNotification as CFString, nil)
-                AXObserverAddNotification(observer, window, kAXUIElementDestroyedNotification as CFString, nil)
-            }
+        guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(safari.processIdentifier), kAXWindowsAttribute as CFString, &held) == .success,
+              let existingWindows = held as? [AXUIElement] else {
+            emit(["error": "Safari Accessibility windows could not be read"])
+            exit(1)
         }
+        for window in existingWindows {
+            track(window)
+            AXObserverAddNotification(observer, window, kAXMovedNotification as CFString, nil)
+            AXObserverAddNotification(observer, window, kAXResizedNotification as CFString, nil)
+            AXObserverAddNotification(observer, window, kAXUIElementDestroyedNotification as CFString, nil)
+        }
+        baseline = windows()
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         links = NSScreen.screens.map { $0.displayLink(target: self, selector: #selector(refresh(_:))) }
         for link in links { link.add(to: .main, forMode: .common) }

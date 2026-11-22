@@ -9,7 +9,7 @@ const count = Number(process.argv[2] ?? (negative ? 1 : 10));
 assert(Number.isSafeInteger(count) && count > 0, "Pass a positive agent count");
 const release = join(homedir(), ".local/share/safari-harness/current");
 const cli = join(release, "cli/safari.ts");
-const watcher = spawn(join(release, "scripts/window-watch"), negative ? ["--capture-agents"] : [], { stdio: ["pipe", "pipe", "inherit"] });
+const watcher = spawn(join(import.meta.dir, "window-watch"), negative ? ["--capture-agents"] : [], { stdio: ["pipe", "pipe", "inherit"] });
 const lines = createInterface({ input: watcher.stdout });
 const events = lines[Symbol.asyncIterator]();
 watcher.on("error", () => lines.close());
