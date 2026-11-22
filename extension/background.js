@@ -60,7 +60,7 @@ function connect() {
       backoff = 500;
       messageMax = DEFAULT_MESSAGE_MAX;
       log("connected to daemon on", port);
-      send({ op: "hello", role: "extension", ua: navigator.userAgent, started, closed });
+      send({ op: "hello", role: "extension", ua: navigator.userAgent, started, closed, windowPlacement: true });
       if (awake.size > 0) send({ op: "ticks", on: true });
       sendRecordings().catch(() => {});
       if (adopted) adopted.then(sendIds, () => {});
@@ -272,6 +272,13 @@ async function untakenSize(dims, own) {
   let height = dims.height;
   while (others.some((w) => w.width === dims.width && w.height === height)) height++;
   return { width: dims.width, height };
+}
+
+function creationPosition(bounds, size) {
+  if (!bounds) return {};
+  const { area } = bounds;
+  if (size.width > area.width || size.height > area.height) throw new Error("The Agents display is too small for this Safari window; no window was opened.");
+  return { left: Math.min(bounds.left, Math.floor(area.x + area.width - size.width)), top: Math.min(bounds.top, Math.floor(area.y + area.height - size.height)) };
 }
 // The page lays out at a window's new size a moment after Safari sizes it,
 // so the window tool reads the viewport again until it changes, for up to
@@ -1919,7 +1926,7 @@ async function handle(msg) {
     // by which its keeper finds it. A tab in a window of the user's goes to
     // one of its own, and his keeps its size.
     case "window": {
-      const [tabId, size, whole] = args;
+      const [tabId, size, whole, bounds] = args;
       const t = await api.tabs.get(tabId);
       const alone = (await api.tabs.query({ windowId: t.windowId })).length === 1;
       const dims = { width: Math.round(size.width), height: Math.round(size.height) };
@@ -1929,9 +1936,9 @@ async function handle(msg) {
       if (whole || alone) {
         sized = await api.windows.update(t.windowId, { ...(await untakenSize(dims, t.windowId)), state: "normal" });
       } else {
-        const w = await api.windows.create({ tabId, focused: false, ...dims });
+        const w = await api.windows.create({ tabId, focused: false, ...dims, ...creationPosition(bounds, dims) });
         await markAgentWindow(w.id);
-        sized = await api.windows.update(w.id, dims);
+        sized = await api.windows.get(w.id);
       }
       let viewport = await view();
       for (const end = Date.now() + VIEWPORT_MS; viewport && was && viewport.w === was.w && viewport.h === was.h && Date.now() < end;) {
@@ -1946,10 +1953,10 @@ async function handle(msg) {
     // without focus, of a size no other window has: its keeper, which sees
     // windows only through Accessibility, finds it by size.
     case "windows.open": {
-      const [url, size] = args;
+      const [url, size, bounds] = args;
       const dims = size ? await untakenSize({ width: Math.round(size.width), height: Math.round(size.height) }) : {};
       const [tab] = await harnessMade(async () => {
-        const w = await api.windows.create({ url, focused: false, ...dims });
+        const w = await api.windows.create({ url, focused: false, ...dims, ...creationPosition(bounds, dims) });
         return w.tabs && w.tabs.length ? w.tabs : api.tabs.query({ windowId: w.id });
       });
       // Only a window that holds this page alone is one of the agent's: a
@@ -1965,7 +1972,7 @@ async function handle(msg) {
       await markAgentWindow(tab.windowId);
       await ownTab(tab.id);
       if (!size) return { windowId: tab.windowId, tabId: tab.id };
-      const sized = await api.windows.update(tab.windowId, dims);
+      const sized = await api.windows.get(tab.windowId);
       return { windowId: tab.windowId, tabId: tab.id, size: { width: sized.width, height: sized.height } };
     }
     // The id a window the daemon knew before the extension reloaded has

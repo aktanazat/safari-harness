@@ -675,7 +675,8 @@ func windows() {
     let screens = NSScreen.screens.map { s -> [String: Any] in
         ["id": (s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.intValue ?? 0, "name": s.localizedName, "frame": rectJSON(topDown(s.frame)), "visible": rectJSON(topDown(s.visibleFrame))]
     }
-    printJSON(["windows": shown, "screens": screens])
+    guard let reference = NSScreen.main else { fail("no display has keyboard focus") }
+    printJSON(["windows": shown, "screens": screens, "reference": rectJSON(topDown(reference.frame))])
 }
 
 // ---------- webarea ----------

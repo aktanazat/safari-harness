@@ -15,7 +15,7 @@ import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
 import { closeRetryMs, closeWindow, daemonWindow, heldSpace, lookForSheet, ownersByPage, refusedSpace, release, resized, showing, spaceNote, spaceTool, spaceWindow, sweep as sweepSpaces, turnEnded, turnResumed, unshow, windowOwners, type Shown, type Space, type SpaceNote } from "./spaces.ts";
-import { uncover } from "./place.ts";
+import { agentPlacement, uncover } from "./place.ts";
 import { alive, currentOwner, currentTask, inTurn, matchesTask, runAs, taskFamily, taskParts, verbatimCall, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, cutFenced, defused, fence, markLines, shieldChat, shieldExtract, shieldItems, shieldSnapshot, type Shielded } from "./injection.ts";
@@ -3405,7 +3405,9 @@ export async function viewport(opts: { tab: number; width: number; height: numbe
   const tab = followTab(num(opts.tab, "tab"));
   const window = (await listTabs()).find((t) => t.id === tab)?.windowId;
   const whole = window !== undefined && windowOwners().has(window);
-  const sized = (await bridge.request("window", [tab, { width: num(opts.width, "width"), height: num(opts.height, "height") }, whole])) as { windowId: number; size: { width: number; height: number } };
+  const size = { width: num(opts.width, "width"), height: num(opts.height, "height") };
+  const placement = whole ? undefined : await agentPlacement(size);
+  const sized = (await bridge.request("window", [tab, size, whole, placement?.bounds])) as { windowId: number; size: { width: number; height: number } };
   if (whole) resized(sized.windowId, sized.size);
   return sized;
 }

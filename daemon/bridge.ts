@@ -206,6 +206,7 @@ type WireMessage = {
   started?: unknown;
   closed?: unknown;
   on?: boolean;
+  windowPlacement?: unknown;
   kind?: unknown;
   from?: unknown;
   to?: unknown;
@@ -273,7 +274,7 @@ type Run = { misses: number; since: number; last: number; ids: Set<string>; tria
 // started and the code its last socket closed with, whether it wants
 // ticks, and the new ids a reload gave the tabs. A socket waiting to take
 // over is heard only once it has.
-type Said = { ua?: string; started?: number; closed?: number; ticks: boolean; renumbered?: TabEvent };
+type Said = { ua?: string; started?: number; closed?: number; ticks: boolean; windowPlacement?: boolean; renumbered?: TabEvent };
 
 // The requests a tab's page answers, the tab first among their arguments:
 // its content script (relay), its own world's script (evalPage, pageData),
@@ -336,7 +337,7 @@ export class Bridge {
   private reloaded = new WeakMap<ExtSocket, number>();
   private drops: Partial<Record<DropCause, number>> = {};
   private pageStarted: number | undefined;
-  public extensionInfo: { ua?: string; connectedAt?: number; started?: number; closed?: number } | null = null;
+  public extensionInfo: { ua?: string; connectedAt?: number; started?: number; closed?: number; windowPlacement?: boolean } | null = null;
   public onTab: (event: TabEvent) => void = () => {};
   public onRecording: (recording: unknown) => void = () => {};
   public onMemory: (tab: number, url: string, revision: number) => void = () => {};
@@ -409,7 +410,7 @@ export class Bridge {
   // that started since the last one's is noted: Safari loaded the extension
   // again, where a socket that dropped keeps its page.
   private hello(said: Said) {
-    this.extensionInfo = { ...this.extensionInfo, ua: said.ua, started: said.started, closed: said.closed };
+    this.extensionInfo = { ...this.extensionInfo, ua: said.ua, started: said.started, closed: said.closed, windowPlacement: said.windowPlacement };
     if (said.started === undefined) return;
     if (this.pageStarted !== undefined && said.started !== this.pageStarted) note("restarted", { started: new Date(said.started).toISOString() });
     this.pageStarted = said.started;
@@ -464,6 +465,7 @@ export class Bridge {
         said.ua = msg.ua;
         said.started = typeof msg.started === "number" ? msg.started : undefined;
         said.closed = typeof msg.closed === "number" ? msg.closed : undefined;
+        said.windowPlacement = msg.windowPlacement === true;
         from.send(JSON.stringify({ op: "limit", bytes: MESSAGE_MAX }));
       } else said.ticks = msg.on === true;
       this.said.set(from, said);
@@ -597,6 +599,7 @@ export class Bridge {
 
   async request(op: string, args: unknown[] = [], timeoutMs = op === "tabs.list" ? LIST_MS : 30000, { start = true }: RequestOptions = {}): Promise<unknown> {
     const sock = await this.socket(start);
+    if (((op === "windows.open" && args[2]) || (op === "window" && args[3])) && this.extensionInfo?.windowPlacement !== true) throw new Error("Safari's extension must finish updating before a hidden window can open; no window was opened.");
     const reads = op === "relay" ? Object.hasOwn(PAGE_READS, String(args[1])) : Object.hasOwn(REPEATABLE, op);
     const answer = this.ask(sock, op, args, timeoutMs).catch((e: unknown) => {
       if (!reads || !(e instanceof Dropped) || e.why === "quit") throw e;

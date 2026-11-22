@@ -78,6 +78,7 @@ function logs(what: string): Promise<void> {
 
 function connect(): WebSocket {
   const socket = new WebSocket(`ws://127.0.0.1:${wsPort}/`, { headers: { origin: "safari-web-extension://stand-in" } });
+  socket.onopen = () => socket.send(JSON.stringify({ op: "hello", role: "extension", windowPlacement: true }));
   socket.onmessage = (e) => {
     const { id, op, args } = JSON.parse(String(e.data)) as { id?: string; op: string; args?: unknown[] };
     const reply = answer(op, args ?? []);

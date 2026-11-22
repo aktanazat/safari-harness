@@ -1,5 +1,6 @@
 import { afterEach, expect, mock, setSystemTime, spyOn, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
@@ -37,7 +38,7 @@ const shared = (a: Rect, b: Rect) =>
 
 // Windows front to back; tabs, each in a window; owners, each window's agent;
 // urls, the address of a tab not at https://page.example/<tab>.
-function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number, number>, moves?: Rect[], moveOffset = 0, screens = [MAIN, ABOVE], urls: Record<number, string> = {}) {
+function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number, number>, moves?: Rect[], moveOffset = 0, screens = [MAIN, ABOVE], urls: Record<number, string> = {}, births: Rect[] = [], reference = MAIN.frame) {
   // A window the daemon opens shows its status page at the address asked.
   const pages = new Map<number, string>(Object.entries(urls).map(([tab, url]) => [Number(tab), url]));
   const urlOf = (tab: number) => pages.get(tab) ?? `https://page.example/${tab}`;
@@ -49,7 +50,9 @@ function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number
       if (op === "tabs.list") return reply({ value: Object.entries(tabs).map(([tab, windowId]) => ({ id: Number(tab), windowId, url: urlOf(Number(tab)), active: true })) });
       if (op === "windows.open") {
         const { width, height } = args[1] as { width: number; height: number };
-        const opened = { id: Math.max(...windows.map((w) => w.id)) + 1, safari: true, ...SAFARI_PUT, width, height };
+        const bounds = args[2] as { left: number; top: number } | undefined;
+        const opened = { id: Math.max(...windows.map((w) => w.id)) + 1, safari: true, ...(bounds ? { x: reference.x + bounds.left, y: reference.y + bounds.top } : SAFARI_PUT), width, height };
+        births.push({ ...opened });
         windows.splice(1, 0, opened);
         tabs[opened.id * 10 + 1] = opened.id;
         pages.set(opened.id * 10 + 1, String(args[0]));
@@ -82,7 +85,7 @@ function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number
   });
   spyOn(front, "input").mockImplementation(async (args) => {
     if (args[0] !== "windows") throw new Error(`no input ${args[0]} here`);
-    return { windows: windows.map(({ id: _, ...w }) => ({ ...w })), screens };
+    return { windows: windows.map(({ id: _, ...w }) => ({ ...w })), screens, reference };
   });
   spyOn(spaces, "windowOwners").mockImplementation(() => new Map(Object.entries(owners).map(([w, owner]) => [Number(w), owner])));
   return windows;
@@ -148,16 +151,49 @@ test("opening an agent window leaves it behind the user's windows where Safari p
   expect(byId(windows, 2)).toEqual(older);
 });
 
-test("on a Mac with an Agents display, a new agent window opens there, clear of the agent window already there", async () => {
+test.each([MAIN.frame, ABOVE.frame, AGENTS.frame])("a new window starts on Agents from keyboard-focus display %j", async (reference) => {
   const there = { id: 2, safari: true, x: AGENTS.visible.x, y: AGENTS.visible.y, width: 1000, height: 780 };
-  const windows = mac([{ ...HIS }, { ...there }], { 11: 1, 21: 2 }, { 2: 8 }, undefined, 0, [MAIN, ABOVE, AGENTS]);
+  const births: Rect[] = [];
+  const windows = mac([{ ...HIS }, { ...there }], { 11: 1, 21: 2 }, { 2: 8 }, undefined, 0, [MAIN, ABOVE, AGENTS], {}, births, reference);
   // Isolate this window from other tests' module records.
-  const fresh = (await import(`./spaces.ts?agents`)) as typeof spaces;
+  const fresh = (await import(`./spaces.ts?agents-${reference.x}-${reference.y}`)) as typeof spaces;
   const space = await runAs(process.pid, () => fresh.spaceWindow("agents"));
   const opened = byId(windows, space.window);
   expect(shared(opened, AGENTS.frame)).toBe(opened.width * opened.height);
+  expect(births.map((frame) => shared(frame, AGENTS.frame))).toEqual([opened.width * opened.height]);
   expect(shared(opened, there)).toBe(0);
   expect([byId(windows, 1), byId(windows, 2)]).toEqual([HIS, there]);
+});
+
+test("hidden window creation refuses an extension that cannot place it at creation", async () => {
+  const windows = mac([{ ...HIS }], { 11: 1 }, {}, undefined, 0, [MAIN, AGENTS]);
+  bridge.extensionInfo!.windowPlacement = false;
+  // This case needs its own empty window registry.
+  const fresh = (await import("./spaces.ts?old-window-extension")) as typeof spaces;
+  await expect(runAs(process.pid, () => fresh.spaceWindow("old extension"))).rejects.toThrow("must finish updating");
+  expect(windows).toEqual([HIS]);
+});
+
+test("a new window starts on Agents even when native listing cannot see Safari's Space", async () => {
+  const births: Rect[] = [];
+  const windows = mac([{ ...HIS }], { 11: 1 }, {}, undefined, 0, [MAIN, AGENTS], {}, births);
+  spyOn(front, "input").mockResolvedValue({ windows: [], screens: [MAIN, AGENTS], reference: MAIN.frame });
+  // This case needs its own empty window registry.
+  const fresh = (await import("./spaces.ts?invisible-window-space")) as typeof spaces;
+  const space = await runAs(process.pid, () => fresh.spaceWindow("other Space"));
+  const opened = byId(windows, space.window);
+  expect(births.map((frame) => shared(frame, AGENTS.frame))).toEqual([opened.width * opened.height]);
+  expect(byId(windows, 1)).toEqual(HIS);
+});
+
+test.each(["missing", "unreadable"])("requiring hidden windows refuses a new page when the Agents display is %s", async (condition) => {
+  const windows = mac([{ ...HIS }], { 11: 1 }, {});
+  spyOn(fs, "existsSync").mockImplementation((path) => String(path).endsWith("/hidden-windows"));
+  if (condition === "unreadable") spyOn(front, "input").mockRejectedValue(new Error("display query failed"));
+  // Each case needs an empty window registry, not another case's cached space.
+  const fresh = (await import(`./spaces.ts?required-${condition}`)) as typeof spaces;
+  await expect(runAs(process.pid, () => fresh.spaceWindow("hidden required"))).rejects.toThrow(condition === "missing" ? "The Agents display is unavailable" : "display query failed");
+  expect(windows).toEqual([HIS]);
 });
 
 const onAgents = (w: Rect) => shared(w, AGENTS.frame) === w.width * w.height;

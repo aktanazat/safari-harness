@@ -380,15 +380,17 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
       WINDOW_ID_NONE: -1,
       // A window the harness opens on a page, told of as tabs.create's is,
       // or one a tab moves out to.
-      create: async ({ url, tabId }: { url?: string; tabId?: number }) => {
+      create: async ({ url, tabId, width, height }: { url?: string; tabId?: number; width?: number; height?: number }) => {
         await made();
         if (tabId !== undefined) {
           const moved = tabOf(tabId);
           moved.window = nextWindow++;
+          if (width !== undefined && height !== undefined) sizes.set(moved.window, { width, height });
           return { id: moved.window, tabs: [row(moved)] };
         }
         const tab = { id: nextTab++, doc: new Doc(url ?? ""), window: nextWindow++ };
         tabs.set(tab.id, tab);
+        if (width !== undefined && height !== undefined) sizes.set(tab.window, { width, height });
         browser.tabs.onCreated.fire({ id: tab.id, windowId: tab.window });
         copyIn(tab, tab.doc);
         return { id: tab.window, tabs: [row(tab)] };
@@ -401,7 +403,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
         }
         return { id, ...sizes.get(id) };
       },
-      get: async (id: number) => ({ id, focused: id === focused }),
+      get: async (id: number) => ({ id, focused: id === focused, ...sizes.get(id) }),
       getAll: async () => (windowsStalled ? never() : [...new Set([...tabs.values()].map((t) => t.window ?? 1))].map((id) => ({ id, ...sizes.get(id) }))),
       getLastFocused: async () => {
         const held = focusRead;
