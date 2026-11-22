@@ -12,7 +12,7 @@
   "scripts": {
     "serve": "bun daemon/main.ts serve",
     "mcp": "bun daemon/mcp.ts",
-    "helpers": "swiftc -O scripts/pdfkit.swift -o scripts/pdfkit && swiftc -O scripts/input.swift -o scripts/input && swiftc -O scripts/pairing.swift -o scripts/pairing && swiftc -O scripts/spaces.swift -o scripts/spaces && swiftc -O scripts/bench.swift -o scripts/bench && swiftc -O scripts/attachments.swift -o scripts/attachments && swiftc -O scripts/window-watch.swift -o scripts/window-watch",
+    "helpers": "target=\"$(uname -m)-apple-macos26.0\"; swiftc -O -target \"$target\" scripts/pdfkit.swift -o scripts/pdfkit && swiftc -O -target \"$target\" scripts/input.swift -o scripts/input && swiftc -O -target \"$target\" scripts/pairing.swift -o scripts/pairing && swiftc -O -target \"$target\" scripts/spaces.swift -o scripts/spaces && swiftc -O -target \"$target\" scripts/bench.swift -o scripts/bench && swiftc -O -target \"$target\" scripts/attachments.swift -o scripts/attachments && swiftc -O -target \"$target\" scripts/window-watch.swift -o scripts/window-watch",
     "check": "bun scripts/check-live.ts",
     "check:research": "bun scripts/check-research.ts",
     "check:hidden": "bun scripts/check-hidden-windows.ts"

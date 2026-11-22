@@ -25,6 +25,7 @@ final class WindowWatch: NSObject, SCStreamOutput, SCStreamDelegate {
     let captureAgents = CommandLine.arguments.contains("--capture-agents")
     let background = CGColor(red: 0, green: 0, blue: 0, alpha: 0)
     var waitingForPixels = false
+    var safariPID: pid_t = 0
 
     func emit(_ value: [String: Any]) {
         let data = try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
@@ -32,10 +33,13 @@ final class WindowWatch: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func windows() -> [CGWindowID: CGRect] {
-        guard let safari = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").first else { return [:] }
         var result: [CGWindowID: CGRect] = [:]
-        for info in (CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]]) ?? [] {
-            guard (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == safari.processIdentifier,
+        guard let list = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] else {
+            emit(["error": "Native window listing did not answer"])
+            exit(1)
+        }
+        for info in list {
+            guard (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == safariPID,
                   (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
                   let id = info[kCGWindowNumber as String] as? NSNumber,
                   let bounds = info[kCGWindowBounds as String] as? NSDictionary,
@@ -86,7 +90,7 @@ final class WindowWatch: NSObject, SCStreamOutput, SCStreamDelegate {
             throw NSError(domain: "window-watch", code: 1, userInfo: [NSLocalizedDescriptionKey: "Screen Recording permission is required for composited-frame proof"])
         }
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-        guard let safari = content.applications.first(where: { $0.bundleIdentifier == "com.apple.Safari" }) else {
+        guard let safari = content.applications.first(where: { $0.processID == safariPID }) else {
             throw NSError(domain: "window-watch", code: 2, userInfo: [NSLocalizedDescriptionKey: "Safari is not running"])
         }
         let excluded = content.windows.filter { baseline[$0.windowID] != nil }
@@ -169,9 +173,13 @@ final class WindowWatch: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         agents = target
         physical = screens.filter { $0.0 != "Agents" }.map { $0.1 }
+        guard let safari = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").first else {
+            emit(["error": "Safari is not running"])
+            exit(1)
+        }
+        safariPID = safari.processIdentifier
         baseline = windows()
-        guard let safari = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").first,
-              AXObserverCreate(safari.processIdentifier, { observer, window, notification, _ in
+        guard AXObserverCreate(safariPID, { observer, window, notification, _ in
                   if notification as String == kAXWindowCreatedNotification {
                       AXObserverAddNotification(observer, window, kAXMovedNotification as CFString, nil)
                       AXObserverAddNotification(observer, window, kAXResizedNotification as CFString, nil)

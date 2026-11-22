@@ -556,6 +556,8 @@ REPL script's own calls see pages as they are.
 to that Mac's daemon, so the daemon still listens on 127.0.0.1 only. Tools
 that need Full Disk Access run on that Mac through its own CLI over ssh.
 
+The app and native helpers require macOS 26 or later.
+
 For a remotely driven Mac, create
 `~/.local/share/safari-harness/hidden-windows` to require the virtual
 `Agents` display before any new agent window opens. Safari receives the

@@ -21,6 +21,7 @@ async function next(): Promise<Record<string, unknown>> {
 const checkpoint = async (command: string) => {
   watcher.stdin.write(`${command}\n`);
   const reply = await next();
+  assert(!reply.error, JSON.stringify(reply));
   assert.equal(reply.checkpoint, command);
   if (negative) {
     assert(Array.isArray(reply.violations));
@@ -32,7 +33,7 @@ const checkpoint = async (command: string) => {
   return reply;
 };
 async function safari(key: string, ...args: string[]) {
-  const run = Bun.spawn([process.execPath, cli, "--owner", key, ...args, "--json"], { stdout: "pipe", stderr: "pipe" });
+  const run = Bun.spawn([process.execPath, cli, ...args, "--owner", key, "--json"], { stdout: "pipe", stderr: "pipe" });
   const [code, out, error] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()]);
   assert.equal(code, 0, `safari ${args.join(" ")}: ${error}\n${out}`);
   return out.trim() ? JSON.parse(out) as Record<string, unknown> : {};
