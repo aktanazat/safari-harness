@@ -399,15 +399,15 @@ ${identity}
 test.each(["command", "cwd", "exe"])("pruning keeps a seven-day-old release used by a live pinned client (%s)", async kind => {
   const pinned = release("seven-days-old");
   if (kind === "exe") {
-    copyFileSync("/bin/sleep", join(pinned, "client"));
+    copyFileSync("/bin/cat", join(pinned, "client"));
     const signed = Bun.spawnSync(["codesign", "--force", "--sign", "-", join(pinned, "client")]);
     expect(signed.exitCode).toBe(0);
   }
-  const client = Bun.spawn(kind === "exe" ? [join(pinned, "client"), "120"] : ["/bin/bash", "-c", 'while :; do sleep 1; done', kind === "command" ? join(pinned, "daemon/mcp.ts") : "client"], {
-    cwd: kind === "cwd" ? pinned : root, stdout: "ignore", stderr: "ignore",
+  const client = Bun.spawn(kind === "exe" ? [join(pinned, "client")] : ["/bin/bash", "-c", "read -r line", kind === "command" ? join(pinned, "daemon/mcp.ts") : "client"], {
+    cwd: kind === "cwd" ? pinned : root, stdin: "pipe", stdout: "ignore", stderr: "ignore",
   });
   try {
-    const result = pruneSandbox();
+    const result = pruneSandbox(`lsof() { command lsof -a -p ${client.pid} "$@"; }`);
     expect(client.exitCode).toBeNull();
     console.log(`${kind}: ${result.out.trim()}`);
     expect(result.code).toBe(0);
