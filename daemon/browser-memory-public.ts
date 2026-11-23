@@ -1,19 +1,28 @@
-import { Resolver } from "node:dns/promises";
-import { get } from "node:https";
-import { BlockList, isIP } from "node:net";
+import type { BlockList } from "node:net";
 
-const blocked = new BlockList();
-for (const [address, prefix] of [["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24], ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4]] as const) blocked.addSubnet(address, prefix, "ipv4");
-const globalV6 = new BlockList();
-globalV6.addSubnet("2000::", 3, "ipv6");
-blocked.addSubnet("2001::", 23, "ipv6");
-blocked.addSubnet("2001:db8::", 32, "ipv6");
-blocked.addSubnet("2002::", 16, "ipv6");
+// node:https, node:net, and node:dns load on the first check: every CLI
+// command, MCP server, and REPL session imports this file through
+// tools.ts, and the three cost 7 ms of each start (11-23).
+let lists: Promise<{ blocked: BlockList; globalV6: BlockList }> | undefined;
+function blockLists() {
+  return (lists ??= import("node:net").then(({ BlockList }) => {
+    const blocked = new BlockList();
+    for (const [address, prefix] of [["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24], ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4]] as const) blocked.addSubnet(address, prefix, "ipv4");
+    const globalV6 = new BlockList();
+    globalV6.addSubnet("2000::", 3, "ipv6");
+    blocked.addSubnet("2001::", 23, "ipv6");
+    blocked.addSubnet("2001:db8::", 32, "ipv6");
+    blocked.addSubnet("2002::", 16, "ipv6");
+    return { blocked, globalV6 };
+  }));
+}
 const entities: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
 
 export async function verifyPublicMemorySource(source: { url: string; title: string; body: string }, mask: (text: string) => string): Promise<boolean> {
   const url = URL.parse(source.url);
-  if (!url || url.protocol !== "https:" || url.username || url.password || url.port || url.search || isIP(url.hostname) || !url.hostname.includes(".") || /\.(?:local|localhost|internal|lan|home)$/.test(url.hostname) || source.body.length > 24000) return false;
+  if (!url || url.protocol !== "https:" || url.username || url.password || url.port || url.search || !url.hostname.includes(".") || /\.(?:local|localhost|internal|lan|home)$/.test(url.hostname) || source.body.length > 24000) return false;
+  const [{ isIP }, { blocked, globalV6 }, { Resolver }, { get }] = await Promise.all([import("node:net"), blockLists(), import("node:dns/promises"), import("node:https")]);
+  if (isIP(url.hostname)) return false;
   try {
     const until = Date.now() + 5000;
     const resolver = new Resolver({ timeout: 2000, tries: 1 });

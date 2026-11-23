@@ -31,7 +31,7 @@ import { note } from "./journal.ts";
 import { alive, currentOwner, watchOwner } from "./owner.ts";
 import { rexTabOf, rexTitle, showRexTab, type RexTab } from "./rex.ts";
 import { closeManagedWindow, inspectUntrackedWindows, managedWindows, spaceById, spaceEnded, type ManagedWindow } from "./spaces.ts";
-import { closeTabsOf, codeFrom, consoleRead, netRead, recentlyClosedTabs, recentTabs, resolveTab, restoreClosedTab, screenshot, tabsOpenedBy, tabsOwnedBy, TOOLS, type RecentTab, type TabInfo } from "./tools.ts";
+import { closeTabsOf, codeFrom, consoleRead, netRead, recentlyClosedTabs, recentTabs, resolveTab, restoreClosedTab, screenshot, tabsOpenedBy, tabsOwnedBy, tabUrl, TOOLS, type RecentTab, type TabInfo } from "./tools.ts";
 import { localRequest } from "./requests.ts";
 import { unsecret } from "./redact.ts";
 import { SAVED_CHARS } from "./save.ts";
@@ -636,7 +636,7 @@ const SITE_WIDE: Record<string, true> = { fetch: true, eval: true };
 async function siteOf(tool: string, args: Record<string, unknown>, tab: number | undefined): Promise<string | undefined> {
   if (tool === "fetch" && typeof args.url === "string" && URL.canParse(args.url)) return new URL(args.url).origin;
   if (tab === undefined) return undefined;
-  const url = (await recentTabs(2000).catch((): TabInfo[] => [])).find((t) => t.id === tab)?.url;
+  const url = await tabUrl(tab);
   return url && URL.canParse(url) ? new URL(url).origin : undefined;
 }
 

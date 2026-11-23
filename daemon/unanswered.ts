@@ -10,9 +10,11 @@
 // 0.0.0.0 for chat.z.ai (01a10612), and in late September three opens went
 // to hosts no DNS server knows.
 
-import { isIP } from "node:net";
-import { promises as dns } from "node:dns";
 import { redactUrl } from "./redact.ts";
+
+// node:dns and node:net load on the first failed request they explain:
+// every process that imports tools.ts imports this file, and the two cost
+// 2 ms of each start (11-23).
 
 // eval's own fetch names the latest request that got no answer, and how
 // many more did ("Load failed for <url> and 2 more"; eval in content.js).
@@ -26,6 +28,7 @@ const NET = "net shows the addresses the page itself calls";
 // undefined when it could not say.
 export type HostAnswer = "found" | "blocked" | "missing";
 export async function hostAnswer(host: string): Promise<HostAnswer | undefined> {
+  const { promises: dns } = await import("node:dns");
   try {
     const found = await dns.lookup(host, { all: true });
     return found.every((a) => a.address === "0.0.0.0" || a.address === "::") ? "blocked" : "found";
@@ -74,7 +77,7 @@ export async function unopened(e: unknown): Promise<unknown> {
   const url = e instanceof Error ? UNOPENED.exec(e.message)?.[1] : undefined;
   const parsed = url === undefined ? null : URL.parse(url);
   const host = parsed?.hostname;
-  if (!parsed || !host || isIP(host)) return e;
+  if (!parsed || !host || (await import("node:net")).isIP(host)) return e;
   if (host === "localhost") {
     const at = await loopback(parsed);
     return at ? new Error(`Safari could not open ${url}, though a server listens there: something on this Mac refused the name localhost. Open ${at} instead; a page that sends the tab back to localhost fails the same way, so goto its address with ${new URL(at).host} in place of ${parsed.host}`) : e;
