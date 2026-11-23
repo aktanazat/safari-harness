@@ -4,6 +4,7 @@ import { takesMarks } from "../daemon/fresh.ts";
 import { connectionRefused, daemonBack, daemonHttp, type Missed } from "../daemon/rpc.ts";
 import { setSessionTask } from "../daemon/session-task.ts";
 import { cancelLeftSheets } from "../daemon/sheets.ts";
+import { weeklySweep } from "../daemon/storage-sweep.ts";
 import { newRun, unanswered, webResult, type Block, type ToolResult } from "./walls.ts";
 
 type AgentEnd = { willContinue?: boolean };
@@ -122,6 +123,15 @@ export default function safariTurnEnd(pi: ExtensionApi) {
     clearTimeout(releasing.get(session ?? ""));
     releasing.delete(session ?? "");
     if (session !== undefined) newRun(session);
+    // Agents' LocalStorage slows every navigation to a site with no cookies
+    // (daemon/storage-sweep.ts); a lead's run starting sweeps it weekly.
+    setTimeout(() => {
+      try {
+        weeklySweep();
+      } catch (e: unknown) {
+        pi.logger?.warn(`safari-harness: agents' website data not swept: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }, 0).unref();
   });
 }
 

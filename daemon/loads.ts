@@ -17,6 +17,10 @@ export type Load = { from: number; to: number; urls: string[] };
 // Agents loaded at least 1,877 pages on 09-28 (example.com and the daemon's
 // pages alone), so the file keeps several days of loads, in 2 MB or so.
 const MAX = 10_000;
+// The storage sweep (storage-sweep.ts) tells an agent's site from his by
+// these loads, and takes an origin left a week: two weeks of them cover it
+// between weekly sweeps.
+const KEEP_MS = 14 * 86_400_000;
 
 let file: string | undefined;
 let appended = 0;
@@ -37,18 +41,27 @@ export function addressKey(url: string): string {
   return redactUrl(u?.href ?? url);
 }
 
-// The file holds the latest MAX loads and fewer than MAX more: it starts
-// over from the latest MAX when a daemon opens it and after every MAX
-// appends, as the journal does. The new file takes the old one's place in
-// one rename, so browsing_history, reading it from another process, never
-// finds it half written.
+// The file holds the latest MAX loads and every load of the last KEEP_MS,
+// and fewer than MAX more: it starts over from those when a daemon opens it
+// and after every MAX appends, as the journal does. The new file takes the
+// old one's place in one rename, so browsing_history, reading it from
+// another process, never finds it half written.
 function rewrite(path: string) {
   let lines: string[] = [];
   try {
-    lines = readFileSync(path, "utf8").split("\n").filter(Boolean).slice(-MAX);
+    lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
   } catch {
     // no loads yet
   }
+  const since = Date.now() - KEEP_MS;
+  const recent = lines.findIndex((line) => {
+    try {
+      return (JSON.parse(line) as Load).to >= since;
+    } catch {
+      return false;
+    }
+  });
+  lines = lines.slice(Math.min(recent < 0 ? lines.length : recent, Math.max(0, lines.length - MAX)));
   writeFileSync(`${path}.new`, lines.map((line) => `${line}\n`).join(""), { mode: 0o600 });
   renameSync(`${path}.new`, path);
   appended = 0;
