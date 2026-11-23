@@ -153,7 +153,7 @@ function droppedMessage(why: DropCause, code: number | undefined, reason: string
 // counts by its page op. A full-page shot scrolls the page and a file may
 // be one to fetch once, so neither goes again, nor does any action. From
 // 10-28 to 10-29 each drop failed 4.6 requests on average (StormRootCause).
-const REPEATABLE: Record<string, true> = { "tabs.list": true, probe: true, pageData: true, cookies: true, "cookies.count": true, "windows.resolve": true };
+const REPEATABLE: Record<string, true> = { "tabs.list": true, "tabs.url": true, probe: true, pageData: true, cookies: true, "cookies.count": true, "windows.resolve": true };
 const PAGE_READS: Record<string, true> = { snapshot: true, extract: true, tabInfo: true, locate: true, element: true, painted: true, data: true, lookalikes: true, netBody: true };
 
 // How many requests of each kind a drop failed (a relay by its page op).
