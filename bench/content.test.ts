@@ -1422,6 +1422,28 @@ benchRows("content.js in WebKit", [
     }],
   },
   {
+    name: "a card's rating drawn only by its class names reads as a field, and two values, digits run together, another scale, a lone star glyph, a row of star glyphs, and a hidden rating read nothing",
+    page: "ratings.html",
+    steps: [{
+      op: "extract",
+      args: [{ as: "table", hints: true }],
+      answer: {
+        value: {
+          truncated: false,
+          tables: [
+            { kind: "cards", headers: ["h3.title", "p.star-rating", "p.price"], hints: ["", "rating", ""], rows: [["A Light in the Attic", "3", "£51.77"], ["Tipping the Velvet", "1", "£53.74"], ["Soumission", "5", "£50.10"]] },
+            { kind: "cards", headers: ["h3.name", "span.meta", "span.cost"], hints: ["", "rating", ""], rows: [["Kettle", "4", "$29.99"], ["Toaster", "4.5", "$31.50"], ["Blender", "0", "$27.25"]] },
+            { kind: "cards", headers: ["h3.name", "span.cost"], rows: [["Two values", "$1.00"], ["Run together", "$2.00"], ["Out of ten", "$3.00"], ["A word", "$4.00"], ["A sign", "$4.10"], ["Four and a half word", "$4.20"], ["Four and a half class", "$4.30"], ["Four and rating-half", "$4.40"], ["Four named and half", "$4.50"], ["A number on an icon", "$4.60"]] },
+            { kind: "cards", headers: ["h3.name", "span.cost"], rows: [["Row of stars", "$5.00"], ["One icon", "$6.00"], ["Labelled stars", "$5.50"], ["Wrapped stars", "$5.60"], ["Listed stars", "$5.70"], ["Hidden", "$7.00"]] },
+            { kind: "cards", headers: ["h3.name", "span.rating > span.score", "span.cost"], rows: [["Said in text", "4.6 out of 5", "$8.00"], ["Said again", "4.2 out of 5", "$9.00"], ["Said once more", "3.4 out of 5", "$10.00"]] },
+            { kind: "cards", headers: ["h3.name", "span.meta", "span.rating-count", "span.cost"], hints: ["", "rating", "", ""], rows: [["Counted", "4", "(12)", "$11.00"], ["Counted again", "2", "(3)", "$12.00"], ["Counted once more", "5", "", "$13.00"]] },
+            { kind: "cards", headers: ["h3.name", "span.cost"], rows: [["Shadow stars", "$5.80"], ["Shadow stars again", "$5.85"], ["Shadow stars once more", "$5.90"]] },
+          ],
+        },
+      },
+    }],
+  },
+  {
     name: "a scroll the window cannot take scrolls the box under the middle of the window, and says what moved",
     page: "inner-scroll.html",
     steps: [{ op: "scroll", args: [0, 300], answer: { value: { ok: true, moved: "box", scrollY: 300, maxY: 2200 } } }],
