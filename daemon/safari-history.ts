@@ -73,28 +73,49 @@ function agentVisits(visits: Visit[], loads: Load[]): number[] {
   return [...agents];
 }
 
-function query(path: string, since: number, texts: string[], loads: Load[]): Found[] {
+function opened<T>(path: string, read: (db: Database) => T): T {
   const db = new Database(path, { readonly: true });
   try {
-    const agents = agentVisits(db.query(VISITS).all(since) as Visit[], loads);
-    return db.query(SEARCH).all(since, JSON.stringify(texts), JSON.stringify(agents)) as Found[];
+    return read(db);
   } finally {
     db.close();
   }
 }
 
-// Reads a private copy of the database and its WAL, for when Safari holds a
-// lock that blocks even readers. The copy goes to the Trash afterwards.
-function queryCopy(path: string, since: number, texts: string[], loads: Load[]): Found[] {
-  const dir = mkdtempSync(join("/private/var/tmp", "safari-history-"));
+// Reads the database, or a private copy of it and its WAL when Safari holds
+// a lock that blocks even readers; the copy goes to the Trash afterwards.
+function readHistory<T>(path: string, read: (db: Database) => T): T {
   try {
-    for (const suffix of ["", "-wal", "-shm"]) {
-      if (existsSync(path + suffix)) copyFileSync(path + suffix, join(dir, "History.db" + suffix));
+    try {
+      return opened(path, read);
+    } catch (e) {
+      if (!/locked|busy/i.test(e instanceof Error ? e.message : String(e))) throw e;
+      const dir = mkdtempSync(join("/private/var/tmp", "safari-history-"));
+      try {
+        for (const suffix of ["", "-wal", "-shm"]) {
+          if (existsSync(path + suffix)) copyFileSync(path + suffix, join(dir, "History.db" + suffix));
+        }
+        return opened(join(dir, "History.db"), read);
+      } finally {
+        renameSync(dir, join(HOME, ".Trash", dir.split("/").pop() ?? "safari-history"));
+      }
     }
-    return query(join(dir, "History.db"), since, texts, loads);
-  } finally {
-    renameSync(dir, join(HOME, ".Trash", dir.split("/").pop() ?? "safari-history"));
+  } catch (e) {
+    throw new Error(`cannot read Safari history (${String(e instanceof Error ? e.message : e)}); the app running this needs Full Disk Access in System Settings > Privacy & Security`);
   }
+}
+
+// The hosts the user visited himself, in all the history Safari keeps: an
+// agent's visit older than the loads the daemon keeps (loads.ts) counts as
+// his, so a site agents and he both used is always his.
+export function userHosts(files = { history: HISTORY_DB, loads: loadsFile(new URL(daemonHttp()).port) }): Set<string> {
+  const loads = readLoads(files.loads, 0);
+  const visits = readHistory(files.history, (db) => db.query(VISITS).all(-Infinity) as Visit[]);
+  const agents = new Set(agentVisits(visits, loads));
+  return new Set(visits.flatMap((v) => {
+    const host = agents.has(v.id) ? undefined : URL.parse(v.url)?.hostname;
+    return host ? [host.toLowerCase()] : [];
+  }));
 }
 
 // files: Safari's history, and the loads the daemon noted (loads.ts); a
@@ -108,17 +129,10 @@ export function browsingHistory(opts: { text?: string; any?: string[]; days?: nu
   const sinceMs = Date.now() - days * 86_400_000;
   const since = sinceMs / 1000 - APPLE_EPOCH_S;
   const loads = readLoads(files.loads, sinceMs - SLACK_MS);
-  let found: Found[];
-  try {
-    try {
-      found = query(files.history, since, texts, loads);
-    } catch (e) {
-      if (!/locked|busy/i.test(e instanceof Error ? e.message : String(e))) throw e;
-      found = queryCopy(files.history, since, texts, loads);
-    }
-  } catch (e) {
-    throw new Error(`cannot read Safari history (${String(e instanceof Error ? e.message : e)}); the app running this needs Full Disk Access in System Settings > Privacy & Security`);
-  }
+  const found = readHistory(files.history, (db) => {
+    const agents = agentVisits(db.query(VISITS).all(since) as Visit[], loads);
+    return db.query(SEARCH).all(since, JSON.stringify(texts), JSON.stringify(agents)) as Found[];
+  });
   const his = found.filter((r): r is Found & { last: number } => r.last !== null);
   const row = (r: Found & { last: number }) => ({
     title: r.title ?? "",
