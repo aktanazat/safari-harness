@@ -567,6 +567,10 @@ Named leases still keep the job's tabs across separate commands.
 Explicit `activate`, `handoff` and `real_input` still show a page when the
 user needs to act.
 
+Global mouse clicks, moves and drags refuse coordinates on `Agents` before
+posting input. Background control actions and keyboard input do not use
+that pointer path.
+
 ### Routines
 
 ```

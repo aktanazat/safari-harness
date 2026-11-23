@@ -99,6 +99,12 @@ func requireOnScreen(_ p: CGPoint) {
     var count: UInt32 = 0
     CGGetDisplaysWithPoint(p, 0, nil, &count)
     if count == 0 { fail("\(p.x),\(p.y) is not on any screen") }
+    for screen in NSScreen.screens where screen.localizedName == "Agents" {
+        if let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value,
+           CGDisplayBounds(id).contains(p) {
+            fail("Agents is hidden from the mouse; use a page control or show the page on a visible screen")
+        }
+    }
 }
 
 // ---------- mouse ----------
