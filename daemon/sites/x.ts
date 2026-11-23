@@ -50,10 +50,14 @@ const featureConfig = () => {
 };
 const findOp = async (name, hint) => {
   let op = opIn(await text(mainUrl), name);
+  const refused = [];
   if (!op) {
     const ids = Object.keys(names).filter((id) => names[id].includes(hint)).sort((a, b) => names[a].length - names[b].length);
-    for (const t of await Promise.all(ids.map((id) => text(chunkUrl(id))))) { op = opIn(t, name); if (op) break; }
+    // Content blockers in Safari refuse some chunks by name (loader.HomeTimelineAdblockNotice); one refusal must not hide the chunk that defines the op.
+    const fetched = await Promise.all(ids.map((id) => text(chunkUrl(id)).catch(() => { refused.push(names[id]); return ""; })));
+    for (const t of fetched) { op = opIn(t, name); if (op) break; }
   }
+  if (!op && refused.length) throw new Error("x.com's " + name + " operation was not in the bundles Safari loaded; it refused " + refused.join(", "));
   if (!op) return null;
   const cfg = featureConfig();
   return { queryId: op.queryId, features: Object.fromEntries(op.switches.map((f) => [f, f in cfg && cfg[f].value === true])), toggles: Object.fromEntries(op.toggles.map((f) => [f, false])) };
