@@ -3,8 +3,13 @@ import { constants } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, open, realpath, rename, rmdir, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { crc32, inflateSync } from "node:zlib";
+import type * as Zlib from "node:zlib";
 import { redacted, redactUrl } from "./redact.ts";
+
+// node:zlib loads with the first PNG decoded: every process that imports
+// tools.ts imports this file, and zlib costs 2 ms of each start (11-23).
+type PngCodec = Pick<typeof Zlib, "crc32" | "inflateSync">;
+const zlib = (): Promise<PngCodec> => import("node:zlib");
 
 export type Region = { x: number; y: number; width: number; height: number };
 export type CaptureSource = {
@@ -149,7 +154,7 @@ function paeth(a: number, b: number, c: number): number {
   const da = Math.abs(p - a), db = Math.abs(p - b), dc = Math.abs(p - c);
   return da <= db && da <= dc ? a : db <= dc ? b : c;
 }
-function png(bytes: Buffer): Png {
+function png(bytes: Buffer, { crc32, inflateSync }: PngCodec): Png {
   if (bytes.length > MAX_BYTES || bytes.length < 45 || !bytes.subarray(0, 8).equals(SIGNATURE)) throw new Error("capture is not a valid PNG");
   let width = 0, height = 0, depth = 0, color = -1, channels = 0;
   let palette: Buffer | undefined, transparency: Buffer | undefined;
@@ -358,13 +363,14 @@ async function latestReceipt(output: string): Promise<string | undefined> {
   } catch (error) { if (missing(error)) return undefined; throw error; }
 }
 
-function prepareCapture(capture: Capture): PreparedCapture {
+async function prepareCapture(capture: Capture): Promise<PreparedCapture> {
   const raw = object(capture, "capture");
   if (raw.source === undefined) throw new Error("capture has no protected source metadata; reload the Safari Harness extension before taking another screenshot");
   let source: CaptureSource;
   try { source = sourceOf(raw.source); }
   catch (error) { throw new Error(`capture source metadata is invalid; reload the Safari Harness extension: ${error instanceof Error ? error.message : String(error)}`); }
-  const bytes = decode(raw.data), image = png(bytes);
+  const z = await zlib();
+  const bytes = decode(raw.data), image = png(bytes, z);
   if (image.width !== source.width || image.height !== source.height) throw new Error("PNG dimensions do not match the capture source");
   const screens = raw.screens === undefined ? undefined : integer(raw.screens, "screens", 1);
   if (raw.cut !== undefined && typeof raw.cut !== "boolean") throw new Error("cut must be a boolean");
@@ -376,7 +382,7 @@ function prepareCapture(capture: Capture): PreparedCapture {
     tileCoverage(regions, image.width, image.height);
     for (let i = 0; i < raw.tiles.length; i++) {
       const tileBytes = decode(object(raw.tiles[i], "tile").data);
-      tileMatches(image, png(tileBytes), regions[i]);
+      tileMatches(image, png(tileBytes, z), regions[i]);
       tiles.push({ bytes: tileBytes, sha256: digest(tileBytes), region: regions[i] });
     }
   }
@@ -431,7 +437,7 @@ async function savePreparedCapture(capture: PreparedCapture, out?: string): Prom
 
 export async function saveCapture(capture: Capture, out?: string): Promise<CaptureResult> {
   if (out !== undefined) absolute(out, "out");
-  return savePreparedCapture(prepareCapture(capture), out);
+  return savePreparedCapture(await prepareCapture(capture), out);
 }
 
 function boundedText(value: unknown, name: string, maximum: number): string {
@@ -493,7 +499,7 @@ export class ConditionalCaptures {
     const tab = integer(scope.tab, "capture tab");
     const caller = typeof scope.caller === "number" ? integer(scope.caller, "capture caller", 1) : boundedText(scope.caller, "capture caller", 256);
     const settings = captureSettings(scope.settings);
-    const prepared = prepareCapture(capture);
+    const prepared = await prepareCapture(capture);
     if (capture.document === undefined && !ifChanged) {
       const result = await savePreparedCapture(prepared, out);
       if (generation === this.generation) {
@@ -606,7 +612,8 @@ export async function verifyEvidence(receiptPath: string): Promise<VerifiedEvide
   const cut = raw.cut;
   const imageBytes = await readRegular(path);
   if (digest(imageBytes) !== sha256) throw new Error("evidence image SHA256 does not match its receipt");
-  const image = png(imageBytes);
+  const z = await zlib();
+  const image = png(imageBytes, z);
   if (image.width !== source.width || image.height !== source.height) throw new Error("evidence PNG dimensions do not match its receipt");
   const tiles: TileReceipt[] = [];
   if (raw.tiles !== undefined) {
@@ -619,7 +626,7 @@ export async function verifyEvidence(receiptPath: string): Promise<VerifiedEvide
       if (tilePath !== join(bundle, `tile-${i + 1}-${tileHash}.png`)) throw new Error("evidence tile path is outside its generated capture bundle");
       const tileBytes = await readRegular(tilePath);
       if (digest(tileBytes) !== tileHash) throw new Error("evidence tile SHA256 does not match its receipt");
-      tileMatches(image, png(tileBytes), regions[i]);
+      tileMatches(image, png(tileBytes, z), regions[i]);
       tiles.push({ path: tilePath, sha256: tileHash, region: regions[i] });
     }
   }

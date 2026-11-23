@@ -34,7 +34,6 @@ import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { createInterface } from "node:readline";
 import { alive } from "./owner.ts";
 
 export type Answer = Record<string, unknown> & { ok: boolean; error?: string; closed?: boolean };
@@ -87,7 +86,15 @@ export function startHelper(path = HELPER): { helper: Helper; stop: () => void }
   child.on("error", (e) => fail("code" in e && e.code === "ENOENT" ? "the tab group helper is not built (bun run helpers)" : e.message));
   child.on("exit", (code) => fail(`the tab group helper exited with ${code}`));
   child.stdin.on("error", (e) => fail(e.message));
-  createInterface({ input: child.stdout }).on("line", (line) => waiting.shift()?.(JSON.parse(line) as Answer));
+  // one line per answer, split here: node:readline cost 1 ms of every
+  // process start that imports this file (11-23)
+  let rest = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    const lines = (rest + chunk).split("\n");
+    rest = lines.pop() ?? "";
+    for (const line of lines) waiting.shift()?.(JSON.parse(line) as Answer);
+  });
   const helper: Helper = (op, args = {}) => {
     if (failed) return Promise.resolve({ ok: false, error: failed });
     const { promise, resolve } = Promise.withResolvers<Answer>();
