@@ -1,12 +1,12 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bridge } from "./bridge.ts";
 import { openLoads, readLoads } from "./loads.ts";
 import { daemonHttp } from "./rpc.ts";
-import { browsingHistory } from "./safari-history.ts";
+import { browsingHistory, userHosts } from "./safari-history.ts";
 import { formatResult } from "./tools.ts";
 
 // History.db counts time in seconds since 2001-01-01 UTC.
@@ -85,4 +85,35 @@ test("any finds the visits holding any of several texts, each with the one it ho
     noMatch: ["phenibut"],
     agentVisitsLeftOut: 0,
   });
+});
+
+// The storage sweep (storage-sweep.ts) deletes the LocalStorage of sites
+// only agents visited, so a site he visited even once must count as his.
+test("the user's hosts are those of his own visits; a host only agents' loads went through is not one", () => {
+  const dir = mkdtempSync(join(tmpdir(), "safari-history-"));
+  const at = Date.now() - 3_600_000;
+  const db = historyWith(dir, [
+    { url: "https://research.example/a", at },
+    { url: "https://Mail.His.example/inbox", at: at + 60_000 },
+    { url: "https://both.example/", at: at + 120_000 },
+    { url: "https://both.example/", at: at + 30 * 60_000 },
+  ]);
+  const loads = join(dir, "loads.jsonl");
+  writeFileSync(loads, [`https://research.example/a`, `https://both.example/`].map((url, i) => JSON.stringify({ from: at + i * 120_000, to: at + i * 120_000, urls: [url] })).join("\n") + "\n");
+  expect([...userHosts({ history: db, loads })].sort()).toEqual(["both.example", "mail.his.example"]);
+});
+
+// The sweep takes an origin left a week and runs weekly: its loads must
+// reach back two weeks even when agents load more than MAX pages in them.
+test("the loads file keeps every load of the last 14 days past the latest 10,000, and drops older ones", () => {
+  const dir = mkdtempSync(join(tmpdir(), "safari-history-"));
+  const loads = join(dir, "loads.jsonl");
+  const day = 86_400_000;
+  const line = (at: number, i: number) => JSON.stringify({ from: at, to: at, urls: [`https://site${i}.example/`] });
+  const old = Array.from({ length: 1_000 }, (_, i) => line(Date.now() - 20 * day, i));
+  const recent = Array.from({ length: 11_000 }, (_, i) => line(Date.now() - 13 * day + i, i));
+  writeFileSync(loads, [...old, ...recent].join("\n") + "\n");
+  openLoads(loads);
+  const kept = readLoads(loads, 0);
+  expect([kept.length, kept[0].urls[0]]).toEqual([11_000, "https://site0.example/"]);
 });

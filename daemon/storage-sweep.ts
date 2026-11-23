@@ -6,7 +6,7 @@
 // request went out, and 54-85 ms once they were gone (11-23). Runs in the
 // caller, which can read Safari's History.db and container.
 
-import { readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { userHosts } from "./safari-history.ts";
@@ -14,9 +14,12 @@ import { userHosts } from "./safari-history.ts";
 const DATA = join(homedir(), "Library/Containers/com.apple.Safari/Data/Library/WebKit/WebsiteData/Default");
 const STAMP = join(homedir(), ".local/share/safari-harness/storage-sweep");
 const WEEK_MS = 7 * 86_400_000;
-// An origin written this recently may have a page open, whose files WebKit
-// holds; one left a day is closed.
-const IDLE_MS = 86_400_000;
+// An origin used this recently may still have a page open, whose files
+// WebKit holds, or be a site he signed in to in an agent's tab (a
+// handoff), whose loads count as the agent's. The loads the daemon keeps
+// (loads.ts) reach back twice this, so a weekly sweep sees every origin
+// left this long.
+const IDLE_MS = WEEK_MS;
 
 // The host of an origin folder's top origin. WebKit writes a ClientOrigin
 // as the top origin, then the client origin, each a protocol and a host as
@@ -66,16 +69,24 @@ export function sweepAgentStorage(opts: { dryRun?: boolean; now?: number; data?:
       const storage = join(dir, "LocalStorage");
       const only = folder.isDirectory() && readdirSync(dir).sort().join() === "LocalStorage,origin";
       const host = only ? topHost(readFileSync(join(dir, "origin"))) : undefined;
-      const written = host === undefined ? now : Math.max(statSync(storage).mtimeMs, ...readdirSync(storage).map((f) => statSync(join(storage, f)).mtimeMs));
+      // WebKit touches the origin file as a page opens the origin's storage.
+      const written = host === undefined ? now : Math.max(statSync(join(dir, "origin")).mtimeMs, statSync(storage).mtimeMs, ...readdirSync(storage).map((f) => statSync(join(storage, f)).mtimeMs));
       if (host === undefined || sites.has(siteOf(host)) || now - written < IDLE_MS) {
         result.kept++;
         continue;
       }
-      if (!opts.dryRun) rmSync(dir, { recursive: true });
+      if (!opts.dryRun) rmSync(dir, { recursive: true, force: true });
       result.removed++;
       left--;
     }
-    if (left === 0 && !opts.dryRun) rmSync(join(data, bucket), { recursive: true });
+    // A folder WebKit made in the bucket since it was listed stays.
+    if (left === 0 && !opts.dryRun) {
+      try {
+        rmdirSync(join(data, bucket));
+      } catch (e) {
+        if (!(e instanceof Error && "code" in e && e.code === "ENOTEMPTY")) throw e;
+      }
+    }
   }
   return result;
 }
