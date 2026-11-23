@@ -37,7 +37,7 @@ import { lastRaised } from "./front.ts";
 import { groupsOff, keeperRunning, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
 import { alive, currentOwner, currentTask, inTurn, matchesTask, runAs, taskFamily, watchOwner } from "./owner.ts";
-import { agentWindows, toAgentScreen, toUserScreen } from "./place.ts";
+import { agentWindows, onAgents, toAgentScreen, toUserScreen } from "./place.ts";
 import { closeTab, endUntrackedTurns, finishedTab, heldTab, linkDropped, stillFinding, windowPageClosed, type TabInfo } from "./tools.ts";
 
 type Size = { width: number; height: number };
@@ -833,10 +833,26 @@ async function homeWindows(tabs: TabInfo[]) {
     const agentWindowIds = new Set(registered.map((s) => s.window));
     const now = Date.now();
     for (const [windowId, inWindow] of byWindow) {
-      if (windowId === undefined || agentWindowIds.has(windowId) || offAgents.has(windowId) || !holdsUsers(inWindow)) continue;
+      if (windowId === undefined || agentWindowIds.has(windowId) || offAgents.has(windowId)) continue;
+      // Safari's blank tab or Start Page only, what a window keeps once its
+      // pages are gone: nine such windows sat on the agents' display for up
+      // to two days (11-23).
+      const blank = inWindow.every((t) => !t.url || t.url === "about:blank" || t.url.startsWith("favorites:"));
+      if (!blank && !holdsUsers(inWindow)) continue;
       const seen = strayAt.get(windowId) ?? now;
       strayAt.set(windowId, seen);
       if (now - seen < STRAY_MS) continue;
+      if (blank) {
+        offAgents.add(windowId);
+        if (making.size > 0 || !(await onAgents(inWindow[0].id))) continue;
+        try {
+          for (const t of inWindow) await bridge.request("tabs.close", [t.id], 10000, quiet);
+          note("an empty window on the agents' display closed", { tabs: inWindow.length });
+        } catch (e) {
+          note("an empty window on the agents' display not closed", { error: e instanceof Error ? e.message : String(e) });
+        }
+        continue;
+      }
       if (await toUserScreen(inWindow[0].id)) note("a window of the user's moved off the agents' display", { tabs: inWindow.length });
       else offAgents.add(windowId);
     }
