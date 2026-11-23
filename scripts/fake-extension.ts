@@ -47,6 +47,7 @@ ws.addEventListener("message", (ev) => {
     return reply(t);
   }
   if (msg.op === "tabs.activate") return reply({ ok: true });
+  if (msg.op === "tabs.url") { const t = tabs.get(Number(args[0])); return t ? reply(t.url) : reply(undefined, "no tab"); }
   if (msg.op === "windows.focus") return reply({ ok: true });
   if (msg.op === "cookies") return reply([{ name: "fake", value: "1", domain: ".example.com", path: "/", secure: true, httpOnly: false }]);
   if (msg.op === "relay") {
