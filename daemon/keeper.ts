@@ -163,7 +163,10 @@ function hold(s: SpaceState, given: Given, log: Log, why: string, scratches?: nu
 async function deleteFrom(h: Helper, daemon: Daemon, s: SpaceState, window: number | Outcome, scratch: boolean, pages: boolean, given: Given, log: Log, finished?: () => Promise<number | undefined>): Promise<boolean> {
   const { name } = s;
   const outcome = typeof window === "number" ? await step(h, daemon, `deleting ${name}${pages ? " with its pages" : ""}`, log, () => deleteGroup(h, window, name, pages, finished)) : window;
-  if (typeof window === "number" && (outcome.done || scratch)) await h("close", { window });
+  if (typeof window === "number" && (outcome.done || scratch)) {
+    const closed = await h("close", { window });
+    if (!closed.ok) log(`closing ${name}'s window after its delete failed: ${closed.error}`);
+  }
   const had = given.get(name);
   if (outcome.pages) {
     hold(s, given, log, outcome.why, had?.scratches);
