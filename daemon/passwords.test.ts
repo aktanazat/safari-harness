@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, expect, jest, mock, setSystemTime, spy
 import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { dlopen, FFIType } from "bun:ffi";
 import { bridge } from "./bridge.ts";
@@ -801,9 +802,13 @@ test("Apple Passwords turning off or asking to sign in again ends the pairing, a
   }
 });
 
+// A real Helium needs the login keychain under HOME; under a scratch HOME it
+// pops "keychain not found" on the user's screen (11-24).
+const realHelium = existsSync(HELIUM) && existsSync(join(homedir(), "Library", "Keychains", "login.keychain-db"));
+
 // Helium's defaults ran 8 processes (about 320 MB) for the hidden bridge.
 // The bridge dials in once Helium is up, and the count holds from then on.
-test.skipIf(!existsSync(HELIUM))("the hidden Helium runs in at most 4 processes", async () => {
+test.skipIf(!realHelium)("the hidden Helium runs in at most 4 processes", async () => {
   const profile = mkdtempSync("/private/var/tmp/passwords-helium-");
   profiles.push(profile);
   const dialed = Promise.withResolvers<void>();
@@ -829,7 +834,7 @@ test.skipIf(!existsSync(HELIUM))("the hidden Helium runs in at most 4 processes"
 // waited out the link and failed. A new Helium must run this release's
 // bridge, whatever an earlier one left in its profile. The old copy never
 // says hello, so the test's own timeout is the failure.
-test.skipIf(!existsSync(HELIUM))("a new Helium runs this release's bridge, not the one its profile ran before", async () => {
+test.skipIf(!realHelium)("a new Helium runs this release's bridge, not the one its profile ran before", async () => {
   const profile = mkdtempSync("/private/var/tmp/passwords-helium-");
   profiles.push(profile);
   const dialed = Promise.withResolvers<void>();
