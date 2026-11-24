@@ -83,15 +83,17 @@ Safari is the user's everyday browser, so treat his tabs as his.
   the user's windows or tab groups. The main task and its direct parallel
   helpers share that window, even when they use different group names.
   Each helper still owns its own tabs; finishing one does not close the
-  others. It opens behind the user's window without taking focus. On a
-  Mac with a display named "Agents" (the virtual one `agent-display start
-  --name Agents --width 2560 --height 1440` makes), the window moves there,
-  off his screen. `handoff` and `activate` (and `real_input`, which uses
-  it) bring it onto his main display; it goes back once the handoff ends,
-  or for `activate` at the end of the turn that called it, while nothing
-  else still shows it there. A window off that display for another reason
-  (opened while it was down) goes there within a minute of the display
-  being back; one he moved off it himself stays where he put it. A page
+  others. On a Mac with a display named "Agents" (the virtual one
+  `agent-display start --name Agents --width 2560 --height 1440` makes),
+  Safari receives the position when it creates the window, rather than
+  showing it elsewhere and moving it afterward.
+  Create `~/.local/share/safari-harness/hidden-windows` on a remotely driven
+  Mac to require that display: if it is missing or cannot be read, a new
+  window is refused. Without that file, Macs without an Agents display
+  retain Safari's normal background-window behavior.
+  `handoff` and `activate` (and `real_input`, which uses it) intentionally
+  bring a window onto the user's display; it goes back when the showing
+  ends. A window the user moves off Agents stays where they put it. A page
   you `keep` leaves your window for his when your turn ends.
   For calls without a task identity, each `group` gets its own window and
   ungrouped tabs share one. The window opens on a page titled with its first

@@ -122,6 +122,7 @@ function logs(what: string): Promise<void> {
 
 await logs("extension+cdp ws");
 const extension = new WebSocket(`ws://127.0.0.1:${wsPort}/`, { headers: { origin: "safari-web-extension://stand-in" } });
+extension.onopen = () => extension.send(JSON.stringify({ op: "hello", role: "extension", windowPlacement: true }));
 extension.onmessage = (e) => {
   const { id, op, args } = JSON.parse(String(e.data)) as { id?: string; op: string; args?: unknown[] };
   if (id !== undefined) extension.send(JSON.stringify({ id, ...answer(op, args ?? []) }));

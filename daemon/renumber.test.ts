@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -110,15 +110,16 @@ function now(old: number): number {
 // Safari quits and starts again: its extension connects before Safari has
 // restored any window, and says no old id's new one (it read no marks),
 // and the windows come back later, every tab and window under a new id.
-// The window's page is found again by its proof (located in spaces.ts).
-function relaunch(): () => void {
+// The window's page is found again by its proof (located in spaces.ts),
+// unless its page was closed before Safari quit (withoutPages).
+function relaunch(withoutPages = false): () => void {
   for (const began = Date.now(); Date.now() === began; );
   const windows = new Map<number, number>();
   const back: Row[] = [];
   for (const t of [...tabs.values()]) {
     const windowId = windows.get(t.windowId) ?? ++nextWindow;
     windows.set(t.windowId, windowId);
-    back.push({ ...t, id: ++nextTab, windowId });
+    if (!(withoutPages && t.url.includes("/space?"))) back.push({ ...t, id: ++nextTab, windowId });
     tabs.delete(t.id);
   }
   owned.clear();
@@ -193,4 +194,42 @@ test("after Safari starts again, an agent's tabs it restores only later are foun
   await as("tabs", {});
   await endTurn(agent.pid);
   expect(tabs.has(page.id)).toBe(false);
+});
+
+// 11-24: after Safari restarted, about a dozen tabs of finished agents
+// came back with no window page to claim them, stayed open as the user's,
+// and four went to his own window.
+test("after Safari starts again, a finished agent's tab restored with no window page closes once restoring is over, and his tabs stay", async () => {
+  const url = "https://leftover.example/";
+  await open(url);
+  const restore = relaunch(true);
+  restore();
+  const his = { id: ++nextTab, url: "https://his.example/", windowId: ++nextWindow };
+  tabs.set(his.id, his);
+  const leftover = [...tabs.values()].find((t) => t.url === url)!;
+  setSystemTime(new Date(Date.now() + 6 * 60_000));
+  try {
+    await endTurn(agent.pid);
+  } finally {
+    setSystemTime();
+  }
+  expect(tabs.has(leftover.id)).toBe(false);
+  expect(tabs.has(his.id)).toBe(true);
+});
+
+test("after Safari starts again, a restored address that more tabs show than the agent had stays open", async () => {
+  const url = "https://shared.example/";
+  await open(url);
+  const restore = relaunch(true);
+  restore();
+  const his = { id: ++nextTab, url, windowId: ++nextWindow };
+  tabs.set(his.id, his);
+  const restored = [...tabs.values()].filter((t) => t.url === url).map((t) => t.id);
+  setSystemTime(new Date(Date.now() + 6 * 60_000));
+  try {
+    await endTurn(agent.pid);
+  } finally {
+    setSystemTime();
+  }
+  expect(restored.every((id) => tabs.has(id))).toBe(true);
 });

@@ -15,7 +15,7 @@ import { watchDownloads } from "./downloads.ts";
 import { asExpression } from "./statements.ts";
 import { unanswered, unopened } from "./unanswered.ts";
 import { closeRetryMs, closeWindow, daemonWindow, heldSpace, lookForSheet, ownersByPage, refusedSpace, release, resized, showing, spaceNote, spaceTool, spaceWindow, sweep as sweepSpaces, turnEnded, turnResumed, unshow, windowOwners, type Shown, type Space, type SpaceNote } from "./spaces.ts";
-import { uncover } from "./place.ts";
+import { agentPlacement, uncover } from "./place.ts";
 import { alive, currentOwner, currentTask, inTurn, matchesTask, runAs, taskFamily, taskParts, verbatimCall, watchOwner } from "./owner.ts";
 import { filledOf, navigatedOf, newTabOf } from "./navigated.ts";
 import { addressedNote, cutFenced, defused, fence, markLines, shieldChat, shieldExtract, shieldItems, shieldSnapshot, type Shielded } from "./injection.ts";
@@ -907,16 +907,56 @@ async function sweepOnce() {
     return idleClosable(tab, t, now) && now - t.used >= IDLE_MS;
   });
   if (due.length === 0) return;
+  const left = restoredLeftovers(due.filter(([tab, t]) => !shown.has(tab) && reconnectedSince(t) && !stillFinding()), listed);
   await Promise.all(due.map(async ([tab, t]) => {
     if (harnessTabs.get(tab) !== t) return;
     const page = shown.get(tab);
     if (!page) {
-      if (!reconnectedSince(t) || !stillFinding()) lost(tab, false);
+      const restoredAs = left.get(tab);
+      if (restoredAs !== undefined) await closeLeftover(tab, t, restoredAs);
+      else if (!reconnectedSince(t) || !stillFinding()) lost(tab, false);
       return;
     }
     await closeTrackedTab(tab, t, page);
   }));
   await Promise.all([...new Set(due.map(([, t]) => t.owner))].map(owner => turnEnded(owner)));
+}
+
+// A Safari that started again restores the tabs it had under new ids, and
+// a finished agent's tab no window marker claims (restored) stayed open as
+// the user's: on 11-24, after a restart, about a dozen portal and sign-in
+// tabs of exited agents came back, and four went to his own window. A tab
+// such an agent held, lost to the restart, maps to the listed tab showing
+// its address: one the harness does not hold, not in front, and only while
+// no more such tabs show that address than lost ones do, as his own tab
+// may show the same page.
+function restoredLeftovers(gone: [number, HarnessTab][], listed: TabInfo[]): Map<number, number> {
+  const left = new Map<number, number>();
+  const byUrl = Map.groupBy(gone.filter(([, t]) => t.url !== undefined), ([, t]) => t.url!);
+  for (const [url, olds] of byUrl) {
+    const showing = listed.filter((l) => l.url === url && !harnessTabs.has(l.id) && !keepers.has(l.id));
+    if (showing.length === 0 || showing.length > olds.length || showing.some((l) => l.front || l.shown)) continue;
+    const oldIds = olds.map(([id]) => id).toSorted((x, y) => x - y);
+    for (const [i, l] of showing.toSorted((a, b) => a.id - b.id).entries()) left.set(oldIds[i], l.id);
+  }
+  return left;
+}
+
+async function closeLeftover(tab: number, t: HarnessTab, restoredAs: number): Promise<void> {
+  const why = "as Safari restored it after its agent was done";
+  try {
+    const res = (await bridge.request("tabs.close", [restoredAs], 20000, { start: false })) as { ok?: boolean } | null;
+    if (res?.ok !== true) {
+      lost(tab, false);
+      return;
+    }
+    recordClosed(tab, why, resumeAddress(t.url), t.owner);
+    forget(tab);
+    note("tab closed", { tab: restoredAs, was: tab, owner: t.owner ?? null, why });
+  } catch (e) {
+    note("restored tab not closed", { tab: restoredAs, was: tab, error: e instanceof Error ? e.message : String(e) });
+    lost(tab, false);
+  }
 }
 
 // Whether a close may take tab now: no call or close on it, its retry not
@@ -3424,7 +3464,9 @@ export async function viewport(opts: { tab: number; width: number; height: numbe
   const tab = followTab(num(opts.tab, "tab"));
   const window = (await listTabs()).find((t) => t.id === tab)?.windowId;
   const whole = window !== undefined && windowOwners().has(window);
-  const sized = (await bridge.request("window", [tab, { width: num(opts.width, "width"), height: num(opts.height, "height") }, whole])) as { windowId: number; size: { width: number; height: number } };
+  const size = { width: num(opts.width, "width"), height: num(opts.height, "height") };
+  const placement = whole ? undefined : await agentPlacement(size);
+  const sized = (await bridge.request("window", [tab, size, whole, placement?.bounds])) as { windowId: number; size: { width: number; height: number } };
   if (whole) resized(sized.windowId, sized.size);
   return sized;
 }

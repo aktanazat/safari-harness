@@ -13,7 +13,7 @@ let nextWindow = 2;
 type Wire = { id?: number; op?: string; args?: unknown[] };
 
 ws.addEventListener("open", () => {
-  ws.send(JSON.stringify({ op: "hello", role: "extension", ua: "fake" }));
+  ws.send(JSON.stringify({ op: "hello", role: "extension", ua: "fake", windowPlacement: true }));
   console.log("fake extension connected");
 });
 

@@ -99,6 +99,12 @@ func requireOnScreen(_ p: CGPoint) {
     var count: UInt32 = 0
     CGGetDisplaysWithPoint(p, 0, nil, &count)
     if count == 0 { fail("\(p.x),\(p.y) is not on any screen") }
+    for screen in NSScreen.screens where screen.localizedName == "Agents" {
+        if let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value,
+           CGDisplayBounds(id).contains(p) {
+            fail("Agents is hidden from the mouse; use a page control or show the page on a visible screen")
+        }
+    }
 }
 
 // ---------- mouse ----------
@@ -675,7 +681,8 @@ func windows() {
     let screens = NSScreen.screens.map { s -> [String: Any] in
         ["id": (s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.intValue ?? 0, "name": s.localizedName, "frame": rectJSON(topDown(s.frame)), "visible": rectJSON(topDown(s.visibleFrame))]
     }
-    printJSON(["windows": shown, "screens": screens])
+    guard let reference = NSScreen.main else { fail("no display has keyboard focus") }
+    printJSON(["windows": shown, "screens": screens, "reference": rectJSON(topDown(reference.frame))])
 }
 
 // ---------- webarea ----------

@@ -3,6 +3,9 @@
 // An agent window lives on the agents' display, when the Mac has one.
 
 import { bridge } from "./bridge.ts";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { input } from "./front.ts";
 
 type Rect = { x: number; y: number; width: number; height: number };
@@ -143,6 +146,28 @@ export async function uncover(tab: number): Promise<(() => Promise<void>) | "sho
 // they stay off the user's screen while he works (his ask of 11-17). A Mac
 // without it keeps them where Safari puts them.
 const AGENTS = "Agents";
+
+export async function agentPlacement(size: { width: number; height: number }): Promise<{ bounds: { left: number; top: number; area: Rect } } | undefined> {
+  const required = existsSync(join(homedir(), ".local", "share", "safari-harness", "hidden-windows"));
+  const layout = await input(["windows"], FRAME_MS).catch((error: unknown) => {
+    if (required) throw error;
+    return undefined;
+  }) as { windows: Win[]; screens?: Screen[]; reference?: Rect } | undefined;
+  const to = layout?.screens?.find((s) => s.name === AGENTS);
+  if (!layout || !to) {
+    if (required) throw new Error("The Agents display is unavailable; no Safari window was opened. Start agent-display before trying again.");
+    return undefined;
+  }
+  const { width, height } = size;
+  if (width > to.visible.width || height > to.visible.height) throw new Error("The Agents display is too small for this Safari window; no window was opened.");
+  if (!layout.reference) throw new Error("Safari's creation display could not be read; no window was opened. Rebuild the native helpers.");
+  const there = layout.windows.filter((w) => shared(w, to.frame) > 0);
+  const covered = (r: Rect) => there.reduce((sum, w) => sum + shared(r, w), 0);
+  const spot = places({ x: 0, y: 0, width, height }, to.visible, there).reduce((best, r) => covered(r) < covered(best) ? r : best);
+  if (layout.screens?.some((s) => s !== to && shared(to.frame, s.frame) > 0)) throw new Error("The Agents display overlaps another display; no Safari window was opened.");
+  const { x, y } = layout.reference;
+  return { bounds: { left: Math.round(spot.x - x), top: Math.round(spot.y - y), area: { ...to.visible, x: to.visible.x - x, y: to.visible.y - y } } };
+}
 
 // Moves the window at here onto display to, to the place there that covers
 // least of the windows already on it. Takes no focus.

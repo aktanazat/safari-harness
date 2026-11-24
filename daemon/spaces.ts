@@ -37,7 +37,7 @@ import { lastRaised } from "./front.ts";
 import { groupsOff, keeperRunning, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
 import { alive, currentOwner, currentTask, inTurn, matchesTask, runAs, taskFamily, watchOwner } from "./owner.ts";
-import { agentWindows, onAgents, toAgentScreen, toUserScreen } from "./place.ts";
+import { agentPlacement, agentWindows, onAgents, toAgentScreen, toUserScreen } from "./place.ts";
 import { closeTab, endUntrackedTurns, finishedTab, heldTab, linkDropped, stillFinding, windowPageClosed, type TabInfo } from "./tools.ts";
 
 type Size = { width: number; height: number };
@@ -275,7 +275,8 @@ export async function spaceWindow(group?: string, lost?: Space, isolated = false
       const name = spaceName(group, owner);
       const size = nextSize();
       const page = `${PAGE}?id=${id}&name=${encodeURIComponent(name)}&size=${size.width}x${size.height}`;
-      const w = (await bridge.request("windows.open", [page, size], undefined, options)) as { windowId: number; tabId: number; size?: Size };
+      const placement = await agentPlacement(size);
+      const w = (await bridge.request("windows.open", [page, size, placement?.bounds], undefined, options)) as { windowId: number; tabId: number; size?: Size };
       const off = groupsOff();
       const space: Space = { key, id, window: w.windowId, name, size: w.size ?? size, owner, ...(task === undefined ? {} : { task: isolated ? task : taskFamily(task) }), used: Date.now(), group: off ? "plain" : "waiting", ...(off ? { why: off } : {}), page: { tab: w.tabId, link: bridge.extensionInfo?.connectedAt } };
       spaces.set(key, space);
@@ -283,11 +284,8 @@ export async function spaceWindow(group?: string, lost?: Space, isolated = false
       sweepSoon();
       save();
       await identify(space, w.tabId);
-      // A window left where Safari put it still works, only on his screen.
-      space.home = await toAgentScreen(w.tabId).catch((e: unknown) => {
-        note("window not moved to the agents' display", { name, error: e instanceof Error ? e.message : String(e) });
-        return undefined;
-      });
+      const location = await agentWindows([space.size]).catch(() => undefined);
+      if (location?.at[0] === "agents") space.home = location.agents;
       note("window opened", { name, owner: owner ?? null });
       return space;
     })();

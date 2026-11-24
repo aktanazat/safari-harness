@@ -556,6 +556,21 @@ REPL script's own calls see pages as they are.
 to that Mac's daemon, so the daemon still listens on 127.0.0.1 only. Tools
 that need Full Disk Access run on that Mac through its own CLI over ssh.
 
+The app and native helpers require macOS 26 or later.
+
+For a remotely driven Mac, create
+`~/.local/share/safari-harness/hidden-windows` to require the virtual
+`Agents` display before any new agent window opens. Safari receives the
+hidden-display position at creation. If the display is unavailable, a new
+window is refused instead of opening on a physical screen.
+Named leases still keep the job's tabs across separate commands.
+Explicit `activate`, `handoff` and `real_input` still show a page when the
+user needs to act.
+
+Global mouse clicks, moves and drags refuse coordinates on `Agents` before
+posting input. Background control actions and keyboard input do not use
+that pointer path.
+
 ### Routines
 
 ```
@@ -752,6 +767,12 @@ a second daemon on other ports and leaves the real one alone. Run each
 and session state. The suites cover sign-in code detection, pairing and fill
 against synthetic helpers, tab ownership and cleanup, and the actual MCP
 tool-list byte ceiling. Native conditional cases are unverified when skipped.
+
+After installation, `bun run check:hidden` opens and closes local pages
+through ten separate remote-style owners. A native observer checks new
+Safari window frames at creation, movement, display refresh and command
+boundaries, including windows on other Spaces. It rejects physical-display
+intersections, changes to existing window frames and leftover windows.
 
 The native transport fixture runs its stand-in with Node, so it exercises
 Bun's child-process pipes without using Bun's readline implementation at

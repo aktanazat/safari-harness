@@ -7,6 +7,8 @@ import { bridge, type ExtSocket } from "./bridge.ts";
 import { crc32, deflateSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import type { Capture } from "./evidence.ts";
+import { jest } from "bun:test";
+import * as front from "./front.ts";
 
 let connected: ExtSocket | undefined;
 
@@ -14,6 +16,11 @@ export function connect(sock: ExtSocket) {
   if (connected) bridge.detach(connected);
   connected = sock;
   bridge.attach(sock);
+  if (bridge.extensionInfo) bridge.extensionInfo.windowPlacement = true;
+  if (!("mock" in front.input)) {
+    const native = front.input;
+    jest.spyOn(front, "input").mockImplementation((args, ...rest) => args[0] === "windows" ? Promise.resolve({ windows: [], screens: [] }) : native(args, ...rest));
+  }
 }
 
 export function historyFixture(): (tab: number, expression: string) => unknown {
