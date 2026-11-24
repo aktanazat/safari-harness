@@ -316,8 +316,17 @@ export class ApplePasswords {
   private linked: PromiseWithResolvers<void> | null = null;
   private quitting: Promise<void> | null = null;
   private state: State = { kind: "idle" };
-  // Why there is no pairing, in plain words.
-  private why = `it has not been paired since the harness started at ${localTime()}`;
+  // Why there is no pairing, in plain words. The first reason is formatted
+  // when read: every process that imports tools.ts makes this object as it
+  // starts, and the locale's first format costs 2.5 ms (11-23).
+  private readonly started = new Date();
+  private reason: string | undefined;
+  private get why(): string {
+    return this.reason ?? `it has not been paired since the harness started at ${localTime(this.started)}`;
+  }
+  private set why(text: string) {
+    this.reason = text;
+  }
   private helperSeen = false;
   private waiter: Waiter | null = null;
   // Changed passwords saved but not yet typed, by tab, until typeChange or

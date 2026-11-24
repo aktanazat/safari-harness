@@ -153,7 +153,7 @@ function droppedMessage(why: DropCause, code: number | undefined, reason: string
 // counts by its page op. A full-page shot scrolls the page and a file may
 // be one to fetch once, so neither goes again, nor does any action. From
 // 10-28 to 10-29 each drop failed 4.6 requests on average (StormRootCause).
-const REPEATABLE: Record<string, true> = { "tabs.list": true, probe: true, pageData: true, cookies: true, "cookies.count": true, "windows.resolve": true };
+const REPEATABLE: Record<string, true> = { "tabs.list": true, "tabs.url": true, probe: true, pageData: true, cookies: true, "cookies.count": true, "windows.resolve": true };
 const PAGE_READS: Record<string, true> = { snapshot: true, extract: true, tabInfo: true, locate: true, element: true, painted: true, data: true, lookalikes: true, netBody: true };
 
 // How many requests of each kind a drop failed (a relay by its page op).
@@ -292,6 +292,12 @@ const ELSEWHERE: Record<string, true> = { ...FROM_TAB, shot: true, window: true,
 // log held only timeouts, so no one could say which kinds were slow
 // (DaemonLogs).
 const SLOW_ANSWER_MS = 5000;
+// Opens and navigations answer once their page has loaded, waiting on it
+// up to this long (extension/background.js, tabs.open and tabs.navigate):
+// that wait is the page's, so only time past it counts as slow. From 11-21
+// to 11-23, 142 of 146 slow notes were opens and navigations of 5.0-20.1 s,
+// while a local page opened in 60-80 ms and navigated in 11-57 ms.
+const PAGE_WAIT_MS: Record<string, number> = { "tabs.open": 15000, "tabs.navigate": 20000 };
 // The requests Safari may still carry out after the daemon gave up on them:
 // on 11-08 a slow Safari opened the windows and tabs of timed-out opens
 // tens of seconds later, which no record named. Agent 14158 had eight
@@ -736,7 +742,7 @@ export class Bridge {
     const within = LATENCY_MS.findIndex((bound) => ms <= bound);
     counts[within === -1 ? LATENCY_MS.length : within]++;
     this.answeredIn.set(asked.latencyKey, counts);
-    if (ms > SLOW_ANSWER_MS && !Object.hasOwn(ELSEWHERE, asked.op)) note("slow", { op: asked.op, ms });
+    if (ms > SLOW_ANSWER_MS + (PAGE_WAIT_MS[asked.op] ?? 0) && !Object.hasOwn(ELSEWHERE, asked.op)) note("slow", { op: asked.op, ms });
   }
 
   // No one waits on request asked any longer, and the extension never

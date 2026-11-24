@@ -109,6 +109,25 @@ export function recentTabs(maxAgeMs: number, options: RequestOptions = {}): Prom
   return lastListed?.changes === tabChanges && Date.now() - lastListed.at < maxAgeMs ? Promise.resolve(lastListed.tabs) : listTabs(options);
 }
 
+// One tab's address, as Safari has it, for a guard that reads only its
+// host: the Slack send guard (slackSend) and an uncertain site-wide
+// action's site (mission.ts siteOf). Each listed every tab for it, a
+// tabs.list for every click, key, text, and eval, Safari's slowest call,
+// which grows with the user's tabs (11-23). An answer is as fresh as the
+// list those guards shared (recentTabs): the guards of one eval ask three
+// times. An extension from before the op (a deploy under way) still
+// answers the list.
+const lastUrls = new Map<number, { at: number; url: string | undefined; changes: number }>();
+export async function tabUrl(tab: number): Promise<string | undefined> {
+  const had = lastUrls.get(tab);
+  if (had && had.changes === tabChanges && Date.now() - had.at < 2000) return had.url;
+  const changes = tabChanges;
+  const url = await bridge.request("tabs.url", [tab], 5000).then((u) => (typeof u === "string" ? u : undefined), async () => (await recentTabs(2000).catch((): TabInfo[] => [])).find((t) => t.id === tab)?.url);
+  if (lastUrls.size >= 64) lastUrls.delete(lastUrls.keys().next().value!);
+  lastUrls.set(tab, { at: Date.now(), url, changes });
+  return url;
+}
+
 // A page tool's tab: the id open returned, "front", the tab the user has
 // in front, named on purpose, or "latest", the calling agent's tab it
 // opened or named last (used), as run's description words its default:
@@ -3639,7 +3658,7 @@ function action(run: (a: Record<string, unknown> & { tab: number }) => Promise<u
 // (slack-send.ts): the element's data-qa is read only on a Slack tab, for a
 // click, Return, or text with a line break.
 async function slackSend(tab: number, act: SlackAct, a: Record<string, unknown>): Promise<void> {
-  const url = (await recentTabs(2000).catch((): TabInfo[] => [])).find((t) => t.id === tab)?.url;
+  const url = await tabUrl(tab);
   await refuseSlackSend(url, act, async () => {
     if (a.ref !== undefined && a.ref !== null) {
       const fact = await relay(tab, "element", [String(a.ref), "attr", "data-qa"]);

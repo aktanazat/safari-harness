@@ -1,9 +1,13 @@
-import { expect, jest, test } from "bun:test";
+import { expect, jest, mock, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import safariTurnEnd from "./index.ts";
 import reads from "./fixtures/reads.json";
+
+// A lead's run starting sweeps Safari's website data (storage-sweep.ts):
+// these runs must not touch this Mac's.
+mock.module("../daemon/storage-sweep.ts", () => ({ weeklySweep: () => undefined }));
 
 type Context = { mode: string; agent: { kind: "main" | "sub"; id: string; parentId?: string }; sessionManager: { getSessionId(): string } };
 type End = { willContinue?: boolean };

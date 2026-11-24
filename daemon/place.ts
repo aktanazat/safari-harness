@@ -210,6 +210,12 @@ export async function toUserScreen(tab: number): Promise<boolean> {
   return landed !== undefined && landed !== "hidden" && holding(landed.at, landed.screens)?.id === to.id;
 }
 
+// Whether tab's window is on the Agents display, told apart by its size.
+export async function onAgents(tab: number): Promise<boolean> {
+  const here = await onScreen(tab);
+  return here !== undefined && here !== "hidden" && holding(here.at, here.screens)?.name === AGENTS;
+}
+
 // Where the Safari window of each size is: on the Agents display, off it,
 // or undefined when not on screen (minimized, on another desktop) or two
 // windows share the size. agents is that display's id, which a restarted

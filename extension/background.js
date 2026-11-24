@@ -1797,6 +1797,13 @@ async function handle(msg) {
       await api.tabs.update(tabId, { active: true });
       return { ok: true };
     }
+    // One tab's address, as Safari has it, for a guard that reads only
+    // its host (slackSend in daemon/tools.ts): tabs.list asks Safari for
+    // every tab and two windows, and grows with the user's tabs.
+    case "tabs.url": {
+      const [tabId] = args;
+      return (await api.tabs.get(tabId)).url ?? "";
+    }
     case "relay": {
       const [tabId, domOp, domArgs, timeoutMs, frameId] = args;
       if (domOp in CAPTURE) return capture(tabId, domOp, domArgs);

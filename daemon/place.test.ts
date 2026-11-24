@@ -271,7 +271,9 @@ test("a done agent's window holding only Safari's Start Page stays on the Agents
   expect(onAgents(byId(windows, space.window))).toBe(true);
 });
 
-test("an agent window whose task ended stays on the Agents display as its page closes, when only Safari's Start Page is left in it", async () => {
+// 11-23: nine windows holding only Safari's Start Page sat on the Agents
+// display for up to two days, each left by an agent window that ended.
+test("an agent window whose task ended stays on the Agents display as its page closes, when only Safari's Start Page is left in it, and closes 10 s on", async () => {
   const tabs: Record<number, number> = { 11: 1 };
   const windows = mac([{ ...HIS }], tabs, {}, undefined, 0, [MAIN, ABOVE, AGENTS], { 95: "favorites://" });
   // Isolate this window from other tests' module records.
@@ -281,9 +283,19 @@ test("an agent window whose task ended stays on the Agents display as its page c
   const space = await runAs(process.pid, () => fresh.spaceWindow("startended"));
   tabs[95] = space.window;
   tracked = false;
-  await fresh.sweep();
-  const statusPage = space.window * 10 + 1;
-  expect([statusPage in tabs, onAgents(byId(windows, space.window))]).toEqual([false, true]);
+  try {
+    await fresh.sweep();
+    const statusPage = space.window * 10 + 1;
+    const first = [statusPage in tabs, 95 in tabs, onAgents(byId(windows, space.window))];
+    tracked = true;
+    await runAs(process.pid + 1, () => fresh.spaceWindow("working"));
+    await fresh.sweep();
+    setSystemTime(Date.now() + 11_000);
+    await fresh.sweep();
+    expect([first, 95 in tabs]).toEqual([[false, true, true], false]);
+  } finally {
+    setSystemTime();
+  }
 });
 
 test("an agent window whose task ended moves to his display as its page closes, when only a tab of the user's is left in it", async () => {
