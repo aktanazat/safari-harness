@@ -155,6 +155,10 @@ class Browser {
   // syncWindows), which its UI does once it shows a tab there.
   #winOf = new Map<string, number>();
   #syncing: Promise<void> | undefined;
+  // A tab placed by a move's reply keeps that place against a sync whose
+  // snapshot was asked for before it.
+  #placements = 0;
+  #placedAt = new Map<number, number>();
   #nextTab = 1;
   #nextWin = 1;
   #nextFrame = new Map<number, number>();
@@ -202,6 +206,7 @@ class Browser {
   // takes the bounds and focus Ladybird reports.
   syncWindows(): Promise<void> {
     this.#syncing ??= (async () => {
+      const asked = this.#placements;
       const [{ contexts }, { clientWindows }] = await Promise.all([
         this.lb.call<{ contexts: (Info & { clientWindow?: string })[] }>("browsingContext.getTree", { maxDepth: 0 }),
         this.lb.call<{ clientWindows: { clientWindow: string; active: boolean; x: number; y: number; width: number; height: number }[] }>("browser.getClientWindows"),
@@ -209,14 +214,8 @@ class Browser {
       ]);
       for (const c of contexts) {
         const tab = this.tabs.get(this.#tabOf.get(c.context) ?? -1);
-        if (!tab || !c.clientWindow?.startsWith("window-")) continue;
-        let windowId = this.#winOf.get(c.clientWindow);
-        if (windowId === undefined) {
-          // A window this bridge placed tabs in takes the name Ladybird gives it.
-          windowId = [...this.#winOf.values()].includes(tab.windowId) ? this.#newWindow() : tab.windowId;
-          this.#winOf.set(c.clientWindow, windowId);
-        }
-        if (tab.windowId !== windowId) this.#move(tab, windowId);
+        if (!tab || !c.clientWindow?.startsWith("window-") || (this.#placedAt.get(tab.id) ?? 0) > asked) continue;
+        this.#place(tab, c.clientWindow);
       }
       this.#dropEmptyWindows();
       for (const w of clientWindows) {
@@ -233,14 +232,27 @@ class Browser {
     return this.#syncing;
   }
 
-  // Moves a tab to a window, or to a new one, as Ladybird's ladybird:moveTab
-  // does, and answers the window it is in then.
+  // The tab goes to the window Ladybird names: a window this bridge placed
+  // tabs in takes the first name Ladybird gives it.
+  #place(tab: Tab, clientWindow: string) {
+    let windowId = this.#winOf.get(clientWindow);
+    if (windowId === undefined) {
+      windowId = [...this.#winOf.values()].includes(tab.windowId) ? this.#newWindow() : tab.windowId;
+      this.#winOf.set(clientWindow, windowId);
+    }
+    if (tab.windowId !== windowId) this.#move(tab, windowId);
+  }
+
+  // Moves a tab to a window, or to a new one, with Ladybird's
+  // ladybird:moveTab, and answers the window its reply names.
   async moveTab(tab: Tab, to: number | "new", background: boolean): Promise<number> {
     await this.syncWindows();
     const name = to === "new" ? undefined : [...this.#winOf].find(([, id]) => id === to)?.[0];
     if (to !== "new" && name === undefined) throw new Error(`No window with id: ${to}.`);
-    await this.lb.call("ladybird:moveTab", { context: tab.context, background, ...(name ? { clientWindow: name } : {}) });
-    await this.syncWindows();
+    const { clientWindow } = await this.lb.call<{ clientWindow: string }>("ladybird:moveTab", { context: tab.context, background, ...(name ? { clientWindow: name } : {}) });
+    this.#placedAt.set(tab.id, ++this.#placements);
+    this.#place(tab, clientWindow);
+    this.#dropEmptyWindows();
     return tab.windowId;
   }
 

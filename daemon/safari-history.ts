@@ -80,16 +80,17 @@ function agentVisits(visits: Visit[], loads: Load[]): number[] {
 }
 
 // Ladybird keeps one row per address: its title, how often it was visited
-// and when last (ms since 1970), not each visit. An address an agent's load
-// visited last, or one of the daemon's own pages, counts as the agents',
-// all its visits with it, since the ones before cannot be told apart.
-type LadybirdRow = { url: string; title: string; visits: number; last: number };
+// and when last (ms since 1970), not each visit, so its count mixes the
+// user's visits with agents'. An address an agent's load visited last, or
+// one of the daemon's own pages, is left out as the agents'; no count of
+// visits is given, and those left out count as one each.
+type LadybirdRow = { url: string; title: string; last: number };
 function ladybirdFound(db: Database, sinceMs: number, loads: Load[]): Found[] {
   const own = `${new URL(daemonHttp()).origin}/`;
-  const rows = db.query("SELECT url, title, visit_count visits, last_visited_time last FROM History WHERE last_visited_time > ?1 ORDER BY last_visited_time DESC").all(sinceMs) as LadybirdRow[];
+  const rows = db.query("SELECT url, title, last_visited_time last FROM History WHERE last_visited_time > ?1 ORDER BY last_visited_time DESC").all(sinceMs) as LadybirdRow[];
   return rows.map((r) => {
     const agent = r.url.startsWith(own) || loads.some((l) => l.urls.includes(addressKey(r.url)) && r.last >= l.from - SLACK_MS && r.last <= l.to + SLACK_MS);
-    return { url: r.url, title: r.title || null, last: agent ? null : r.last / 1000 - APPLE_EPOCH_S, visits: agent ? 0 : r.visits, agents: agent ? r.visits : 0 };
+    return { url: r.url, title: r.title || null, last: agent ? null : r.last / 1000 - APPLE_EPOCH_S, visits: agent ? 0 : 1, agents: agent ? 1 : 0 };
   });
 }
 
@@ -167,7 +168,7 @@ export function browsingHistory(opts: { text?: string; any?: string[]; days?: nu
     title: r.title ?? "",
     url: redactUrl(r.url),
     lastVisit: new Date((APPLE_EPOCH_S + r.last) * 1000).toISOString(),
-    visits: r.visits,
+    ...(LADYBIRD ? {} : { visits: r.visits }),
   });
   const agentVisitsLeftOut = found.reduce((n, r) => n + r.agents, 0);
   // history, not pages: the text an agent reads (formatResult) prints a
