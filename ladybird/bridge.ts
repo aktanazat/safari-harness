@@ -138,10 +138,8 @@ class Browser {
   readonly active = new Map<number, number>();
   lastFocused = -1;
   #tabOf = new Map<string, number>();
-  // Where the next contexts this bridge makes go, until Ladybird names the
-  // OS window of each tab (clientWindow "window-N", syncWindows), which its
-  // UI does once it shows the tab.
-  #expect: (number | "new")[] = [];
+  // Windows by the name Ladybird gives each (clientWindow "window-N",
+  // syncWindows), which its UI does once it shows a tab there.
   #winOf = new Map<string, number>();
   #syncing: Promise<void> | undefined;
   #nextTab = 1;
@@ -177,12 +175,13 @@ class Browser {
     return id;
   }
 
-  // A tab a page opened goes in its opener's window; one this bridge made,
-  // where it asked; any other, in the window last in front.
+  // A tab a page opened goes in its opener's window, any other in the
+  // window last in front; one this bridge made then goes where it asked
+  // (create).
   #placeTab(opener: number | undefined): number {
-    const asked = opener !== undefined ? this.tabs.get(opener)?.windowId : this.#expect.shift();
-    if (typeof asked === "number" && this.windows.has(asked)) return asked;
-    if (asked === "new" || this.windows.size === 0) return this.#newWindow();
+    const beside = opener !== undefined ? this.tabs.get(opener)?.windowId : undefined;
+    if (beside !== undefined && this.windows.has(beside)) return beside;
+    if (this.windows.size === 0) return this.#newWindow();
     return this.windows.has(this.lastFocused) ? this.lastFocused : [...this.windows.keys()][0];
   }
 
@@ -205,6 +204,7 @@ class Browser {
         }
         if (tab.windowId !== windowId) this.#move(tab, windowId);
       }
+      this.#dropEmptyWindows();
       for (const w of clientWindows) {
         const id = this.#winOf.get(w.clientWindow);
         const win = id === undefined ? undefined : this.windows.get(id);
@@ -225,12 +225,21 @@ class Browser {
     if (this.active.get(from) === tab.id) this.active.delete(from);
     if (!this.active.has(windowId)) this.active.set(windowId, tab.id);
     this.events.tabAttached.emit(tab.id, { newWindowId: windowId, newPosition: this.tabObject(tab).index });
-    if (![...this.tabs.values()].some((t) => t.windowId === from)) {
-      this.windows.delete(from);
-      for (const [name, id] of this.#winOf) if (id === from) this.#winOf.delete(name);
-      this.events.winRemoved.emit(from);
-    } else if (!this.active.has(from)) {
-      this.active.set(from, [...this.tabs.values()].find((t) => t.windowId === from)!.id);
+  }
+
+  // Once every tab is where it belongs: a window left with no tab is gone,
+  // and one that lost its active tab shows another.
+  #dropEmptyWindows() {
+    for (const id of [...this.windows.keys()]) {
+      const left = [...this.tabs.values()].filter((t) => t.windowId === id);
+      if (left.length === 0) {
+        this.windows.delete(id);
+        this.active.delete(id);
+        for (const [name, w] of this.#winOf) if (w === id) this.#winOf.delete(name);
+        this.events.winRemoved.emit(id);
+      } else if (!this.active.has(id)) {
+        this.active.set(id, left[0].id);
+      }
     }
   }
 
@@ -353,7 +362,6 @@ class Browser {
   // A new tab, in a new window or beside the active tab of one.
   async create(where: number | "new", background: boolean): Promise<Tab> {
     const ref = typeof where === "number" ? this.active.get(where) : undefined;
-    this.#expect.push(where);
     const { context } = await this.lb.call<{ context: string }>("browsingContext.create", {
       type: where === "new" ? "window" : "tab", background, ...(ref !== undefined ? { referenceContext: this.tab(ref).context } : {}),
     });
@@ -362,7 +370,16 @@ class Browser {
       const tree = await this.lb.call<{ contexts: Info[] }>("browsingContext.getTree", { root: context });
       for (const top of tree.contexts) this.#adopt(top, true);
     }
-    return this.tab(this.#tabOf.get(context)!);
+    // The reply names the context, so it goes where it was asked, whichever
+    // window #placeTab put it in as it was announced.
+    const tab = this.tab(this.#tabOf.get(context)!);
+    const alone = ![...this.tabs.values()].some((t) => t !== tab && t.windowId === tab.windowId);
+    const windowId = where === "new" ? (alone ? tab.windowId : this.#newWindow()) : where;
+    if (tab.windowId !== windowId) {
+      this.#move(tab, windowId);
+      this.#dropEmptyWindows();
+    }
+    return tab;
   }
 
   tabObject(t: Tab) {
@@ -395,15 +412,27 @@ class Browser {
     return out;
   }
 
+  // script.callFunction, again once when Ladybird moved the page to another
+  // WebContent process mid-call ("WebContent was replaced while executing
+  // the command"), as it does when a navigation changes site.
+  async callFunction<T = CallResult>(params: object): Promise<T> {
+    try {
+      return await this.lb.call<T>("script.callFunction", params);
+    } catch (e) {
+      if (!String(e).includes("WebContent was replaced")) throw e;
+      return this.lb.call<T>("script.callFunction", params);
+    }
+  }
+
   // Runs one function in one frame's page world.
   async run(frame: Frame, decl: string, args: unknown[], preload: string): Promise<unknown> {
-    const call = () => this.lb.call<CallResult>("script.callFunction", {
+    const call = () => this.callFunction({
       functionDeclaration: decl, arguments: [{ type: "string", value: JSON.stringify(args) }], target: { context: frame.context }, awaitPromise: true,
     });
     let r = await call();
     // A frame from before the preload was added gets the shim now.
     if (r.type === "exception" && r.exceptionDetails.text.includes(`${KEY}:no-shim`)) {
-      await this.lb.call("script.callFunction", { functionDeclaration: preload, arguments: [{ type: "channel", value: { channel: "harness" } }], target: { context: frame.context }, awaitPromise: false });
+      await this.callFunction({ functionDeclaration: preload, arguments: [{ type: "channel", value: { channel: "harness" } }], target: { context: frame.context }, awaitPromise: false });
       r = await call();
     }
     if (r.type === "exception") throw new Error(r.exceptionDetails.text);
