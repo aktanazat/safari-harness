@@ -209,10 +209,12 @@ carry a password.
 
 The harness can drive Ladybird instead of Safari: the fork
 (`aktanazat/ladybird`, branch `harness`) adds WebDriver `--attach` to the
-running browser, real client windows, tab moves, BiDi cookies, the toolbar
-button the extension's action needs (`ladybird:setAction`) and window names
-for agents' tasks (`ladybird:setWindowName`); `ladybird/bridge.ts` runs
-`background.js` and the content scripts unchanged over WebDriver BiDi.
+running browser, real client windows, tab moves, BiDi cookies, sandbox
+realms, user prompt events, the toolbar button the extension's action
+needs (`ladybird:setAction`) and window names for agents' tasks
+(`ladybird:setWindowName`); `ladybird/bridge.ts` runs `background.js` and
+the content scripts unchanged over WebDriver BiDi, the content scripts in
+a sandbox realm of their own as Safari runs them in their own world.
 
 To switch a Mac to it:
 
