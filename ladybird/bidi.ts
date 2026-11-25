@@ -5,7 +5,8 @@
 
 import { spawn, type Subprocess } from "bun";
 
-const APP = process.env.LADYBIRD_APP ?? "/Applications/Ladybird.app";
+// The fork install-app.sh installs; a stock Ladybird takes launch and headless only.
+const APP = process.env.LADYBIRD_APP ?? "/Applications/Ladybird Harness.app";
 
 export type BidiEvent = { method: string; params: Record<string, unknown> };
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void };
