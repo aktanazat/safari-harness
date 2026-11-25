@@ -22,6 +22,8 @@ const INPUT = join(import.meta.dir, "..", "scripts", "input");
 // (scripts/*.swift) read the same variable.
 export const BROWSER = process.env.SAFARI_HARNESS_BUNDLE ?? "com.apple.Safari";
 export const LADYBIRD = BROWSER.startsWith("org.ladybird.");
+// The browser as the user and agents know it: tool labels, phone cards.
+export const BROWSER_NAME = LADYBIRD ? "Ladybird" : "Safari";
 
 // Whether the browser runs, by its bundle id (lsappinfo).
 export async function browserRunning(): Promise<boolean> {
