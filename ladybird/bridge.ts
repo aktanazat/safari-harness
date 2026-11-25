@@ -12,7 +12,7 @@
 //   bun ladybird/bridge.ts [--browser attach|launch|headless] [--profile-path DIR | --profile NAME]
 //                          [--driver-port 4470] [--daemon-port 37333]
 
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -159,21 +159,33 @@ class Browser {
   // snapshot was asked for before it.
   #placements = 0;
   #placedAt = new Map<number, number>();
+  // Ids go on from where the bridge's last run left them (idsFile): the
+  // extension's storage and the daemon keep tabs by id across runs, and a
+  // new tab with an old one's id would take that tab's owner and marks.
   #nextTab = 1;
   #nextWin = 1;
   #nextFrame = new Map<number, number>();
   readonly events = {
     tabCreated: new Ev(), tabUpdated: new Ev(), tabRemoved: new Ev(), tabActivated: new Ev(),
     winCreated: new Ev(), winRemoved: new Ev(), winFocus: new Ev(), tabAttached: new Ev(),
-    message: new Ev(),
+    message: new Ev(), actionClicked: new Ev(),
   };
 
-  constructor(readonly lb: Ladybird) {}
+  constructor(readonly lb: Ladybird, readonly idsFile: string) {
+    if (!existsSync(idsFile)) return;
+    const ids = JSON.parse(readFileSync(idsFile, "utf8")) as { tab: number; win: number };
+    this.#nextTab = ids.tab;
+    this.#nextWin = ids.win;
+  }
+
+  #saveIds() {
+    writeFileSync(this.idsFile, JSON.stringify({ tab: this.#nextTab, win: this.#nextWin }));
+  }
 
   async start() {
     this.lb.on((e) => this.#event(e));
     await this.lb.call("session.subscribe", {
-      events: ["browsingContext.contextCreated", "browsingContext.contextDestroyed", "browsingContext.navigationStarted", "browsingContext.navigationCommitted", "browsingContext.load", "browsingContext.historyUpdated", "browsingContext.fragmentNavigated", "script.message"],
+      events: ["browsingContext.contextCreated", "browsingContext.contextDestroyed", "browsingContext.navigationStarted", "browsingContext.navigationCommitted", "browsingContext.load", "browsingContext.historyUpdated", "browsingContext.fragmentNavigated", "script.message", "ladybird:action.clicked"],
     });
     const tree = await this.lb.call<{ contexts: Info[] }>("browsingContext.getTree", {});
     for (const top of tree.contexts) this.#adopt(top, false);
@@ -187,6 +199,7 @@ class Browser {
 
   #newWindow(): number {
     const id = this.#nextWin++;
+    this.#saveIds();
     this.windows.set(id, { id });
     this.events.winCreated.emit(this.windowObject(id));
     return id;
@@ -290,6 +303,7 @@ class Browser {
       this.frames.set(info.context, { context: info.context, tabId, frameId, url: info.url ?? "about:blank" });
     } else if (!this.#tabOf.has(info.context)) {
       const id = this.#nextTab++;
+      this.#saveIds();
       const opener = info.originalOpener ? this.#tabOf.get(info.originalOpener) : undefined;
       const windowId = this.#placeTab(opener);
       const tab: Tab = { id, context: info.context, windowId, url: info.url ?? "about:blank", title: "", status: "complete", ...(opener !== undefined ? { openerTabId: opener } : {}) };
@@ -311,6 +325,11 @@ class Browser {
         return this.#destroyed(params as unknown as Info);
       case "script.message":
         return this.#message(params);
+      case "ladybird:action.clicked": {
+        const tab = this.tabs.get(this.#tabOf.get(context ?? "") ?? -1);
+        if (tab) this.events.actionClicked.emit(this.tabObject(tab));
+        return;
+      }
     }
     const frame = context ? this.frames.get(context) : undefined;
     if (!frame) return;
@@ -526,12 +545,12 @@ function makeApi(b: Browser, ctx: { storageFile: string; preload: string; reload
   const ev = {
     tabCreated: new Ev(), tabUpdated: new Ev(), tabRemoved: new Ev(), tabActivated: new Ev(),
     winCreated: new Ev(), winRemoved: new Ev(), winFocus: new Ev(), tabAttached: new Ev(),
-    message: new Ev(), alarm: new Ev(), never: new Ev(),
+    message: new Ev(), alarm: new Ev(), never: new Ev(), actionClicked: new Ev(),
   };
   const relays: [Ev, Ev][] = [
     [b.events.tabCreated, ev.tabCreated], [b.events.tabUpdated, ev.tabUpdated], [b.events.tabRemoved, ev.tabRemoved],
     [b.events.tabActivated, ev.tabActivated], [b.events.winCreated, ev.winCreated], [b.events.winRemoved, ev.winRemoved],
-    [b.events.winFocus, ev.winFocus], [b.events.tabAttached, ev.tabAttached],
+    [b.events.winFocus, ev.winFocus], [b.events.tabAttached, ev.tabAttached], [b.events.actionClicked, ev.actionClicked],
   ];
   const forwarders = relays.map(([from, to]) => {
     const fn = ((...a: unknown[]) => to.emit(...a)) as Listener;
@@ -603,8 +622,16 @@ function makeApi(b: Browser, ctx: { storageFile: string; preload: string; reload
       onMessage: ev.message, onConnect: ev.never, onInstalled: ev.never, onStartup: new Ev(),
       reload: () => ctx.reload(),
     },
+    // The toolbar button Ladybird Harness shows while this bridge is attached
+    // (ladybird:setAction), per tab, as Safari shows the extension's.
     action: {
-      setBadgeText: async () => {}, setTitle: async () => {}, onClicked: ev.never,
+      async setBadgeText({ tabId, text }: { tabId?: number; text: string }) {
+        await b.lb.call("ladybird:setAction", { ...(tabId !== undefined ? { context: b.tab(tabId).context } : {}), badge: text });
+      },
+      async setTitle({ tabId, title }: { tabId?: number; title: string }) {
+        await b.lb.call("ladybird:setAction", { ...(tabId !== undefined ? { context: b.tab(tabId).context } : {}), title });
+      },
+      onClicked: ev.actionClicked,
     },
     alarms: {
       create(name: string, info: { delayInMinutes?: number; periodInMinutes?: number; when?: number }) {
@@ -840,8 +867,9 @@ async function main() {
   if (browser !== "attach" && browser !== "launch" && browser !== "headless") throw new Error(`--browser is attach, launch or headless, not ${browser}`);
   const lb = await Ladybird.launch({ port: Number(values["driver-port"]), browser, profilePath: values["profile-path"], profile: values.profile });
   console.log(`[ladybird] session ${lb.session}, ${lb.userAgent}`);
-  const b = new Browser(lb);
+  const b = new Browser(lb, join(values.state!, "ids.json"));
   await b.start();
+  await lb.call("ladybird:setAction", { title: "Safari Harness" });
 
   const [dialogs, start] = await Promise.all(["dialogs.js", "start.js"].map((f) => Bun.file(join(EXT, f)).text()));
   const preload = preloadSource(dialogs, start);

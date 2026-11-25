@@ -16,11 +16,13 @@ import { daemonHttp } from "./rpc.ts";
 import { BROWSER } from "./front.ts";
 
 const HOME = homedir();
-// Ladybird Harness (ladybird/install-app.sh) keeps its history in its default
-// profile, "developer" in a build of the fork.
+// Ladybird Harness (ladybird/install-app.sh) keeps its history in its
+// profile's data: under LADYBIRD_PROFILE_PATH, the --profile-path the
+// browser and bridge run with, else in its default profile, "developer" in
+// a build of the fork.
 const LADYBIRD = BROWSER.startsWith("org.ladybird.");
 const HISTORY_DB = LADYBIRD
-  ? join(HOME, "Library", "Application Support", "Ladybird", "Profiles", "developer", "History.db")
+  ? (process.env.LADYBIRD_PROFILE_PATH ? join(process.env.LADYBIRD_PROFILE_PATH, "data", "History.db") : join(HOME, "Library", "Application Support", "Ladybird", "Profiles", "developer", "History.db"))
   : join(HOME, "Library", "Safari", "History.db");
 
 // visit_time is seconds since 2001-01-01 UTC.
