@@ -33,7 +33,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { bridge, TimedOut, type RequestOptions } from "./bridge.ts";
-import { lastRaised } from "./front.ts";
+import { LADYBIRD, lastRaised } from "./front.ts";
 import { groupsOff, keeperRunning, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
 import { alive, currentOwner, currentTask, inTurn, matchesTask, runAs, taskFamily, watchOwner } from "./owner.ts";
@@ -277,8 +277,10 @@ export async function spaceWindow(group?: string, lost?: Space, isolated = false
       const page = `${PAGE}?id=${id}&name=${encodeURIComponent(name)}&size=${size.width}x${size.height}`;
       const placement = await agentPlacement(size);
       const w = (await bridge.request("windows.open", [page, size, placement?.bounds], undefined, options)) as { windowId: number; tabId: number; size?: Size };
-      const off = groupsOff();
-      const space: Space = { key, id, window: w.windowId, name, size: w.size ?? size, owner, ...(task === undefined ? {} : { task: isolated ? task : taskFamily(task) }), used: Date.now(), group: off ? "plain" : "waiting", ...(off ? { why: off } : {}), page: { tab: w.tabId, link: bridge.extensionInfo?.connectedAt } };
+      // Ladybird has no tab groups: its bridge names the window for its task
+      // instead (ladybird/bridge.ts), and the window is a plain one here.
+      const off = LADYBIRD ? undefined : groupsOff();
+      const space: Space = { key, id, window: w.windowId, name, size: w.size ?? size, owner, ...(task === undefined ? {} : { task: isolated ? task : taskFamily(task) }), used: Date.now(), group: LADYBIRD || off ? "plain" : "waiting", ...(off ? { why: off } : {}), page: { tab: w.tabId, link: bridge.extensionInfo?.connectedAt } };
       spaces.set(key, space);
       watchExit(owner);
       sweepSoon();

@@ -241,8 +241,30 @@ class Browser {
           this.events.winFocus.emit(win.id);
         }
       }
+      this.#nameWindows();
     })().finally(() => { this.#syncing = undefined; });
     return this.#syncing;
+  }
+
+  // An agent's window, the one showing a daemon space page (daemon/spaces.ts),
+  // takes its task's name, as Safari makes such a window a tab group of that
+  // name; the name goes with the page.
+  #named = new Map<string, string>();
+  #nameWindows() {
+    const want = new Map<string, string>();
+    for (const tab of this.tabs.values()) {
+      const page = URL.parse(tab.url);
+      const name = page?.hostname === "127.0.0.1" && page.pathname === "/space" && page.searchParams.has("id") ? page.searchParams.get("name") : null;
+      const client = [...this.#winOf].find(([, id]) => id === tab.windowId)?.[0];
+      if (name && client) want.set(client, name);
+    }
+    for (const client of new Set([...want.keys(), ...this.#named.keys()])) {
+      const name = want.get(client) ?? "";
+      if ((this.#named.get(client) ?? "") === name) continue;
+      if (name) this.#named.set(client, name);
+      else this.#named.delete(client);
+      this.lb.call("ladybird:setWindowName", { clientWindow: client, name }).catch((e: unknown) => console.log(`[ladybird] ${client} not named: ${e}`));
+    }
   }
 
   // The tab goes to the window Ladybird names: a window this bridge placed
@@ -346,6 +368,7 @@ class Browser {
     } else if (method === "browsingContext.load") {
       tab.status = "complete";
       this.events.tabUpdated.emit(tab.id, { status: "complete" }, this.tabObject(tab));
+      this.#nameWindows();
     } else if (url && url !== tab.url) {
       tab.url = frame.url = url;
       this.events.tabUpdated.emit(tab.id, { url }, this.tabObject(tab));

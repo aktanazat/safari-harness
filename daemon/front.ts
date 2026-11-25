@@ -21,6 +21,7 @@ const INPUT = join(import.meta.dir, "..", "scripts", "input");
 // SAFARI_HARNESS_BUNDLE=org.ladybird.Ladybird.Harness. The native helpers
 // (scripts/*.swift) read the same variable.
 export const BROWSER = process.env.SAFARI_HARNESS_BUNDLE ?? "com.apple.Safari";
+export const LADYBIRD = BROWSER.startsWith("org.ladybird.");
 
 // Runs the helper and parses its one JSON line.
 // Typed text goes on stdin, unchanged and without an added newline: cards
