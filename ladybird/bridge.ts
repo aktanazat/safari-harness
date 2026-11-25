@@ -6,8 +6,9 @@
 // as a BiDi preload script. background.js, content.js and the daemon run
 // unchanged: background.js connects to the daemon as the extension does.
 //
-// Ladybird has no isolated worlds yet ("Sandbox realms are not
-// supported"), so the extension's scripts run in the page's own world.
+// As in Safari, the content scripts run in a world of their own (the BiDi
+// sandbox SANDBOX), with their own globals and built-ins over the page's
+// DOM; dialogs.js and MAIN-world scripts run in the page's world.
 //
 //   bun ladybird/bridge.ts [--browser attach|launch|headless] [--profile-path DIR | --profile NAME]
 //                          [--driver-port 4470] [--daemon-port 37333]
@@ -26,6 +27,8 @@ const ORIGIN = `safari-web-extension://${EXTENSION_ID}`;
 // The window property each frame's shim lives under: fresh each run, so a
 // page cannot have it ready.
 const KEY = `__lbh_${crypto.randomUUID().slice(0, 8)}`;
+// The BiDi sandbox realm the extension's isolated world is.
+const SANDBOX = "safari-harness";
 
 type Listener = (...args: never[]) => unknown;
 class Ev {
@@ -66,10 +69,19 @@ function holdingScreen(r: Rect, screens: { frame: Rect }[]): Rect | undefined {
 
 const fail = (what: string) => Promise.reject(new Error(what));
 
-// Every frame's shim: browser.runtime for start.js and content.js, the
-// reports of the top frame's title, visibility, focus and bounds, then
-// dialogs.js (page world, document_start) and start.js (document_end).
-function preloadSource(dialogs: string, start: string): string {
+// dialogs.js, in every frame's page world at document_start.
+function pagePreload(dialogs: string): string {
+  return `() => {
+  try {
+${dialogs}
+  } catch (e) { console.error("[ladybird-harness] dialogs.js", e); }
+}`;
+}
+
+// Every frame's shim, in the extension's world: browser.runtime for
+// start.js and content.js, the reports of the top frame's title,
+// visibility, focus and bounds, then start.js (document_end).
+function shimPreload(start: string): string {
   return `(send) => {
   const KEY = ${JSON.stringify(KEY)};
   if (Object.hasOwn(window, KEY)) return;
@@ -121,9 +133,6 @@ function preloadSource(dialogs: string, start: string): string {
     for (const type of ["load", "focus", "blur"]) addEventListener(type, report);
     document.addEventListener("visibilitychange", report);
   }
-  try {
-${dialogs}
-  } catch (e) { console.error("[ladybird-harness] dialogs.js", e); }
   const start = () => { (function (browser, chrome) {
 ${start}
   }).call(window, api, undefined); };
@@ -515,15 +524,18 @@ class Browser {
     }
   }
 
-  // Runs one function in one frame's page world.
-  async run(frame: Frame, decl: string, args: unknown[], preload: string): Promise<unknown> {
+  // Runs one function in one frame, in the extension's world or (MAIN) the
+  // page's.
+  async run(frame: Frame, decl: string, args: unknown[], preloads: Preloads, world: string): Promise<unknown> {
+    const target = { context: frame.context, ...(world === "MAIN" ? {} : { sandbox: SANDBOX }) };
     const call = () => this.callFunction({
-      functionDeclaration: decl, arguments: [{ type: "string", value: JSON.stringify(args) }], target: { context: frame.context }, awaitPromise: true,
+      functionDeclaration: decl, arguments: [{ type: "string", value: JSON.stringify(args) }], target, awaitPromise: true,
     });
     let r = await call();
-    // A frame from before the preload was added gets the shim now.
+    // A frame from before the preloads were added gets them now.
     if (r.type === "exception" && r.exceptionDetails.text.includes(`${KEY}:no-shim`)) {
-      await this.callFunction({ functionDeclaration: preload, arguments: [{ type: "channel", value: { channel: "harness" } }], target: { context: frame.context }, awaitPromise: false });
+      await this.callFunction({ functionDeclaration: preloads.page, target: { context: frame.context }, awaitPromise: false });
+      await this.callFunction({ functionDeclaration: preloads.shim, arguments: [{ type: "channel", value: { channel: "harness" } }], target: { context: frame.context, sandbox: SANDBOX }, awaitPromise: false });
       r = await call();
     }
     if (r.type === "exception") throw new Error(r.exceptionDetails.text);
@@ -564,7 +576,11 @@ function cookieMatches(c: BidiCookie, filter: { url?: string; domain?: string; n
 // browser.* for one run of the extension's background scripts; a
 // runtime.reload drops it and makes another.
 type Extension = { api: { runtime: { onStartup: Ev }; storage: { local: { set(items: Record<string, unknown>): Promise<void> } } }; dispose: () => void };
-function makeApi(b: Browser, ctx: { storageFile: string; preload: string; reload: () => void }): Extension {
+// The preloads every frame gets: dialogs.js in the page's world, the shim
+// and start.js in the extension's.
+type Preloads = { page: string; shim: string };
+
+function makeApi(b: Browser, ctx: { storageFile: string; preloads: Preloads; reload: () => void }): Extension {
   const ev = {
     tabCreated: new Ev(), tabUpdated: new Ev(), tabRemoved: new Ev(), tabActivated: new Ev(),
     winCreated: new Ev(), winRemoved: new Ev(), winFocus: new Ev(), tabAttached: new Ev(),
@@ -605,7 +621,7 @@ function makeApi(b: Browser, ctx: { storageFile: string; preload: string; reload
     ).then(([ok, json]) => b.lb.call("script.callFunction", {
       functionDeclaration: `(id, ok, json) => window[${JSON.stringify(KEY)}]?.reply(id, ok, json)`,
       arguments: [{ type: "number", value: id }, { type: "boolean", value: ok }, { type: "string", value: json }],
-      target: { context: frame.context }, awaitPromise: false,
+      target: { context: frame.context, sandbox: SANDBOX }, awaitPromise: false,
     })).catch(() => {});
   }) as Listener;
   b.events.message.addListener(onPageMessage);
@@ -716,7 +732,7 @@ function makeApi(b: Browser, ctx: { storageFile: string; preload: string; reload
       async sendMessage(id: number, msg: unknown, opts: { frameId?: number } = {}) {
         const [frame] = b.targets({ tabId: id, frameIds: [opts.frameId ?? 0] });
         const deliver = `(json) => { const shim = window[${JSON.stringify(KEY)}]; if (!shim) throw new Error("Could not establish connection. Receiving end does not exist."); return shim.deliver(json); }`;
-        const r = await b.lb.call<CallResult>("script.callFunction", { functionDeclaration: deliver, arguments: [{ type: "string", value: JSON.stringify(msg) }], target: { context: frame.context }, awaitPromise: true });
+        const r = await b.lb.call<CallResult>("script.callFunction", { functionDeclaration: deliver, arguments: [{ type: "string", value: JSON.stringify(msg) }], target: { context: frame.context, sandbox: SANDBOX }, awaitPromise: true });
         if (r.type === "exception") throw new Error(r.exceptionDetails.text);
         return JSON.parse(String(r.result.value)) ?? undefined;
       },
@@ -784,7 +800,7 @@ function makeApi(b: Browser, ctx: { storageFile: string; preload: string; reload
           decl = injected(`function () {\n${sources.join("\n;\n")}\n}`, world);
         }
         const frames = b.targets(inj.target);
-        const results = await Promise.allSettled(frames.map((f) => b.run(f, decl, inj.args ?? [], ctx.preload)));
+        const results = await Promise.allSettled(frames.map((f) => b.run(f, decl, inj.args ?? [], ctx.preloads, world)));
         if (results.every((r) => r.status === "rejected") && results.length) throw (results[0] as PromiseRejectedResult).reason;
         return frames.map((f, i) => ({ frameId: f.frameId, documentId: f.context, result: results[i].status === "fulfilled" ? results[i].value : undefined }));
       },
@@ -793,7 +809,7 @@ function makeApi(b: Browser, ctx: { storageFile: string; preload: string; reload
           const src = (await Promise.all(s.js.map((f) => Bun.file(join(EXT, f)).text()))).join("\n;\n");
           const pattern = s.matches.map((m) => m.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*"));
           const fn = `() => { if (${s.allFrames ? "true" : "window === window.top"} && /^(?:${pattern.join("|")})$/.test(location.href)) { (function (browser, chrome) {\n${src}\n}).call(window, ${s.world === "MAIN" ? "undefined" : `window[${JSON.stringify(KEY)}]?.api`}, undefined); } }`;
-          const { script } = await b.lb.call<{ script: string }>("script.addPreloadScript", { functionDeclaration: fn });
+          const { script } = await b.lb.call<{ script: string }>("script.addPreloadScript", { functionDeclaration: fn, ...(s.world === "MAIN" ? {} : { sandbox: SANDBOX }) });
           registered.set(s.id, { id: s.id, matches: s.matches, js: s.js, world: s.world, runAt: s.runAt, allFrames: s.allFrames, preload: script });
         }
       },
@@ -922,8 +938,9 @@ async function main() {
   await lb.call("ladybird:setAction", { title: "Safari Harness" });
 
   const [dialogs, start] = await Promise.all(["dialogs.js", "start.js"].map((f) => Bun.file(join(EXT, f)).text()));
-  const preload = preloadSource(dialogs, start);
-  await lb.call("script.addPreloadScript", { functionDeclaration: preload, arguments: [{ type: "channel", value: { channel: "harness" } }] });
+  const preloads: Preloads = { page: pagePreload(dialogs), shim: shimPreload(start) };
+  await lb.call("script.addPreloadScript", { functionDeclaration: preloads.page });
+  await lb.call("script.addPreloadScript", { functionDeclaration: preloads.shim, arguments: [{ type: "channel", value: { channel: "harness" } }], sandbox: SANDBOX });
 
   const storageFile = join(values.state!, "storage.json");
   let current: Extension | null = null;
@@ -931,7 +948,7 @@ async function main() {
   const load = async (startup: boolean) => {
     unload?.();
     current?.dispose();
-    current = makeApi(b, { storageFile, preload, reload: () => void load(false) });
+    current = makeApi(b, { storageFile, preloads, reload: () => void load(false) });
     await current.api.storage.local.set({ daemonPort: Number(values["daemon-port"]) });
     unload = await runBackground(current.api, lb.userAgent);
     if (startup) (current.api.runtime.onStartup as Ev).emit();
