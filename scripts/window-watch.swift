@@ -4,6 +4,9 @@ import QuartzCore
 import ScreenCaptureKit
 import CoreMedia
 
+// The browser the harness drives: Safari, or Ladybird Harness (daemon/front.ts).
+let BROWSER = ProcessInfo.processInfo.environment["SAFARI_HARNESS_BUNDLE"] ?? "com.apple.Safari"
+
 @_silgen_name("_AXUIElementGetWindow")
 func nativeWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
 
@@ -190,7 +193,7 @@ final class WindowWatch: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         agents = target
         physical = screens.filter { $0.0 != "Agents" }.map { $0.1 }
-        guard let safari = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").first else {
+        guard let safari = NSRunningApplication.runningApplications(withBundleIdentifier: BROWSER).first else {
             emit(["error": "Safari is not running"])
             exit(1)
         }

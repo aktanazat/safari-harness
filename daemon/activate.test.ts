@@ -64,7 +64,7 @@ test.each([
 ])("an agent's window %s comes to the front inside the main display at its own size, and the answer says where", async (_where, start, end) => {
   const m = mac(start);
   expect(await callTool("activate", { tab: 21 })).toEqual({ ok: true, window: end });
-  expect({ window: m.windows.get(2), focused: m.focused, app: m.app }).toEqual({ window: end, focused: 2, app: front.SAFARI });
+  expect({ window: m.windows.get(2), focused: m.focused, app: m.app }).toEqual({ window: end, focused: 2, app: front.BROWSER });
 });
 
 test("an agent's window of no size comes onto the main display at 1000 by 800", async () => {
@@ -77,5 +77,5 @@ test("a tab in one of the user's windows comes to the front with his window left
   const his = { x: 29, y: -1410, width: 1076, height: 790 };
   const m = mac({ x: 200, y: 60, width: 1145, height: 875 }, his);
   await callTool("activate", { tab: 3 });
-  expect({ window: m.windows.get(1), focused: m.focused, app: m.app }).toEqual({ window: his, focused: 1, app: front.SAFARI });
+  expect({ window: m.windows.get(1), focused: m.focused, app: m.app }).toEqual({ window: his, focused: 1, app: front.BROWSER });
 });

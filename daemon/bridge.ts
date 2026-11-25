@@ -28,6 +28,7 @@ import { redactUrl, unsecret } from "./redact.ts";
 import { noteLoad } from "./loads.ts";
 import { answeredError } from "./failures.ts";
 import { currentOwner, currentTask } from "./owner.ts";
+import { BROWSER } from "./front.ts";
 
 export const DEFAULT_PORT = 37333;
 
@@ -166,8 +167,9 @@ function byOp(lost: Pending[]): Record<string, number> {
   return counts;
 }
 
-async function safariRunning(): Promise<boolean> {
-  return await Bun.spawn(["pgrep", "-x", "Safari"], { stdout: "ignore", stderr: "ignore" }).exited === 0;
+async function browserRunning(): Promise<boolean> {
+  const found = Bun.spawn(["lsappinfo", "find", `bundleid=${BROWSER}`], { stdout: "pipe", stderr: "ignore" });
+  return (await new Response(found.stdout).text()).trim() !== "";
 }
 
 // A tabs.list asked within JOIN_MS of another still unanswered shares its
@@ -584,8 +586,8 @@ export class Bridge {
     if (this.sock) return this.sock;
     if (!start) throw new Error("Safari extension not connected");
     const taken = this.taken(CONNECT_MS);
-    const running = await safariRunning();
-    if (!running && !this.sock) Bun.spawn(["open", "-g", "-j", "-a", "Safari"], { stdout: "ignore", stderr: "ignore" });
+    const running = await browserRunning();
+    if (!running && !this.sock) Bun.spawn(["open", "-g", "-j", "-b", BROWSER], { stdout: "ignore", stderr: "ignore" });
     await taken;
     if (this.sock) return this.sock;
     throw new Error(running

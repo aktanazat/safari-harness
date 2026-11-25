@@ -246,7 +246,7 @@ test("a handoff that fails on a block page leaves its tab to close at the turn's
 test.each([
   ["stays on the tab", () => {}, { activated: [72, 3], app: MAIL }],
   ["has gone to another app", (m: Mac) => { m.app = "com.apple.Notes"; }, { activated: [72], app: "com.apple.Notes" }],
-  ["has gone to another tab", (m: Mac) => m.use(3), { activated: [72], app: front.SAFARI }],
+  ["has gone to another tab", (m: Mac) => m.use(3), { activated: [72], app: front.BROWSER }],
   ["has a prompt come up over Safari", (m: Mac) => { m.prompt = "com.apple.SecurityAgent"; }, { activated: [72, 3], app: MAIL }],
   ["has gone to another app, a prompt then over it", (m: Mac) => { m.app = "com.apple.Notes"; m.prompt = "com.apple.SecurityAgent"; }, { activated: [72], app: "com.apple.Notes" }],
 ])("a user who %s when the check clears gets back only what they have not taken back themselves", async (_how, act, after) => {
@@ -303,7 +303,7 @@ test("a handoff on a sign-in page stays his across its credential steps and ends
   page.url = "https://accounts.google.com/v3/signin/challenge/selection?TL=1";
   await ticks(2);
   expect(await handed).toMatchObject({ done: false });
-  expect({ activated: m.activated, app: m.app }).toEqual({ activated: [75], app: front.SAFARI });
+  expect({ activated: m.activated, app: m.app }).toEqual({ activated: [75], app: front.BROWSER });
   page.url = "https://accounts.google.com/signin/oauth/id?authuser=0";
   t = taken(waits("Sign in with your passkey"));
   const again = handoff(75, "Sign in with your passkey", 2000);

@@ -140,7 +140,7 @@ function mac(page: Page = {}): Mac {
       if (dom === "sendButton") return answer(page.sendButton ? { send: ".__sh_type_t_send", name: page.sendButton } : { send: null });
       if (dom === "wait") return answer(page.reply ? { found: true, added: page.reply } : { found: false });
       if (dom === "locate") {
-        const disabled = page.disabled === "always" || (page.disabled === "untilFront" && !(m.app === front.SAFARI && frontWindow === 2 && ++locatesInFront > 2));
+        const disabled = page.disabled === "always" || (page.disabled === "untilFront" && !(m.app === front.BROWSER && frontWindow === 2 && ++locatesInFront > 2));
         // he takes his screen back as the page enables the control
         if (page.disabled === "untilFront" && page.takeover && !disabled) m.app = page.takeover;
         return answer({ x: 100, y: 50, width: 80, height: 20, innerWidth: 1200, innerHeight: 800, ...(disabled ? { disabled: true } : {}) });
@@ -187,10 +187,10 @@ function mac(page: Page = {}): Mac {
       return { pasted: true, clipboardRestored: page.clipboardRestored ?? true };
     }
     if (args[0] === "front") return m.prompt ? { bundleId: m.prompt, under: m.app } : { bundleId: m.app };
-    if (args[0] === "activate" && args[1] === front.SAFARI && page.inFrontInstead) throw new Error(`input activate failed: ${args[1]} did not come to the front within 2 s; ${page.inFrontInstead} is in front`);
+    if (args[0] === "activate" && args[1] === front.BROWSER && page.inFrontInstead) throw new Error(`input activate failed: ${args[1]} did not come to the front within 2 s; ${page.inFrontInstead} is in front`);
     if (args[0] === "activate") {
       m.app = args[1];
-      if (args[1] === front.SAFARI && page.promptOnRaise) m.prompt = page.promptOnRaise;
+      if (args[1] === front.BROWSER && page.promptOnRaise) m.prompt = page.promptOnRaise;
       if (m.prompt) throw new Error(`input activate failed: ${args[1]} did not come to the front within 2 s; ${m.prompt} is in front`);
     }
     if (args[0] === "press") {
@@ -288,7 +288,7 @@ test("a select, a date or color input, or a file input's label takes the real mo
 test("a control disabled behind its window is clicked with the real mouse once its tab is in front and the page enables it", async () => {
   const m = mac({ disabled: "untilFront" });
   expect(await click(21)).toEqual({ ok: true, at: { x: 140, y: 160 } });
-  expect({ pressed: run(m, "press"), activated: run(m, "activate")[0], clicks: run(m, "click") }).toEqual({ pressed: [], activated: ["activate", front.SAFARI], clicks: [["click", "140", "160", "--count", "1", "--button", "left"]] });
+  expect({ pressed: run(m, "press"), activated: run(m, "activate")[0], clicks: run(m, "click") }).toEqual({ pressed: [], activated: ["activate", front.BROWSER], clicks: [["click", "140", "160", "--count", "1", "--button", "left"]] });
 });
 
 test("a control that enables after the user took his screen back is not clicked: the click would land on his app", async () => {
@@ -314,7 +314,7 @@ test("a tab behind another in one of the user's windows is not shown there behin
 
 test("the tab Safari shows while it is the app in front takes the real mouse: activate first, and a page gets pointer events", async () => {
   const m = mac();
-  m.app = front.SAFARI;
+  m.app = front.BROWSER;
   expect(await click(3)).toEqual({ ok: true, at: { x: 140, y: 160 } });
   expect(m.asked.filter((a) => a.startsWith("pressMark"))).toEqual([]);
 });
@@ -523,7 +523,7 @@ test("a helper stopped for taking too long says so in plain words", async () => 
   for (const file of ["front.ts", "failures.ts"]) copyFileSync(join(import.meta.dir, file), join(notes, "daemon", file));
   writeFileSync(join(notes, "scripts", "input"), "#!/bin/sh\nexec sleep 30\n", { mode: 0o700 });
   const copy = (await import(join(notes, "daemon", "front.ts"))) as typeof front;
-  await expect(copy.input(["activate", front.SAFARI], 300)).rejects.toThrow("input activate failed: the helper did not answer within 0.3 s and was stopped");
+  await expect(copy.input(["activate", front.BROWSER], 300)).rejects.toThrow("input activate failed: the helper did not answer within 0.3 s and was stopped");
 });
 
 // EOIR's Submit and egov.uscis.gov's Check Status ignored scripted clicks,

@@ -10,7 +10,7 @@
 // through Safari's accessibility tree instead, and nothing comes forward.
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import { frontApp, inFront, input, SAFARI, type TabOps } from "./front.ts";
+import { BROWSER, frontApp, inFront, input, type TabOps } from "./front.ts";
 import { HarnessError } from "./failures.ts";
 import type { InputState } from "./input-state.ts";
 import { pageErrorsOf } from "./receipt.ts";
@@ -151,7 +151,7 @@ async function clickAt(tab: number, a: Record<string, unknown>, count: number, b
     box = await locate();
   }
   if (box.disabled) throw new HarnessError("stale_view", `${what} stayed disabled for ${ENABLE_MS / 1000} s with its tab in front, so it was not clicked and Safari went back behind`, { effect: "none", next: "complete what the page asks before it enables the control, then click again" });
-  if (waited && (await frontApp()) !== SAFARI) throw new HarnessError("unavailable", `another app came in front while ${what} was enabling, so it was not clicked`, { effect: "none", next: "nothing was sent; try again in a moment" });
+  if (waited && (await frontApp()) !== BROWSER) throw new HarnessError("unavailable", `another app came in front while ${what} was enabling, so it was not clicked`, { effect: "none", next: "nothing was sent; try again in a moment" });
   const { x, y, width, height, innerWidth, innerHeight } = box;
   if (typeof x !== "number" || typeof y !== "number" || typeof width !== "number" || typeof height !== "number" || typeof innerWidth !== "number" || typeof innerHeight !== "number") {
     throw new Error(`locate returned no box for ${what}: ${JSON.stringify(box)}`);
@@ -297,7 +297,7 @@ async function inTree<T>(tab: number, tabs: TabInfo[], act: () => Promise<T | nu
 // own UI; and an element the tree lacks (a canvas) or offers no press on.
 async function pressBehind(tab: number, ref: unknown): Promise<string[] | null> {
   const [app, tabs] = await Promise.all([frontApp(), VIA_RPC.tabs()]);
-  if (app === SAFARI && tabs.find((t) => t.id === tab)?.shown) return null;
+  if (app === BROWSER && tabs.find((t) => t.id === tab)?.shown) return null;
   return inTree(tab, tabs, async () => {
     const marked = await rpc("press_mark", { tab, ref });
     if (marked && typeof marked === "object" && ("picker" in marked || "disabled" in marked)) return null;

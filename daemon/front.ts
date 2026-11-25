@@ -16,7 +16,11 @@ import type { TabInfo } from "./tools.ts";
 
 const execFileAsync = promisify(execFile);
 const INPUT = join(import.meta.dir, "..", "scripts", "input");
-export const SAFARI = "com.apple.Safari";
+// The browser the extension runs in: Safari, or the Ladybird the bridge
+// drives (ladybird/bridge.ts), whose daemon and callers set
+// SAFARI_HARNESS_BUNDLE=org.ladybird.Ladybird.Harness. The native helpers
+// (scripts/*.swift) read the same variable.
+export const BROWSER = process.env.SAFARI_HARNESS_BUNDLE ?? "com.apple.Safari";
 
 // Runs the helper and parses its one JSON line.
 // Typed text goes on stdin, unchanged and without an added newline: cards
@@ -89,7 +93,7 @@ export function onRaised(listener: () => void): void {
 }
 
 export async function raiseSafari(): Promise<void> {
-  await input(["activate", SAFARI]).catch((e: unknown) => {
+  await input(["activate", BROWSER]).catch((e: unknown) => {
     throw new HarnessError("unavailable", e instanceof Error ? e.message : String(e), { effect: "none", next: "nothing was sent to the page; try again in a moment." });
   });
   raisedAt = Date.now();
@@ -109,7 +113,7 @@ export async function frontApp(): Promise<string | undefined> {
 async function safariInFront(): Promise<boolean> {
   const r = await input(["front"]).catch(() => undefined);
   if (!r || typeof r !== "object") return false;
-  return ("bundleId" in r && r.bundleId === SAFARI) || ("under" in r && r.under === SAFARI);
+  return ("bundleId" in r && r.bundleId === BROWSER) || ("under" in r && r.under === BROWSER);
 }
 
 // A macOS notification from the harness. text goes in as an argument, so
@@ -136,7 +140,7 @@ export async function show(tab: number, ops: TabOps, check?: () => void): Promis
   const giveBack = async () => {
     if (!(await safariInFront())) return;
     for (const t of back) if (t) await ops.activate(t.id).catch(() => {});
-    if (bundleId && bundleId !== SAFARI) await input(["activate", bundleId]).catch(() => {});
+    if (bundleId && bundleId !== BROWSER) await input(["activate", bundleId]).catch(() => {});
   };
   check?.();
   try {

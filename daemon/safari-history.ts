@@ -13,9 +13,15 @@ import type { Tool } from "./tools.ts";
 import { addressKey, loadsFile, readLoads, type Load } from "./loads.ts";
 import { redactUrl } from "./redact.ts";
 import { daemonHttp } from "./rpc.ts";
+import { BROWSER } from "./front.ts";
 
 const HOME = homedir();
-const HISTORY_DB = join(HOME, "Library", "Safari", "History.db");
+// Ladybird Harness (ladybird/install-app.sh) keeps its history in its default
+// profile, "developer" in a build of the fork.
+const LADYBIRD = BROWSER.startsWith("org.ladybird.");
+const HISTORY_DB = LADYBIRD
+  ? join(HOME, "Library", "Application Support", "Ladybird", "Profiles", "developer", "History.db")
+  : join(HOME, "Library", "Safari", "History.db");
 
 // visit_time is seconds since 2001-01-01 UTC.
 const APPLE_EPOCH_S = Date.UTC(2001, 0, 1) / 1000;
@@ -73,6 +79,20 @@ function agentVisits(visits: Visit[], loads: Load[]): number[] {
   return [...agents];
 }
 
+// Ladybird keeps one row per address: its title, how often it was visited
+// and when last (ms since 1970), not each visit. An address an agent's load
+// visited last, or one of the daemon's own pages, counts as the agents',
+// all its visits with it, since the ones before cannot be told apart.
+type LadybirdRow = { url: string; title: string; visits: number; last: number };
+function ladybirdFound(db: Database, sinceMs: number, loads: Load[]): Found[] {
+  const own = `${new URL(daemonHttp()).origin}/`;
+  const rows = db.query("SELECT url, title, visit_count visits, last_visited_time last FROM History WHERE last_visited_time > ?1 ORDER BY last_visited_time DESC").all(sinceMs) as LadybirdRow[];
+  return rows.map((r) => {
+    const agent = r.url.startsWith(own) || loads.some((l) => l.urls.includes(addressKey(r.url)) && r.last >= l.from - SLACK_MS && r.last <= l.to + SLACK_MS);
+    return { url: r.url, title: r.title || null, last: agent ? null : r.last / 1000 - APPLE_EPOCH_S, visits: agent ? 0 : r.visits, agents: agent ? r.visits : 0 };
+  });
+}
+
 function opened<T>(path: string, read: (db: Database) => T): T {
   const db = new Database(path, { readonly: true });
   try {
@@ -110,10 +130,15 @@ function readHistory<T>(path: string, read: (db: Database) => T): T {
 // his, so a site agents and he both used is always his.
 export function userHosts(files = { history: HISTORY_DB, loads: loadsFile(new URL(daemonHttp()).port) }): Set<string> {
   const loads = readLoads(files.loads, 0);
-  const visits = readHistory(files.history, (db) => db.query(VISITS).all(-Infinity) as Visit[]);
-  const agents = new Set(agentVisits(visits, loads));
-  return new Set(visits.flatMap((v) => {
-    const host = agents.has(v.id) ? undefined : URL.parse(v.url)?.hostname;
+  const urls = LADYBIRD
+    ? readHistory(files.history, (db) => ladybirdFound(db, 0, loads)).flatMap((r) => (r.last === null ? [] : [r.url]))
+    : readHistory(files.history, (db) => {
+      const visits = db.query(VISITS).all(-Infinity) as Visit[];
+      const agents = new Set(agentVisits(visits, loads));
+      return visits.flatMap((v) => (agents.has(v.id) ? [] : [v.url]));
+    });
+  return new Set(urls.flatMap((url) => {
+    const host = URL.parse(url)?.hostname;
     return host ? [host.toLowerCase()] : [];
   }));
 }
@@ -130,6 +155,10 @@ export function browsingHistory(opts: { text?: string; any?: string[]; days?: nu
   const since = sinceMs / 1000 - APPLE_EPOCH_S;
   const loads = readLoads(files.loads, sinceMs - SLACK_MS);
   const found = readHistory(files.history, (db) => {
+    if (LADYBIRD) {
+      const rows = ladybirdFound(db, sinceMs, loads);
+      return texts.length === 0 ? rows : rows.filter((r) => texts.some((t) => r.url.toLowerCase().includes(t) || (r.title ?? "").toLowerCase().includes(t)));
+    }
     const agents = agentVisits(db.query(VISITS).all(since) as Visit[], loads);
     return db.query(SEARCH).all(since, JSON.stringify(texts), JSON.stringify(agents)) as Found[];
   });
@@ -157,7 +186,7 @@ export function browsingHistory(opts: { text?: string; any?: string[]; days?: nu
 
 export const HISTORY_TOOLS: Record<string, Tool> = {
   browsing_history: {
-    desc: "Search the user's Safari browsing history by title or address, newest first.",
+    desc: `Search the user's ${LADYBIRD ? "Ladybird" : "Safari"} browsing history by title or address, newest first.`,
     params: {
       text: { type: "string", description: "words in the title or address, case-insensitive; omit for all" },
       any: { type: "array", items: { type: "string" }, description: "several texts" },
