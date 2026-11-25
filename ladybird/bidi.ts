@@ -11,7 +11,11 @@ export type BidiEvent = { method: string; params: Record<string, unknown> };
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void };
 type Wire = { id?: number; type?: string; method?: string; params?: Record<string, unknown>; result?: unknown; error?: string; message?: string };
 
-export type LaunchOptions = { port: number; headless: boolean; profilePath?: string; profile?: string };
+// attach: the user's own Ladybird, started with --allow-webdriver-attach (or
+// started now, as he would start it), which outlives the session; this
+// takes the Ladybird build with that patch (LADYBIRD_APP). launch and
+// headless: a browser of the driver's own, closed with the session.
+export type LaunchOptions = { port: number; browser: "attach" | "launch" | "headless"; profilePath?: string; profile?: string };
 
 // The driver prints this once it accepts sessions.
 async function untilListening(stdout: ReadableStream<Uint8Array>): Promise<void> {
@@ -64,7 +68,8 @@ export class Ladybird {
 
   static async launch(opts: LaunchOptions): Promise<Ladybird> {
     const args = [`${APP}/Contents/MacOS/WebDriver`, "--port", String(opts.port)];
-    if (opts.headless) args.push("--headless");
+    if (opts.browser === "attach") args.push("--attach");
+    if (opts.browser === "headless") args.push("--headless");
     if (opts.profilePath) args.push("--profile-path", opts.profilePath);
     else if (opts.profile) args.push("--profile", opts.profile);
     const driver = spawn(args, { stdout: "pipe", stderr: "inherit" });

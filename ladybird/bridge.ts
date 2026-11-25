@@ -9,7 +9,7 @@
 // Ladybird has no isolated worlds yet ("Sandbox realms are not
 // supported"), so the extension's scripts run in the page's own world.
 //
-//   bun ladybird/bridge.ts [--profile-path DIR | --profile NAME] [--headless]
+//   bun ladybird/bridge.ts [--browser attach|launch|headless] [--profile-path DIR | --profile NAME]
 //                          [--driver-port 4470] [--daemon-port 37333]
 
 import { mkdirSync } from "node:fs";
@@ -665,13 +665,15 @@ async function runBackground(api: object, userAgent: string) {
 async function main() {
   const { values } = parseArgs({
     options: {
-      "profile-path": { type: "string" }, profile: { type: "string" }, headless: { type: "boolean", default: false },
+      "profile-path": { type: "string" }, profile: { type: "string" }, browser: { type: "string", default: "launch" },
       "driver-port": { type: "string", default: "4470" }, "daemon-port": { type: "string", default: "37333" },
       state: { type: "string", default: join(homedir(), ".local/share/safari-harness/ladybird") },
     },
   });
   mkdirSync(values.state!, { recursive: true });
-  const lb = await Ladybird.launch({ port: Number(values["driver-port"]), headless: values.headless!, profilePath: values["profile-path"], profile: values.profile });
+  const browser = values.browser;
+  if (browser !== "attach" && browser !== "launch" && browser !== "headless") throw new Error(`--browser is attach, launch or headless, not ${browser}`);
+  const lb = await Ladybird.launch({ port: Number(values["driver-port"]), browser, profilePath: values["profile-path"], profile: values.profile });
   console.log(`[ladybird] session ${lb.session}, ${lb.userAgent}`);
   const b = new Browser(lb);
   await b.start();
