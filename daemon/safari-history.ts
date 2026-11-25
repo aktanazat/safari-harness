@@ -13,7 +13,7 @@ import type { Tool } from "./tools.ts";
 import { addressKey, loadsFile, readLoads, type Load } from "./loads.ts";
 import { redactUrl } from "./redact.ts";
 import { daemonHttp } from "./rpc.ts";
-import { LADYBIRD } from "./front.ts";
+import { LADYBIRD, LADYBIRD_PROFILE_PATH } from "./front.ts";
 
 const HOME = homedir();
 // Ladybird Harness (ladybird/install-app.sh) keeps its history in its
@@ -21,7 +21,7 @@ const HOME = homedir();
 // browser and bridge run with, else in its default profile, "developer" in
 // a build of the fork.
 const HISTORY_DB = LADYBIRD
-  ? (process.env.LADYBIRD_PROFILE_PATH ? join(process.env.LADYBIRD_PROFILE_PATH, "data", "History.db") : join(HOME, "Library", "Application Support", "Ladybird", "Profiles", "developer", "History.db"))
+  ? (LADYBIRD_PROFILE_PATH ? join(LADYBIRD_PROFILE_PATH, "data", "History.db") : join(HOME, "Library", "Application Support", "Ladybird", "Profiles", "developer", "History.db"))
   : join(HOME, "Library", "Safari", "History.db");
 
 // visit_time is seconds since 2001-01-01 UTC.

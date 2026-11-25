@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { DEFAULT_PORT } from "../daemon/bridge.ts";
+import { BROWSER, BROWSER_CHOICE } from "../daemon/front.ts";
 import { tryLock } from "../daemon/flock.ts";
 import { connectHost } from "../daemon/host.ts";
 import { heliumProfile, quitHelium } from "../daemon/passwords.ts";
@@ -30,9 +31,6 @@ const DAEMON_LABEL = "at.aktan.safari-harness.daemon";
 const ROUTINE_PREFIX = "at.aktan.safari-harness.routine.";
 const OMP = join(HOME, ".bun", "bin", "omp");
 const PATH = [join(HOME, ".bun", "bin"), join(HOME, ".local", "bin"), "/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":");
-// The browser the harness drives, as the install's environment names it
-// (front.ts, safari-history.ts), goes to the daemon and routines too.
-const BROWSER_ENV = ["SAFARI_HARNESS_BUNDLE", "LADYBIRD_PROFILE_PATH"].filter((k) => process.env[k]);
 // A script routine's run ends here, as a model routine's does at omp's --max-time.
 const SCRIPT_MS = 30 * 60_000;
 // A script's words are cut to this in the text to the phone; the log keeps all.
@@ -72,7 +70,7 @@ function plist(label: string, args: string[], schedule: string, logBase: string)
 ${args.map((a) => `    <string>${xml(a)}</string>`).join("\n")}
   </array>
   <key>EnvironmentVariables</key>
-  <dict><key>PATH</key><string>${xml(PATH)}</string><key>HOME</key><string>${xml(HOME)}</string>${BROWSER_ENV.map((k) => `<key>${k}</key><string>${xml(process.env[k]!)}</string>`).join("")}</dict>
+  <dict><key>PATH</key><string>${xml(PATH)}</string><key>HOME</key><string>${xml(HOME)}</string></dict>
 ${schedule}
   <key>StandardOutPath</key><string>${xml(logBase)}.log</string>
   <key>StandardErrorPath</key><string>${xml(logBase)}.log</string>
@@ -116,9 +114,21 @@ async function unload(label: string): Promise<boolean> {
 
 // ---------- daemon ----------
 
+// SAFARI_HARNESS_BUNDLE (and LADYBIRD_PROFILE_PATH) in the install's
+// environment choose the browser for the daemon and every caller from now
+// on (front.ts BROWSER_CHOICE); com.apple.Safari goes back to Safari. An
+// install without it, as a deploy's, keeps the choice there is.
 export async function daemonInstall(): Promise<string> {
   const main = join(CURRENT, "daemon", "main.ts");
   if (!existsSync(main)) throw new Error("no release is deployed; run scripts/dev-install.sh in the checkout");
+  const bundle = process.env.SAFARI_HARNESS_BUNDLE;
+  if (bundle === "com.apple.Safari") {
+    await rm(BROWSER_CHOICE, { force: true });
+  } else if (bundle) {
+    const profilePath = process.env.LADYBIRD_PROFILE_PATH;
+    await mkdir(join(BROWSER_CHOICE, ".."), { recursive: true });
+    await writeFile(BROWSER_CHOICE, `${JSON.stringify({ bundle, ...(profilePath ? { profilePath } : {}) })}\n`);
+  }
   const body = plist(
     DAEMON_LABEL,
     [process.execPath, main],
@@ -126,7 +136,7 @@ export async function daemonInstall(): Promise<string> {
     join(LOGS, "daemon"),
   );
   await load(DAEMON_LABEL, body);
-  return `daemon installed; logs: ${join(LOGS, "daemon.log")}`;
+  return `daemon installed, driving ${BROWSER}; logs: ${join(LOGS, "daemon.log")}`;
 }
 
 // The hidden Helium for Apple Passwords outlives a daemon restart on

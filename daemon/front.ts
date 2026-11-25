@@ -9,6 +9,8 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { HarnessError } from "./failures.ts";
@@ -17,10 +19,17 @@ import type { TabInfo } from "./tools.ts";
 const execFileAsync = promisify(execFile);
 const INPUT = join(import.meta.dir, "..", "scripts", "input");
 // The browser the extension runs in: Safari, or the Ladybird the bridge
-// drives (ladybird/bridge.ts), whose daemon and callers set
-// SAFARI_HARNESS_BUNDLE=org.ladybird.Ladybird.Harness. The native helpers
-// (scripts/*.swift) read the same variable.
-export const BROWSER = process.env.SAFARI_HARNESS_BUNDLE ?? "com.apple.Safari";
+// drives (ladybird/bridge.ts). safari daemon install keeps the choice in
+// BROWSER_CHOICE, which the daemon and every caller (the MCP server, the
+// CLI, routines) read; SAFARI_HARNESS_BUNDLE and LADYBIRD_PROFILE_PATH
+// override it (a scratch daemon). The native helpers (scripts/*.swift) get
+// it from input's environment.
+export const BROWSER_CHOICE = join(homedir(), ".local", "share", "safari-harness", "browser.json");
+type Choice = { bundle?: string; profilePath?: string };
+const chosen: Choice = existsSync(BROWSER_CHOICE) ? JSON.parse(readFileSync(BROWSER_CHOICE, "utf8")) as Choice : {};
+export const BROWSER = process.env.SAFARI_HARNESS_BUNDLE ?? chosen.bundle ?? "com.apple.Safari";
+// Ladybird's --profile-path, when it is not its default profile.
+export const LADYBIRD_PROFILE_PATH = process.env.LADYBIRD_PROFILE_PATH ?? chosen.profilePath;
 export const LADYBIRD = BROWSER.startsWith("org.ladybird.");
 // The browser as the user and agents know it: tool labels, phone cards.
 export const BROWSER_NAME = LADYBIRD ? "Ladybird" : "Safari";
@@ -36,7 +45,7 @@ export async function browserRunning(): Promise<boolean> {
 // use this path too, and process arguments expose their digits (09-30).
 export async function input(args: string[], timeout = 10000, stdin?: string, completion?: () => Promise<boolean>): Promise<unknown> {
   try {
-    const running = execFileAsync(INPUT, args, { timeout });
+    const running = execFileAsync(INPUT, args, { timeout, env: { ...process.env, SAFARI_HARNESS_BUNDLE: BROWSER } });
     let handshake = false;
     let pipeError: Error | undefined;
     if (completion) {
