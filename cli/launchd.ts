@@ -30,6 +30,9 @@ const DAEMON_LABEL = "at.aktan.safari-harness.daemon";
 const ROUTINE_PREFIX = "at.aktan.safari-harness.routine.";
 const OMP = join(HOME, ".bun", "bin", "omp");
 const PATH = [join(HOME, ".bun", "bin"), join(HOME, ".local", "bin"), "/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":");
+// The browser the harness drives, as the install's environment names it
+// (front.ts, safari-history.ts), goes to the daemon and routines too.
+const BROWSER_ENV = ["SAFARI_HARNESS_BUNDLE", "LADYBIRD_PROFILE_PATH"].filter((k) => process.env[k]);
 // A script routine's run ends here, as a model routine's does at omp's --max-time.
 const SCRIPT_MS = 30 * 60_000;
 // A script's words are cut to this in the text to the phone; the log keeps all.
@@ -69,7 +72,7 @@ function plist(label: string, args: string[], schedule: string, logBase: string)
 ${args.map((a) => `    <string>${xml(a)}</string>`).join("\n")}
   </array>
   <key>EnvironmentVariables</key>
-  <dict><key>PATH</key><string>${xml(PATH)}</string><key>HOME</key><string>${xml(HOME)}</string></dict>
+  <dict><key>PATH</key><string>${xml(PATH)}</string><key>HOME</key><string>${xml(HOME)}</string>${BROWSER_ENV.map((k) => `<key>${k}</key><string>${xml(process.env[k]!)}</string>`).join("")}</dict>
 ${schedule}
   <key>StandardOutPath</key><string>${xml(logBase)}.log</string>
   <key>StandardErrorPath</key><string>${xml(logBase)}.log</string>

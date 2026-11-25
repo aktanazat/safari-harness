@@ -44,7 +44,7 @@ if (( ${#bridge_opt} )); then
     -c "Add :Label string $label" \
     -c "Add :ProgramArguments array" \
     -c "Add :ProgramArguments:0 string $bun" \
-    -c "Add :ProgramArguments:1 string ${0:A:h}/bridge.ts" \
+    -c "Add :ProgramArguments:1 string ${0:a:h}/bridge.ts" \
     -c "Add :ProgramArguments:2 string --browser" \
     -c "Add :ProgramArguments:3 string attach" \
     -c "Add :ProgramArguments:4 string --daemon-port" \
