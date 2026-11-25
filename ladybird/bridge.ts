@@ -50,6 +50,19 @@ type Win = { id: number; bounds?: [number, number, number, number] };
 type Info = { context: string; parent?: string | null; url?: string; originalOpener?: string | null; children?: Info[] | null };
 type Remote = { type: string; value?: unknown };
 type CallResult = { type: "success"; result: Remote } | { type: "exception"; exceptionDetails: { text: string } };
+type Rect = { x: number; y: number; width: number; height: number };
+type Layout = { screens: { frame: Rect }[]; reference?: Rect };
+
+const INPUT = new URL("../scripts/input", import.meta.url).pathname;
+// How stale the display layout may be when a window sync reads it.
+const LAYOUT_MS = 2000;
+
+// The display holding most of r.
+function holdingScreen(r: Rect, screens: { frame: Rect }[]): Rect | undefined {
+  const shared = (s: Rect) => Math.max(0, Math.min(r.x + r.width, s.x + s.width) - Math.max(r.x, s.x)) * Math.max(0, Math.min(r.y + r.height, s.y + s.height) - Math.max(r.y, s.y));
+  const best = screens.reduce<{ frame: Rect } | undefined>((most, s) => (!most || shared(s.frame) > shared(most.frame) ? s : most), undefined);
+  return best && shared(best.frame) > 0 ? best.frame : undefined;
+}
 
 const fail = (what: string) => Promise.reject(new Error(what));
 
@@ -97,7 +110,7 @@ function preloadSource(dialogs: string, start: string): string {
   if (window === window.top) {
     let last = "";
     const report = () => {
-      const state = { k: "page", title: document.title, visible: document.visibilityState === "visible", focused: document.hasFocus(), bounds: [screenX, screenY, outerWidth, outerHeight] };
+      const state = { k: "page", title: document.title, visible: document.visibilityState === "visible", focused: document.hasFocus() };
       const now = JSON.stringify(state);
       if (now !== last) { last = now; post(state); }
     };
@@ -105,7 +118,7 @@ function preloadSource(dialogs: string, start: string): string {
       report();
       new MutationObserver(report).observe(document.head || document.documentElement, { subtree: true, childList: true, characterData: true });
     }, { once: true });
-    for (const type of ["load", "focus", "blur", "resize"]) addEventListener(type, report);
+    for (const type of ["load", "focus", "blur"]) addEventListener(type, report);
     document.addEventListener("visibilitychange", report);
   }
   try {
@@ -192,6 +205,7 @@ class Browser {
       const [{ contexts }, { clientWindows }] = await Promise.all([
         this.lb.call<{ contexts: (Info & { clientWindow?: string })[] }>("browsingContext.getTree", { maxDepth: 0 }),
         this.lb.call<{ clientWindows: { clientWindow: string; active: boolean; x: number; y: number; width: number; height: number }[] }>("browser.getClientWindows"),
+        this.refreshLayout(LAYOUT_MS),
       ]);
       for (const c of contexts) {
         const tab = this.tabs.get(this.#tabOf.get(c.context) ?? -1);
@@ -217,6 +231,17 @@ class Browser {
       }
     })().finally(() => { this.#syncing = undefined; });
     return this.#syncing;
+  }
+
+  // Moves a tab to a window, or to a new one, as Ladybird's ladybird:moveTab
+  // does, and answers the window it is in then.
+  async moveTab(tab: Tab, to: number | "new", background: boolean): Promise<number> {
+    await this.syncWindows();
+    const name = to === "new" ? undefined : [...this.#winOf].find(([, id]) => id === to)?.[0];
+    if (to !== "new" && name === undefined) throw new Error(`No window with id: ${to}.`);
+    await this.lb.call("ladybird:moveTab", { context: tab.context, background, ...(name ? { clientWindow: name } : {}) });
+    await this.syncWindows();
+    return tab.windowId;
   }
 
   #move(tab: Tab, windowId: number) {
@@ -323,13 +348,11 @@ class Browser {
     const frame = source?.context ? this.frames.get(source.context) : undefined;
     const data = params.data as Remote | undefined;
     if (!frame || data?.type !== "string") return;
-    const m = JSON.parse(String(data.value)) as { k: string; id?: number; msg?: unknown; title?: string; visible?: boolean; focused?: boolean; bounds?: [number, number, number, number] };
+    const m = JSON.parse(String(data.value)) as { k: string; id?: number; msg?: unknown; title?: string; visible?: boolean; focused?: boolean };
     const tab = this.tabs.get(frame.tabId);
     if (!tab) return;
     if (m.k === "msg") return this.events.message.emit(frame, m.id, m.msg);
     if (m.k !== "page" || frame.frameId !== 0) return;
-    const win = this.windows.get(tab.windowId);
-    if (win && m.bounds) win.bounds = m.bounds;
     if (m.title !== undefined && m.title !== tab.title) {
       tab.title = m.title;
       this.events.tabUpdated.emit(tab.id, { title: m.title }, this.tabObject(tab));
@@ -392,11 +415,25 @@ class Browser {
     };
   }
 
+  // The displays, and the one a new window opens on, as the harness's native
+  // helper reads them (scripts/input windows), at most maxAge ms old.
+  layout: Layout = { screens: [] };
+  #layoutAt = 0;
+  async refreshLayout(maxAge: number): Promise<void> {
+    if (Date.now() - this.#layoutAt <= maxAge) return;
+    const helper = Bun.spawn([INPUT, "windows"], { stdout: "pipe", stderr: "ignore" });
+    this.layout = JSON.parse(await new Response(helper.stdout).text()) as Layout;
+    this.#layoutAt = Date.now();
+  }
+
+  // Safari counts a window's left and top from the top-left of the display
+  // holding most of it; Ladybird's are the screen's.
   windowObject(id: number, populate = false) {
     const w = this.win(id);
-    const [left, top, width, height] = w.bounds ?? [0, 0, 0, 0];
+    const [x, y, width, height] = w.bounds ?? [0, 0, 0, 0];
+    const origin = holdingScreen({ x, y, width, height }, this.layout.screens) ?? { x: 0, y: 0 };
     return {
-      id, focused: this.lastFocused === id, left, top, width, height, state: "normal", type: "normal", incognito: false, alwaysOnTop: false,
+      id, focused: this.lastFocused === id, left: x - origin.x, top: y - origin.y, width, height, state: "normal", type: "normal", incognito: false, alwaysOnTop: false,
       ...(populate ? { tabs: [...this.tabs.values()].filter((t) => t.windowId === id).map((t) => this.tabObject(t)) } : {}),
     };
   }
@@ -605,7 +642,15 @@ function makeApi(b: Browser, ctx: { storageFile: string; preload: string; reload
       async remove(ids: number | number[]) {
         for (const id of typeof ids === "number" ? [ids] : ids) await b.lb.call("browsingContext.close", { context: b.tab(id).context });
       },
-      async move() { throw new Error("Ladybird cannot move a tab to another window."); },
+      async move(ids: number | number[], props: { windowId: number; index?: number }) {
+        const moved = [];
+        for (const id of typeof ids === "number" ? [ids] : ids) {
+          const tab = b.tab(id);
+          await b.moveTab(tab, props.windowId, true);
+          moved.push(b.tabObject(tab));
+        }
+        return typeof ids === "number" ? moved[0] : moved;
+      },
       async sendMessage(id: number, msg: unknown, opts: { frameId?: number } = {}) {
         const [frame] = b.targets({ tabId: id, frameIds: [opts.frameId ?? 0] });
         const deliver = `(json) => { const shim = window[${JSON.stringify(KEY)}]; if (!shim) throw new Error("Could not establish connection. Receiving end does not exist."); return shim.deliver(json); }`;
@@ -634,8 +679,13 @@ function makeApi(b: Browser, ctx: { storageFile: string; preload: string; reload
         return b.windowObject(id, opts.populate);
       },
       async create(props: { url?: string | string[]; tabId?: number; focused?: boolean; left?: number; top?: number; width?: number; height?: number }) {
-        if (props.tabId !== undefined) throw new Error("Ladybird cannot move a tab to a new window.");
-        const tab = await b.create("new", props.focused === false);
+        let tab: Tab;
+        if (props.tabId !== undefined) {
+          tab = b.tab(props.tabId);
+          await b.moveTab(tab, "new", props.focused === false);
+        } else {
+          tab = await b.create("new", props.focused === false);
+        }
         const context = tab.context;
         const url = Array.isArray(props.url) ? props.url[0] : props.url;
         if (url) {
@@ -643,7 +693,7 @@ function makeApi(b: Browser, ctx: { storageFile: string; preload: string; reload
           tab.status = "loading";
           void b.lb.call("browsingContext.navigate", { context, url, wait: "none" }).catch(() => {});
         }
-        await setBounds(tab.windowId, props);
+        await setBounds(tab.windowId, props, true);
         return b.windowObject(tab.windowId, true);
       },
       async update(id: number, props: { focused?: boolean; left?: number; top?: number; width?: number; height?: number; state?: string }) {
@@ -720,15 +770,25 @@ function makeApi(b: Browser, ctx: { storageFile: string; preload: string; reload
     },
   };
 
-  async function setBounds(id: number, p: { left?: number; top?: number; width?: number; height?: number }) {
+  // left and top count, as in Safari, from the top-left of the display
+  // holding most of the window, or for a new window from the display Safari
+  // opens one on (the helper's reference display).
+  async function setBounds(id: number, p: { left?: number; top?: number; width?: number; height?: number }, opening = false) {
     if (p.left === undefined && p.top === undefined && p.width === undefined && p.height === undefined) return;
     const tabId = b.active.get(id);
     if (tabId === undefined) return;
+    if (!opening) await b.syncWindows();
+    await b.refreshLayout(0);
+    const [x, y, width, height] = b.win(id).bounds ?? [0, 0, 0, 0];
+    const origin = (opening ? b.layout.reference : holdingScreen({ x, y, width, height }, b.layout.screens)) ?? { x: 0, y: 0 };
     const rect = await b.lb.classic(async (send) => {
       await send("POST", "/window", { handle: b.tab(tabId).context });
-      return send<{ x: number; y: number; width: number; height: number }>("POST", "/window/rect", { x: p.left ?? null, y: p.top ?? null, width: p.width ?? null, height: p.height ?? null });
+      return send<Rect>("POST", "/window/rect", {
+        x: p.left === undefined ? null : origin.x + p.left, y: p.top === undefined ? null : origin.y + p.top,
+        width: p.width ?? null, height: p.height ?? null,
+      });
     });
-    b.win(id).bounds = [p.left ?? rect.x, p.top ?? rect.y, p.width ?? rect.width, p.height ?? rect.height];
+    b.win(id).bounds = [rect.x, rect.y, rect.width, rect.height];
   }
 
   const dispose = () => {
