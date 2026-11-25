@@ -138,16 +138,18 @@ class Browser {
   readonly active = new Map<number, number>();
   lastFocused = -1;
   #tabOf = new Map<string, number>();
-  // Where the next contexts this bridge makes go: Ladybird gives every tab
-  // its own BiDi clientWindow, so windows are tracked here, by how each
-  // tab came to be.
+  // Where the next contexts this bridge makes go, until Ladybird names the
+  // OS window of each tab (clientWindow "window-N", syncWindows), which its
+  // UI does once it shows the tab.
   #expect: (number | "new")[] = [];
+  #winOf = new Map<string, number>();
+  #syncing: Promise<void> | undefined;
   #nextTab = 1;
   #nextWin = 1;
   #nextFrame = new Map<number, number>();
   readonly events = {
     tabCreated: new Ev(), tabUpdated: new Ev(), tabRemoved: new Ev(), tabActivated: new Ev(),
-    winCreated: new Ev(), winRemoved: new Ev(), winFocus: new Ev(),
+    winCreated: new Ev(), winRemoved: new Ev(), winFocus: new Ev(), tabAttached: new Ev(),
     message: new Ev(),
   };
 
@@ -160,6 +162,12 @@ class Browser {
     });
     const tree = await this.lb.call<{ contexts: Info[] }>("browsingContext.getTree", {});
     for (const top of tree.contexts) this.#adopt(top, false);
+    // The pages the user had open before, which no preload reported, give their titles now.
+    await Promise.all([...this.tabs.values()].map(async (tab) => {
+      const r = await this.lb.call<CallResult>("script.evaluate", { expression: "document.title", target: { context: tab.context }, awaitPromise: false }).catch(() => null);
+      if (r?.type === "success" && typeof r.result.value === "string") tab.title = r.result.value;
+    }));
+    await this.syncWindows();
   }
 
   #newWindow(): number {
@@ -176,6 +184,54 @@ class Browser {
     if (typeof asked === "number" && this.windows.has(asked)) return asked;
     if (asked === "new" || this.windows.size === 0) return this.#newWindow();
     return this.windows.has(this.lastFocused) ? this.lastFocused : [...this.windows.keys()][0];
+  }
+
+  // Each tab goes to the window Ladybird says shows it, and each window
+  // takes the bounds and focus Ladybird reports.
+  syncWindows(): Promise<void> {
+    this.#syncing ??= (async () => {
+      const [{ contexts }, { clientWindows }] = await Promise.all([
+        this.lb.call<{ contexts: (Info & { clientWindow?: string })[] }>("browsingContext.getTree", { maxDepth: 0 }),
+        this.lb.call<{ clientWindows: { clientWindow: string; active: boolean; x: number; y: number; width: number; height: number }[] }>("browser.getClientWindows"),
+      ]);
+      for (const c of contexts) {
+        const tab = this.tabs.get(this.#tabOf.get(c.context) ?? -1);
+        if (!tab || !c.clientWindow?.startsWith("window-")) continue;
+        let windowId = this.#winOf.get(c.clientWindow);
+        if (windowId === undefined) {
+          // A window this bridge placed tabs in takes the name Ladybird gives it.
+          windowId = [...this.#winOf.values()].includes(tab.windowId) ? this.#newWindow() : tab.windowId;
+          this.#winOf.set(c.clientWindow, windowId);
+        }
+        if (tab.windowId !== windowId) this.#move(tab, windowId);
+      }
+      for (const w of clientWindows) {
+        const id = this.#winOf.get(w.clientWindow);
+        const win = id === undefined ? undefined : this.windows.get(id);
+        if (!win) continue;
+        if (w.width > 0) win.bounds = [w.x, w.y, w.width, w.height];
+        if (w.active && this.lastFocused !== win.id) {
+          this.lastFocused = win.id;
+          this.events.winFocus.emit(win.id);
+        }
+      }
+    })().finally(() => { this.#syncing = undefined; });
+    return this.#syncing;
+  }
+
+  #move(tab: Tab, windowId: number) {
+    const from = tab.windowId;
+    tab.windowId = windowId;
+    if (this.active.get(from) === tab.id) this.active.delete(from);
+    if (!this.active.has(windowId)) this.active.set(windowId, tab.id);
+    this.events.tabAttached.emit(tab.id, { newWindowId: windowId, newPosition: this.tabObject(tab).index });
+    if (![...this.tabs.values()].some((t) => t.windowId === from)) {
+      this.windows.delete(from);
+      for (const [name, id] of this.#winOf) if (id === from) this.#winOf.delete(name);
+      this.events.winRemoved.emit(from);
+    } else if (!this.active.has(from)) {
+      this.active.set(from, [...this.tabs.values()].find((t) => t.windowId === from)!.id);
+    }
   }
 
   // A context Ladybird reports, from the tree or as it is made.
@@ -248,6 +304,7 @@ class Browser {
     if (left.length === 0) {
       const win = this.windows.get(tab.windowId)!;
       this.windows.delete(win.id);
+      for (const [name, id] of this.#winOf) if (id === win.id) this.#winOf.delete(name);
       this.events.winRemoved.emit(win.id);
     }
   }
@@ -354,19 +411,34 @@ class Browser {
   }
 }
 
-// Classic WebDriver's cookie, as the cookies API gives one. Classic calls
-// see the in-memory jar, HttpOnly and session cookies included, but only
-// for the current page's site; Ladybird.db lags it by up to 30 s and
-// never holds session cookies.
-type ClassicCookie = { name: string; value: string; path: string; domain: string; secure: boolean; httpOnly: boolean; expiry?: number; sameSite?: string };
-function cookieObject(c: ClassicCookie) {
-  const sameSite = (c.sameSite ?? "").toLowerCase();
+// A cookie as WebDriver BiDi's storage module gives it, from the browser's
+// own jar, HttpOnly and session cookies included.
+type BidiCookie = { name: string; value: { type: string; value: string }; domain: string; path: string; httpOnly: boolean; secure: boolean; sameSite: string; expiry?: number };
+
+function cookieObject(c: BidiCookie) {
   return {
-    name: c.name, value: c.value, domain: c.domain, path: c.path, secure: c.secure, httpOnly: c.httpOnly,
+    name: c.name, value: c.value.value, domain: c.domain, path: c.path, secure: c.secure, httpOnly: c.httpOnly,
     hostOnly: !c.domain.startsWith("."), session: c.expiry === undefined, storeId: "0",
-    sameSite: sameSite === "strict" ? "strict" : sameSite === "lax" ? "lax" : sameSite === "none" ? "no_restriction" : "unspecified",
+    sameSite: c.sameSite === "strict" ? "strict" : c.sameSite === "lax" ? "lax" : c.sameSite === "none" ? "no_restriction" : "unspecified",
     ...(c.expiry !== undefined ? { expirationDate: c.expiry } : {}),
   };
+}
+
+// cookies.getAll's filters: the cookies a request to url would send, or
+// those of domain and its subdomains.
+function cookieMatches(c: BidiCookie, filter: { url?: string; domain?: string; name?: string }): boolean {
+  const bare = c.domain.replace(/^\./, "");
+  if (filter.name !== undefined && c.name !== filter.name) return false;
+  if (filter.domain !== undefined) {
+    const want = filter.domain.replace(/^\./, "");
+    if (bare !== want && !bare.endsWith(`.${want}`)) return false;
+  }
+  if (filter.url !== undefined) {
+    const u = new URL(filter.url);
+    const hostOk = c.domain.startsWith(".") ? u.hostname === bare || u.hostname.endsWith(`.${bare}`) : u.hostname === bare;
+    if (!hostOk || !u.pathname.startsWith(c.path) || (c.secure && u.protocol !== "https:")) return false;
+  }
+  return true;
 }
 
 // browser.* for one run of the extension's background scripts; a
@@ -375,13 +447,13 @@ type Extension = { api: { runtime: { onStartup: Ev }; storage: { local: { set(it
 function makeApi(b: Browser, ctx: { storageFile: string; preload: string; reload: () => void }): Extension {
   const ev = {
     tabCreated: new Ev(), tabUpdated: new Ev(), tabRemoved: new Ev(), tabActivated: new Ev(),
-    winCreated: new Ev(), winRemoved: new Ev(), winFocus: new Ev(),
+    winCreated: new Ev(), winRemoved: new Ev(), winFocus: new Ev(), tabAttached: new Ev(),
     message: new Ev(), alarm: new Ev(), never: new Ev(),
   };
   const relays: [Ev, Ev][] = [
     [b.events.tabCreated, ev.tabCreated], [b.events.tabUpdated, ev.tabUpdated], [b.events.tabRemoved, ev.tabRemoved],
     [b.events.tabActivated, ev.tabActivated], [b.events.winCreated, ev.winCreated], [b.events.winRemoved, ev.winRemoved],
-    [b.events.winFocus, ev.winFocus],
+    [b.events.winFocus, ev.winFocus], [b.events.tabAttached, ev.tabAttached],
   ];
   const forwarders = relays.map(([from, to]) => {
     const fn = ((...a: unknown[]) => to.emit(...a)) as Listener;
@@ -442,20 +514,8 @@ function makeApi(b: Browser, ctx: { storageFile: string; preload: string; reload
 
   const registered = new Map<string, { id: string; matches: string[]; js: string[]; world?: string; runAt?: string; allFrames?: boolean; preload: string }>();
 
-  // Runs classic cookie calls on a site from a background window on its
-  // robots.txt: a page of the site that runs no script.
-  const onSite = async <T>(url: string, fn: (send: <V>(m: string, p: string, body?: object) => Promise<V>) => Promise<T>): Promise<T> => {
-    const { context } = await b.create("new", true);
-    try {
-      await b.lb.call("browsingContext.navigate", { context, url: `${new URL(url).origin}/robots.txt`, wait: "interactive" }).catch(() => {});
-      return await b.lb.classic(async (send) => {
-        await send("POST", "/window", { handle: context });
-        return fn(send);
-      });
-    } finally {
-      await b.lb.call("browsingContext.close", { context }).catch(() => {});
-    }
-  };
+  const cookiesWhere = async (filter: { url?: string; domain?: string; name?: string }) =>
+    (await b.lb.call<{ cookies: BidiCookie[] }>("storage.getCookies", {})).cookies.filter((c) => cookieMatches(c, filter));
 
   const api = {
     runtime: {
@@ -487,6 +547,7 @@ function makeApi(b: Browser, ctx: { storageFile: string; preload: string; reload
     tabs: {
       async get(id: number) { return b.tabObject(b.tab(id)); },
       async query(q: { active?: boolean; windowId?: number; currentWindow?: boolean; lastFocusedWindow?: boolean; url?: string } = {}) {
+        await b.syncWindows();
         const windowId = q.windowId ?? (q.currentWindow || q.lastFocusedWindow ? b.lastFocused : undefined);
         return [...b.tabs.values()].map((t) => b.tabObject(t)).filter((t) =>
           (windowId === undefined || t.windowId === windowId) && (q.active === undefined || t.active === q.active) && (q.url === undefined || t.url === q.url));
@@ -531,13 +592,14 @@ function makeApi(b: Browser, ctx: { storageFile: string; preload: string; reload
         return `data:image/${opts.format === "jpeg" ? "jpeg" : "png"};base64,${data}`;
       },
       onCreated: ev.tabCreated, onUpdated: ev.tabUpdated, onRemoved: ev.tabRemoved, onActivated: ev.tabActivated,
-      onReplaced: ev.never, onAttached: ev.never,
+      onReplaced: ev.never, onAttached: ev.tabAttached,
     },
     windows: {
       WINDOW_ID_NONE: -1, WINDOW_ID_CURRENT: -2,
-      async get(id: number, opts: { populate?: boolean } = {}) { return b.windowObject(id, opts.populate); },
-      async getAll(opts: { populate?: boolean } = {}) { return [...b.windows.keys()].map((id) => b.windowObject(id, opts.populate)); },
+      async get(id: number, opts: { populate?: boolean } = {}) { await b.syncWindows(); return b.windowObject(id, opts.populate); },
+      async getAll(opts: { populate?: boolean } = {}) { await b.syncWindows(); return [...b.windows.keys()].map((id) => b.windowObject(id, opts.populate)); },
       async getLastFocused(opts: { populate?: boolean } = {}) {
+        await b.syncWindows();
         const id = b.windows.has(b.lastFocused) ? b.lastFocused : [...b.windows.keys()][0];
         if (id === undefined) throw new Error("No last-focused window");
         return b.windowObject(id, opts.populate);
@@ -607,21 +669,23 @@ function makeApi(b: Browser, ctx: { storageFile: string; preload: string; reload
     },
     cookies: {
       async getAll(filter: { url?: string; domain?: string; name?: string } = {}) {
-        const site = filter.url ?? (filter.domain ? `https://${filter.domain.replace(/^\./, "")}/` : undefined);
-        if (!site) throw new Error("Ladybird reads cookies one site at a time: pass url or domain.");
-        const all = await onSite(site, (send) => send<ClassicCookie[]>("GET", "/cookie"));
-        return all.filter((c) => filter.name === undefined || c.name === filter.name).map(cookieObject);
+        return (await cookiesWhere(filter)).map(cookieObject);
       },
       async set(d: { url: string; name: string; value?: string; domain?: string; path?: string; secure?: boolean; httpOnly?: boolean; sameSite?: string; expirationDate?: number }) {
-        await onSite(d.url, (send) => send("POST", "/cookie", { cookie: {
-          name: d.name, value: d.value ?? "", ...(d.domain ? { domain: d.domain } : {}), path: d.path ?? "/", secure: !!d.secure, httpOnly: !!d.httpOnly,
+        // No domain makes a host-only cookie, as in Chrome; a domain makes one for its subdomains too.
+        const domain = d.domain ? `.${d.domain.replace(/^\./, "")}` : new URL(d.url).hostname;
+        const cookie = {
+          name: d.name, value: { type: "string", value: d.value ?? "" }, domain, path: d.path ?? "/", secure: !!d.secure, httpOnly: !!d.httpOnly,
+          ...(d.sameSite ? { sameSite: d.sameSite === "no_restriction" ? "none" : d.sameSite } : {}),
           ...(d.expirationDate ? { expiry: Math.round(d.expirationDate) } : {}),
-          ...(d.sameSite ? { sameSite: d.sameSite === "strict" ? "Strict" : d.sameSite === "lax" ? "Lax" : "None" } : {}),
-        } }));
-        return { name: d.name, value: d.value ?? "", domain: d.domain ?? new URL(d.url).hostname, path: d.path ?? "/", secure: !!d.secure, httpOnly: !!d.httpOnly, storeId: "0" };
+        };
+        await b.lb.call("storage.setCookie", { cookie });
+        return cookieObject({ ...cookie, sameSite: cookie.sameSite ?? "default" });
       },
       async remove(d: { url: string; name: string }) {
-        await onSite(d.url, (send) => send("DELETE", `/cookie/${encodeURIComponent(d.name)}`));
+        for (const c of await cookiesWhere({ url: d.url, name: d.name })) {
+          await b.lb.call("storage.deleteCookies", { filter: { name: c.name, domain: c.domain, path: c.path } });
+        }
         return { url: d.url, name: d.name, storeId: "0" };
       },
     },
