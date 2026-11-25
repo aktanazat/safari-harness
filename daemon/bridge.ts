@@ -28,7 +28,7 @@ import { redactUrl, unsecret } from "./redact.ts";
 import { noteLoad } from "./loads.ts";
 import { answeredError } from "./failures.ts";
 import { currentOwner, currentTask } from "./owner.ts";
-import { BROWSER } from "./front.ts";
+import { BROWSER, browserRunning } from "./front.ts";
 
 export const DEFAULT_PORT = 37333;
 
@@ -165,11 +165,6 @@ function byOp(lost: Pending[]): Record<string, number> {
     counts[op] = (counts[op] ?? 0) + 1;
   }
   return counts;
-}
-
-async function browserRunning(): Promise<boolean> {
-  const found = Bun.spawn(["lsappinfo", "find", `bundleid=${BROWSER}`], { stdout: "pipe", stderr: "ignore" });
-  return (await new Response(found.stdout).text()).trim() !== "";
 }
 
 // A tabs.list asked within JOIN_MS of another still unanswered shares its
@@ -566,7 +561,7 @@ export class Bridge {
     if (code === 1009 || reason === "Received too big message") return "too_large";
     if (this.reloaded.has(sock)) return "restarted";
     if (code !== 1001 && code !== 1006) return "dropped";
-    if (!await safariRunning().catch(() => true)) return "quit";
+    if (!await browserRunning().catch(() => true)) return "quit";
     return code === 1001 ? "restarted" : "dropped";
   }
 

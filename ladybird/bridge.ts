@@ -865,16 +865,43 @@ function makeApi(b: Browser, ctx: { storageFile: string; preload: string; reload
 // background.js as Safari runs it: upgrades.js and background.js in one
 // scope, given browser.*, a WebSocket that presents the extension's
 // origin to the daemon, Ladybird's user agent, and the image calls a
-// screenshot makes (raster.ts).
-async function runBackground(api: object, userAgent: string) {
+// screenshot makes (raster.ts). Answers its unload: as Safari unloads an
+// extension it reloads, its sockets close and its timers stop, so the
+// daemon sees the old socket go and no old reconnect comes back.
+async function runBackground(api: object, userAgent: string): Promise<() => void> {
   const sources = await Promise.all((MANIFEST.background.scripts as string[]).map((f) => Bun.file(join(EXT, f)).text()));
+  const sockets = new Set<WebSocket>();
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  // An unloaded background's late callbacks (a socket's close) start nothing.
+  let unloaded = false;
   class ExtensionSocket extends WebSocket {
     constructor(url: string | URL) {
+      if (unloaded) throw new Error("the extension was unloaded");
       super(url, { headers: { Origin: ORIGIN } });
+      sockets.add(this);
     }
   }
-  const run = new Function("browser", "chrome", "WebSocket", "navigator", "createImageBitmap", "OffscreenCanvas", "FileReader", sources.join("\n;\n"));
-  run(api, undefined, ExtensionSocket, { userAgent }, createImageBitmap, OffscreenCanvas, FileReader);
+  const later = (fn: (...a: unknown[]) => void, ms?: number, ...a: unknown[]) => {
+    const t = setTimeout(() => { timers.delete(t); fn(...a); }, ms);
+    if (unloaded) clearTimeout(t);
+    else timers.add(t);
+    return t;
+  };
+  const every = (fn: (...a: unknown[]) => void, ms?: number, ...a: unknown[]) => {
+    const t = setInterval(fn, ms, ...a);
+    if (unloaded) clearInterval(t);
+    else timers.add(t);
+    return t;
+  };
+  const cancel = (t: ReturnType<typeof setTimeout>) => { timers.delete(t); clearTimeout(t); };
+  const run = new Function("browser", "chrome", "WebSocket", "navigator", "createImageBitmap", "OffscreenCanvas", "FileReader", "setTimeout", "setInterval", "clearTimeout", "clearInterval", sources.join("\n;\n"));
+  run(api, undefined, ExtensionSocket, { userAgent }, createImageBitmap, OffscreenCanvas, FileReader, later, every, cancel, cancel);
+  return () => {
+    unloaded = true;
+    for (const t of timers) clearTimeout(t);
+    timers.clear();
+    for (const s of sockets) s.close();
+  };
 }
 
 async function main() {
@@ -900,11 +927,13 @@ async function main() {
 
   const storageFile = join(values.state!, "storage.json");
   let current: Extension | null = null;
+  let unload: (() => void) | null = null;
   const load = async (startup: boolean) => {
+    unload?.();
     current?.dispose();
     current = makeApi(b, { storageFile, preload, reload: () => void load(false) });
     await current.api.storage.local.set({ daemonPort: Number(values["daemon-port"]) });
-    await runBackground(current.api, lb.userAgent);
+    unload = await runBackground(current.api, lb.userAgent);
     if (startup) (current.api.runtime.onStartup as Ev).emit();
     console.log(`[ladybird] extension ${startup ? "started" : "reloaded"}, daemon port ${values["daemon-port"]}`);
   };
@@ -912,6 +941,7 @@ async function main() {
 
   const stop = async (why: string) => {
     console.log(`[ladybird] stopping: ${why}`);
+    unload?.();
     current?.dispose();
     await lb.close();
     process.exit(0);

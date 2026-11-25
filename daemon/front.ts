@@ -23,6 +23,12 @@ const INPUT = join(import.meta.dir, "..", "scripts", "input");
 export const BROWSER = process.env.SAFARI_HARNESS_BUNDLE ?? "com.apple.Safari";
 export const LADYBIRD = BROWSER.startsWith("org.ladybird.");
 
+// Whether the browser runs, by its bundle id (lsappinfo).
+export async function browserRunning(): Promise<boolean> {
+  const found = Bun.spawn(["lsappinfo", "find", `bundleid=${BROWSER}`], { stdout: "pipe", stderr: "ignore" });
+  return (await new Response(found.stdout).text()).trim() !== "";
+}
+
 // Runs the helper and parses its one JSON line.
 // Typed text goes on stdin, unchanged and without an added newline: cards
 // use this path too, and process arguments expose their digits (09-30).
