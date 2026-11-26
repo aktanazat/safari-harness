@@ -11,11 +11,19 @@
 # --browser attach against the daemon on DAEMON_PORT, which launchd starts
 # again if it crashes, and not once it ends with the browser.
 #
-#   ladybird/install-app.sh [--bridge DAEMON_PORT [--state DIR] [--profile-path DIR]] [path to the built Ladybird.app]
+# With --test DIR it installs a copy for tests instead: DIR/Ladybird Harness
+# Test.app, bundle org.ladybird.Ladybird.HarnessTest, which a test may start,
+# quit and replace while the user's own Ladybird Harness runs.
+#
+#   ladybird/install-app.sh [--bridge DAEMON_PORT [--state DIR] [--profile-path DIR]] [--test DIR] [path to the built Ladybird.app]
 set -euo pipefail
-zparseopts -D -E -F -- -bridge:=bridge_opt -state:=state_opt -profile-path:=profile_opt
+zparseopts -D -E -F -- -bridge:=bridge_opt -state:=state_opt -profile-path:=profile_opt -test:=test_opt
 src=${1:-$HOME/Developer/ladybird/Build/release/bin/Ladybird.app}
-dst="/Applications/Ladybird Harness.app"
+if (( ${#test_opt} )); then
+  dst="${test_opt[2]}/Ladybird Harness Test.app" bundle=org.ladybird.Ladybird.HarnessTest name="Ladybird Harness Test"
+else
+  dst="/Applications/Ladybird Harness.app" bundle=org.ladybird.Ladybird.Harness name="Ladybird Harness"
+fi
 plist="$dst/Contents/Info.plist"
 
 [[ -d $src ]] || { echo "no Ladybird build at $src" >&2; exit 1; }
@@ -67,8 +75,8 @@ fi
 
 rsync -a --delete "$src/" "$dst/"
 /usr/libexec/PlistBuddy \
-  -c "Set :CFBundleIdentifier org.ladybird.Ladybird.Harness" \
-  -c "Set :CFBundleName Ladybird Harness" \
+  -c "Set :CFBundleIdentifier $bundle" \
+  -c "Set :CFBundleName $name" \
   "$plist"
 /usr/libexec/PlistBuddy -c "Delete :LSEnvironment" "$plist" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Add :LSEnvironment dict" -c "Add :LSEnvironment:LADYBIRD_ALLOW_WEBDRIVER_ATTACH string 1" "$plist"
