@@ -8,8 +8,9 @@
 #
 # With --bridge, the app also starts the harness bridge whenever it starts
 # (LADYBIRD_ATTACH_HELPER): a launchd job of the user's runs bridge.ts
-# --browser attach against the daemon on DAEMON_PORT, which launchd starts
-# again if it crashes, and not once it ends with the browser.
+# --browser attach against the daemon on DAEMON_PORT, its WebDriver on
+# DAEMON_PORT + 10000 and from this app, which launchd starts again if it
+# crashes, and not once it ends with the browser.
 #
 # With --test DIR it installs a copy for tests instead: DIR/Ladybird Harness
 # Test.app, bundle org.ladybird.Ladybird.HarnessTest, which a test may start,
@@ -44,7 +45,8 @@ if (( ${#bridge_opt} )); then
   label="dev.aktan.safari-harness.ladybird-bridge-$port"
   job="$HOME/Library/LaunchAgents/$label.plist"
   helper="$HOME/.local/share/safari-harness/ladybird-attach-$port.sh"
-  bun=$(command -v bun)
+  bun=${commands[bun]:-$HOME/.bun/bin/bun}
+  [[ -x $bun ]] || { echo "no bun at $bun: install it, or run this from a shell whose PATH has it" >&2; exit 1; }
   mkdir -p "$state" "${helper:h}" "${job:h}"
   launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
   rm -f "$job"
@@ -59,13 +61,21 @@ if (( ${#bridge_opt} )); then
     -c "Add :ProgramArguments:5 string $port" \
     -c "Add :ProgramArguments:6 string --state" \
     -c "Add :ProgramArguments:7 string $state" \
+    -c "Add :ProgramArguments:8 string --driver-port" \
+    -c "Add :ProgramArguments:9 string $((port + 10000))" \
+    "$job"
+  # PlistBuddy aborts past fifteen or so commands in one run.
+  /usr/libexec/PlistBuddy \
     -c "Add :KeepAlive dict" \
     -c "Add :KeepAlive:SuccessfulExit bool false" \
     -c "Add :StandardOutPath string $state/bridge.log" \
     -c "Add :StandardErrorPath string $state/bridge.log" \
     "$job"
+  # PlistBuddy splits a value at its spaces, and the app's path has one.
+  plutil -insert EnvironmentVariables -dictionary "$job"
+  plutil -insert EnvironmentVariables.LADYBIRD_APP -string "$dst" "$job"
   # A profile other than the default one, as the browser was given it.
-  (( ${#profile_opt} )) && /usr/libexec/PlistBuddy -c "Add :ProgramArguments:8 string --profile-path" -c "Add :ProgramArguments:9 string ${profile_opt[2]}" "$job"
+  (( ${#profile_opt} )) && /usr/libexec/PlistBuddy -c "Add :ProgramArguments:10 string --profile-path" -c "Add :ProgramArguments:11 string ${profile_opt[2]}" "$job"
   launchctl bootstrap "gui/$(id -u)" "$job"
   print -r -- "#!/bin/sh
 # Started by Ladybird Harness as it starts (LADYBIRD_ATTACH_HELPER): runs its bridge's launchd job.

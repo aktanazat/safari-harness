@@ -297,6 +297,7 @@ class Browser {
     this.#placedAt.set(tab.id, ++this.#placements);
     this.#place(tab, clientWindow);
     this.#dropEmptyWindows();
+    this.#nameWindows();
     return tab.windowId;
   }
 
@@ -316,7 +317,11 @@ class Browser {
       if (left.length === 0) {
         this.windows.delete(id);
         this.active.delete(id);
-        for (const [name, w] of this.#winOf) if (w === id) this.#winOf.delete(name);
+        for (const [name, w] of this.#winOf) {
+          if (w !== id) continue;
+          this.#winOf.delete(name);
+          this.#named.delete(name);
+        }
         this.events.winRemoved.emit(id);
       } else if (!this.active.has(id)) {
         this.active.set(id, left[0].id);
@@ -401,9 +406,14 @@ class Browser {
     if (left.length === 0) {
       const win = this.windows.get(tab.windowId)!;
       this.windows.delete(win.id);
-      for (const [name, id] of this.#winOf) if (id === win.id) this.#winOf.delete(name);
+      for (const [name, id] of this.#winOf) {
+        if (id !== win.id) continue;
+        this.#winOf.delete(name);
+        this.#named.delete(name);
+      }
       this.events.winRemoved.emit(win.id);
     }
+    this.#nameWindows();
   }
 
   #message(params: Record<string, unknown>) {
