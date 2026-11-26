@@ -76,9 +76,11 @@ export class Ladybird {
     const driver = spawn(args, { stdout: "pipe", stderr: "inherit" });
     await untilListening(driver.stdout);
     const base = `http://127.0.0.1:${opts.port}`;
+    // Dialogs stay the page's and the user's: dialogs.js answers those of the harness's own tabs. beforeUnload
+    // is named apart, as BiDi accepts it by default otherwise, which would drop the user's unsaved-changes warnings.
     const res = await fetch(`${base}/session`, {
       method: "POST",
-      body: JSON.stringify({ capabilities: { alwaysMatch: { webSocketUrl: true, unhandledPromptBehavior: "ignore" } } }),
+      body: JSON.stringify({ capabilities: { alwaysMatch: { webSocketUrl: true, unhandledPromptBehavior: { default: "ignore", beforeUnload: "ignore" } } } }),
     });
     const body = (await res.json()) as { value: { sessionId: string; capabilities: { webSocketUrl: string; userAgent: string }; message?: string } };
     if (!res.ok) {
