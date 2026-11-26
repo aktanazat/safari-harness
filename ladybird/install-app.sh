@@ -83,7 +83,9 @@ exec launchctl kickstart gui/\$(id -u)/$label" > "$helper"
   chmod +x "$helper"
 fi
 
-rsync -a --delete "$src/" "$dst/"
+# Contents/lib is a link into the build tree, which a signed bundle may not
+# hold; the binaries reach the build's libraries through their own rpaths.
+rsync -a --delete --delete-excluded --exclude /Contents/lib "$src/" "$dst/"
 /usr/libexec/PlistBuddy \
   -c "Set :CFBundleIdentifier $bundle" \
   -c "Set :CFBundleName $name" \
@@ -91,6 +93,11 @@ rsync -a --delete "$src/" "$dst/"
 /usr/libexec/PlistBuddy -c "Delete :LSEnvironment" "$plist" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Add :LSEnvironment dict" -c "Add :LSEnvironment:LADYBIRD_ALLOW_WEBDRIVER_ATTACH string 1" "$plist"
 [[ -n $helper ]] && /usr/libexec/PlistBuddy -c "Add :LSEnvironment:LADYBIRD_ATTACH_HELPER string $helper" "$plist"
-codesign --force --deep --preserve-metadata=entitlements --sign - "$dst"
+# His Developer ID, when the keychain has one, so what the app keeps in the
+# keychain (the key that seals its passkeys) stays its own across updates; the
+# test copy, which tests install over ssh with the keychain locked, is ad hoc.
+signer=-
+(( ${#test_opt} )) || signer=$(security find-identity -v -p codesigning | awk '/"Developer ID Application: / { print $2; exit }')
+codesign --force --deep --preserve-metadata=entitlements --sign "${signer:--}" "$dst"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$dst"
-echo "installed $dst ($(git -C "${src%/Build/*}" rev-parse --short HEAD 2>/dev/null || echo unknown))${helper:+, starting the bridge for the daemon on $port}"
+echo "installed $dst ($(git -C "${src%/Build/*}" rev-parse --short HEAD 2>/dev/null || echo unknown)), signed $(codesign -dvv "$dst" 2>&1 | awk -F= '/^Authority=/ && !n++ { print $2 }' | grep . || echo ad hoc)${helper:+, starting the bridge for the daemon on $port}"
