@@ -9,6 +9,8 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { HarnessError } from "./failures.ts";
@@ -16,14 +18,34 @@ import type { TabInfo } from "./tools.ts";
 
 const execFileAsync = promisify(execFile);
 const INPUT = join(import.meta.dir, "..", "scripts", "input");
-export const SAFARI = "com.apple.Safari";
+// The browser the extension runs in: Safari, or the Ladybird the bridge
+// drives (ladybird/bridge.ts). safari daemon install keeps the choice in
+// BROWSER_CHOICE, which the daemon and every caller (the MCP server, the
+// CLI, routines) read; SAFARI_HARNESS_BUNDLE and LADYBIRD_PROFILE_PATH
+// override it (a scratch daemon). The native helpers (scripts/*.swift) get
+// it from input's environment.
+export const BROWSER_CHOICE = join(homedir(), ".local", "share", "safari-harness", "browser.json");
+type Choice = { bundle?: string; profilePath?: string };
+const chosen: Choice = existsSync(BROWSER_CHOICE) ? JSON.parse(readFileSync(BROWSER_CHOICE, "utf8")) as Choice : {};
+export const BROWSER = process.env.SAFARI_HARNESS_BUNDLE ?? chosen.bundle ?? "com.apple.Safari";
+// Ladybird's --profile-path, when it is not its default profile.
+export const LADYBIRD_PROFILE_PATH = process.env.LADYBIRD_PROFILE_PATH ?? chosen.profilePath;
+export const LADYBIRD = BROWSER.startsWith("org.ladybird.");
+// The browser as the user and agents know it: tool labels, phone cards.
+export const BROWSER_NAME = LADYBIRD ? "Ladybird" : "Safari";
+
+// Whether the browser runs, by its bundle id (lsappinfo).
+export async function browserRunning(): Promise<boolean> {
+  const found = Bun.spawn(["lsappinfo", "find", `bundleid=${BROWSER}`], { stdout: "pipe", stderr: "ignore" });
+  return (await new Response(found.stdout).text()).trim() !== "";
+}
 
 // Runs the helper and parses its one JSON line.
 // Typed text goes on stdin, unchanged and without an added newline: cards
 // use this path too, and process arguments expose their digits (09-30).
 export async function input(args: string[], timeout = 10000, stdin?: string, completion?: () => Promise<boolean>): Promise<unknown> {
   try {
-    const running = execFileAsync(INPUT, args, { timeout });
+    const running = execFileAsync(INPUT, args, { timeout, env: { ...process.env, SAFARI_HARNESS_BUNDLE: BROWSER } });
     let handshake = false;
     let pipeError: Error | undefined;
     if (completion) {
@@ -89,7 +111,7 @@ export function onRaised(listener: () => void): void {
 }
 
 export async function raiseSafari(): Promise<void> {
-  await input(["activate", SAFARI]).catch((e: unknown) => {
+  await input(["activate", BROWSER]).catch((e: unknown) => {
     throw new HarnessError("unavailable", e instanceof Error ? e.message : String(e), { effect: "none", next: "nothing was sent to the page; try again in a moment." });
   });
   raisedAt = Date.now();
@@ -109,7 +131,7 @@ export async function frontApp(): Promise<string | undefined> {
 async function safariInFront(): Promise<boolean> {
   const r = await input(["front"]).catch(() => undefined);
   if (!r || typeof r !== "object") return false;
-  return ("bundleId" in r && r.bundleId === SAFARI) || ("under" in r && r.under === SAFARI);
+  return ("bundleId" in r && r.bundleId === BROWSER) || ("under" in r && r.under === BROWSER);
 }
 
 // A macOS notification from the harness. text goes in as an argument, so
@@ -136,7 +158,7 @@ export async function show(tab: number, ops: TabOps, check?: () => void): Promis
   const giveBack = async () => {
     if (!(await safariInFront())) return;
     for (const t of back) if (t) await ops.activate(t.id).catch(() => {});
-    if (bundleId && bundleId !== SAFARI) await input(["activate", bundleId]).catch(() => {});
+    if (bundleId && bundleId !== BROWSER) await input(["activate", bundleId]).catch(() => {});
   };
   check?.();
   try {

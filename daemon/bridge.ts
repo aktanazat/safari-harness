@@ -28,6 +28,7 @@ import { redactUrl, unsecret } from "./redact.ts";
 import { noteLoad } from "./loads.ts";
 import { answeredError } from "./failures.ts";
 import { currentOwner, currentTask } from "./owner.ts";
+import { BROWSER, browserRunning, LADYBIRD } from "./front.ts";
 
 export const DEFAULT_PORT = 37333;
 
@@ -110,7 +111,9 @@ const RELOADED_MS = 30000;
 // What clears a reload Safari ignored (reloadIgnored). On 11-06 Safari left
 // every extension call unanswered from 19:16:42 while the extension's page
 // kept its socket open, and eight reloads in 50 minutes each went unheard.
-const IGNORED_FIX = "quit Safari and open it again (History > Reopen All Windows brings its windows back), or in Safari > Settings > Extensions turn Safari Harness Bridge off and on (turning it on asks for the Mac's password or Touch ID)";
+const IGNORED_FIX = LADYBIRD
+  ? "quit Ladybird Harness and open it again: it starts its bridge (ladybird/bridge.ts) as it starts"
+  : "quit Safari and open it again (History > Reopen All Windows brings its windows back), or in Safari > Settings > Extensions turn Safari Harness Bridge off and on (turning it on asks for the Mac's password or Touch ID)";
 
 // The extension allows 5 s for tabs.query, then 2.5 s for the front window.
 // Wait past that bound so a partial list is not mistaken for a stuck link.
@@ -164,10 +167,6 @@ function byOp(lost: Pending[]): Record<string, number> {
     counts[op] = (counts[op] ?? 0) + 1;
   }
   return counts;
-}
-
-async function safariRunning(): Promise<boolean> {
-  return await Bun.spawn(["pgrep", "-x", "Safari"], { stdout: "ignore", stderr: "ignore" }).exited === 0;
 }
 
 // A tabs.list asked within JOIN_MS of another still unanswered shares its
@@ -564,7 +563,7 @@ export class Bridge {
     if (code === 1009 || reason === "Received too big message") return "too_large";
     if (this.reloaded.has(sock)) return "restarted";
     if (code !== 1001 && code !== 1006) return "dropped";
-    if (!await safariRunning().catch(() => true)) return "quit";
+    if (!await browserRunning().catch(() => true)) return "quit";
     return code === 1001 ? "restarted" : "dropped";
   }
 
@@ -584,13 +583,15 @@ export class Bridge {
     if (this.sock) return this.sock;
     if (!start) throw new Error("Safari extension not connected");
     const taken = this.taken(CONNECT_MS);
-    const running = await safariRunning();
-    if (!running && !this.sock) Bun.spawn(["open", "-g", "-j", "-a", "Safari"], { stdout: "ignore", stderr: "ignore" });
+    const running = await browserRunning();
+    if (!running && !this.sock) Bun.spawn(["open", "-g", "-j", "-b", BROWSER], { stdout: "ignore", stderr: "ignore" });
     await taken;
     if (this.sock) return this.sock;
     throw new Error(running
-      ? "Safari extension not connected — enable the Safari Harness extension (Safari ▸ Settings ▸ Extensions; turning it on asks for the Mac's password or Touch ID)"
-      : `Safari was not running: it is starting in the background, and its extension did not connect within ${CONNECT_MS / 1000} s; try again`);
+      ? LADYBIRD
+        ? "the Ladybird bridge is not connected: Ladybird Harness starts it as it starts when installed with ladybird/install-app.sh --bridge; quit Ladybird Harness and open it again, and read the bridge.log in its state folder if it still does not connect"
+        : "Safari extension not connected — enable the Safari Harness extension (Safari ▸ Settings ▸ Extensions; turning it on asks for the Mac's password or Touch ID)"
+      : `${LADYBIRD ? "Ladybird Harness" : "Safari"} was not running: it is starting in the background, and its extension did not connect within ${CONNECT_MS / 1000} s; try again`);
   }
 
   // Waits until a socket takes over (take), ms at most.

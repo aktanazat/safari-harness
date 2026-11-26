@@ -111,7 +111,8 @@ func find(_ el: AXUIElement, depth: Int, _ match: (AXUIElement) -> Bool) -> AXUI
     return nil
 }
 
-let SAFARI = "com.apple.Safari"
+// The browser the harness drives: Safari, or Ladybird Harness (daemon/front.ts).
+let SAFARI = ProcessInfo.processInfo.environment["SAFARI_HARNESS_BUNDLE"] ?? "com.apple.Safari"
 var safariApp: (pid: pid_t, el: AXUIElement)?
 
 func safari() throws -> (pid: pid_t, el: AXUIElement) {

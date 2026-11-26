@@ -15,6 +15,7 @@ import { TOOLS, pageRead, runSteps, type PageRead } from "./tools.ts";
 import { learnAgentAction, notePlaybookTab } from "./playbooks.ts";
 import { HarnessError } from "./failures.ts";
 import { cancelCertificatePrompts, cancelLeftSheets } from "./sheets.ts";
+import { BROWSER } from "./front.ts";
 
 // A call that never reached Safari's extension (bridge.ts): its kind is
 // stuck, none is connected, or its reload did not connect again. Nothing
@@ -160,9 +161,10 @@ function spacesIn(tool: string, result: unknown): unknown[] {
 // window is to be its task's group, or is one, a keeper (keeper.ts) watches
 // it, unless one already does. A plain window starts one too while groups
 // are queued: with new groups off, ended agents' groups still go. Another
-// Mac's Safari needs a keeper on that Mac, so none starts here then.
+// Mac's Safari needs a keeper on that Mac, so none starts here then. Only
+// Safari has tab groups.
 function claimSpaces(tool: string, result: unknown) {
-  if (process.env.SAFARI_HARNESS_REMOTE) return;
+  if (process.env.SAFARI_HARNESS_REMOTE || BROWSER !== "com.apple.Safari") return;
   const opened = spacesIn(tool, result);
   if (opened.length === 0) return;
   if (!opened.some((s) => !!s && typeof s === "object" && "group" in s && s.group !== "plain") && Object.keys(readQueue()).length === 0) return;

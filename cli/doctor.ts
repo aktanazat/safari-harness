@@ -12,7 +12,7 @@ import { existsSync, readdirSync, readFileSync, statfsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { input } from "../daemon/front.ts";
+import { browserRunning, input, LADYBIRD } from "../daemon/front.ts";
 import { files, groupsOff } from "../daemon/groups.ts";
 import { openChatDb } from "../daemon/imessage.ts";
 import { daemonHttp, deployingFor, rpc } from "../daemon/rpc.ts";
@@ -102,7 +102,7 @@ function record(path: string): string | undefined {
 }
 
 const LIVE: Probes = {
-  safariRunning: async () => (await Bun.spawn(["pgrep", "-x", "Safari"], { stdout: "ignore", stderr: "ignore" }).exited) === 0,
+  safariRunning: browserRunning,
   health: async () => {
     try {
       const res = await fetch(`${daemonHttp()}/health`, { signal: AbortSignal.timeout(HEALTH_MS) });
@@ -263,6 +263,7 @@ function vaultCheck(got: Outcome<Pairing> | undefined): Check {
 // to the front (groups.ts), until someone who has looked removes the flag:
 // agents only see it as a plain window, so the owner reads it here.
 function groupsCheck(off: string | undefined): Check {
+  if (LADYBIRD) return { name: "tab groups", status: "ok", detail: "Ladybird has none: each agent window is named for its task instead" };
   if (off === undefined) return { name: "tab groups", status: "ok", detail: "each agent window becomes a tab group once the user leaves the keys alone" };
   return { name: "tab groups", status: "warn", detail: off, fix: `look over Safari's tab groups, then: rm ${files.off}` };
 }
@@ -276,6 +277,7 @@ function swapCheck(got: Outcome<number | undefined>): Check {
 
 function laneCheck(mcp: Outcome<boolean>, remote: boolean): Check {
   const name = "safaridriver";
+  if (LADYBIRD) return { name, status: "skip", detail: "Apple's safaridriver lane drives Safari only" };
   if ("error" in mcp) return { name, status: "skip", detail: `safaridriver --help failed: ${mcp.error}` };
   if (!mcp.value) return { name, status: "off", detail: "this Mac's safaridriver has no --mcp, so Apple's own automation lane is not available" };
   if (!remote) {
@@ -331,7 +333,7 @@ export async function doctor(probe: Probes = LIVE, { deep = false }: { deep?: bo
       ? { name: "tabs", status: "skip", detail: missing }
       : "error" in tabs
         ? { name: "tabs", status: "fail", detail: tabs.error, fix: `${RELOAD}; if Safari's tabs still do not list, ${EXTENSIONS}` }
-        : { name: "tabs", status: "ok", detail: `Safari listed its ${tabs.value.tabs} tabs in ${tabs.value.ms} ms` },
+        : { name: "tabs", status: "ok", detail: `${LADYBIRD ? "Ladybird" : "Safari"} listed its ${tabs.value.tabs} tabs in ${tabs.value.ms} ms` },
     versionCheck(keys),
     !deep
       ? { name: "round trip", status: "skip", detail: "safari doctor --deep opens a hidden tab and times a round trip through its page" }

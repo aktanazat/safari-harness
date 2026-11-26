@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { DEFAULT_PORT } from "../daemon/bridge.ts";
+import { BROWSER, BROWSER_CHOICE } from "../daemon/front.ts";
 import { tryLock } from "../daemon/flock.ts";
 import { connectHost } from "../daemon/host.ts";
 import { heliumProfile, quitHelium } from "../daemon/passwords.ts";
@@ -113,9 +114,21 @@ async function unload(label: string): Promise<boolean> {
 
 // ---------- daemon ----------
 
+// SAFARI_HARNESS_BUNDLE (and LADYBIRD_PROFILE_PATH) in the install's
+// environment choose the browser for the daemon and every caller from now
+// on (front.ts BROWSER_CHOICE); com.apple.Safari goes back to Safari. An
+// install without it, as a deploy's, keeps the choice there is.
 export async function daemonInstall(): Promise<string> {
   const main = join(CURRENT, "daemon", "main.ts");
   if (!existsSync(main)) throw new Error("no release is deployed; run scripts/dev-install.sh in the checkout");
+  const bundle = process.env.SAFARI_HARNESS_BUNDLE;
+  if (bundle === "com.apple.Safari") {
+    await rm(BROWSER_CHOICE, { force: true });
+  } else if (bundle) {
+    const profilePath = process.env.LADYBIRD_PROFILE_PATH;
+    await mkdir(join(BROWSER_CHOICE, ".."), { recursive: true });
+    await writeFile(BROWSER_CHOICE, `${JSON.stringify({ bundle, ...(profilePath ? { profilePath } : {}) })}\n`);
+  }
   const body = plist(
     DAEMON_LABEL,
     [process.execPath, main],
@@ -123,7 +136,7 @@ export async function daemonInstall(): Promise<string> {
     join(LOGS, "daemon"),
   );
   await load(DAEMON_LABEL, body);
-  return `daemon installed; logs: ${join(LOGS, "daemon.log")}`;
+  return `daemon installed, driving ${BROWSER}; logs: ${join(LOGS, "daemon.log")}`;
 }
 
 // The hidden Helium for Apple Passwords outlives a daemon restart on

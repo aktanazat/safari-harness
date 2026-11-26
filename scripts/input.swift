@@ -38,6 +38,9 @@
 import AppKit
 import ApplicationServices
 
+// The browser the harness drives: Safari, or Ladybird Harness (daemon/front.ts).
+let BROWSER = ProcessInfo.processInfo.environment["SAFARI_HARNESS_BUNDLE"] ?? "com.apple.Safari"
+
 var emergencyRelease: CGEvent?
 var emergencyClipboardRestore: (() -> Void)?
 var terminationSources: [DispatchSourceSignal] = []
@@ -301,7 +304,7 @@ struct KeyTarget {
 
 // Safari and its window in front; fails, sending nothing, when they are not.
 func keyTarget() -> KeyTarget {
-    guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").first else { fail("Safari is not running") }
+    guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: BROWSER).first else { fail("Safari is not running") }
     let safari = AXUIElementCreateApplication(app.processIdentifier)
     // Safari answers on its main thread, which a busy page can hold.
     AXUIElementSetMessagingTimeout(safari, 1)
@@ -645,7 +648,7 @@ func topDown(_ r: NSRect) -> CGRect {
 // front. Window bounds and screens need no permission.
 func window(_ args: [String]) {
     guard args.count == 2, let w = Double(args[0]), let h = Double(args[1]) else { fail("usage: input window W H", 2) }
-    guard let safari = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").first else { fail("Safari is not running") }
+    guard let safari = NSRunningApplication.runningApplications(withBundleIdentifier: BROWSER).first else { fail("Safari is not running") }
     let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
     let found = list.lazy.compactMap { info -> CGRect? in
         guard (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == safari.processIdentifier,
@@ -667,7 +670,7 @@ func window(_ args: [String]) {
 // finds in them a spot no window covers, and the agents' display by its
 // name. A window drawn fully transparent covers nothing and is left out.
 func windows() {
-    let safari = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").first?.processIdentifier
+    let safari = NSRunningApplication.runningApplications(withBundleIdentifier: BROWSER).first?.processIdentifier
     let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
     let shown = list.compactMap { info -> [String: Any]? in
         guard (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
@@ -728,7 +731,7 @@ func viewport(_ area: AXUIElement) -> CGRect? {
 // window server connection this tool never opens; the point query does not.)
 func webarea() {
     requireAccess()
-    guard let safari = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").first else { fail("Safari is not running") }
+    guard let safari = NSRunningApplication.runningApplications(withBundleIdentifier: BROWSER).first else { fail("Safari is not running") }
     let app = AXUIElementCreateApplication(safari.processIdentifier)
     guard let window = element(attribute(app, kAXFocusedWindowAttribute)) ?? element(attribute(app, kAXMainWindowAttribute)) else { fail("Safari has no open window") }
     let shown = webAreas(window).compactMap(viewport).filter { r in
@@ -779,7 +782,7 @@ func markedNode(_ el: AXUIElement, _ mark: String, depth: Int = 0) -> AXUIElemen
 func markedElement(_ args: [String], usage: String, key: String) -> AXUIElement {
     guard args.count == 3, let w = Double(args[1]), let h = Double(args[2]) else { fail("usage: input \(usage)", 2) }
     requireAccess()
-    guard let safari = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").first else { fail("Safari is not running") }
+    guard let safari = NSRunningApplication.runningApplications(withBundleIdentifier: BROWSER).first else { fail("Safari is not running") }
     let windows = windowsOfSize(AXUIElementCreateApplication(safari.processIdentifier), w, h)
     if windows.isEmpty {
         printJSON([key: false, "why": "no Safari window is \(args[1]) by \(args[2])"])
