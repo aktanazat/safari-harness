@@ -137,9 +137,20 @@ test.each([
   ["https://shop.example", "https://js.stripe.com.evil.example"],
   ["https://shop.example", "https://up.cybersource.com.evil.example"],
   ["https://shop.example", "https://evil.cybersource.com"],
+  ["https://shop.example", "https://evil.shopifyinc.com"],
+  ["https://shop.example", "https://checkout.pci.shopifyinc.com.evil.example"],
 ])("a checkout at %s with card fields at %s is refused, and no frame gets the card", async (topOrigin, origin) => {
   kept = [VISA];
   frames = [{ ...FRAMES[0], origin: topOrigin, fields: [] }, { ...FRAMES[1], origin }];
   await expect(fillVisa()).rejects.toThrow(/an https page|nor a card processor/);
   expect(fillCalls).toEqual([]);
+});
+
+// 11-27: a Shopify store's checkout (www.slip.com) holds its card fields in
+// frames from Shopify's card vault, and card-fill refused them.
+test("a Shopify checkout's card fields in frames from checkout.pci.shopifyinc.com get the card", async () => {
+  kept = [VISA];
+  frames = [{ ...FRAMES[0], origin: "https://www.slip.com", fields: [] }, { ...FRAMES[1], origin: "https://checkout.pci.shopifyinc.com" }];
+  expect(await fillVisa()).toMatchObject({ card: "Visa", filled: ["number", "security code", "expiry", "zip"] });
+  expect(fillCalls).toEqual([{ frame: 3, site: "checkout.pci.shopifyinc.com", card: { number: NUMBER, csc: "737", month: 7, year: 2029, zip: "94107" } }]);
 });
