@@ -4018,8 +4018,8 @@ export const TOOLS: Record<string, Tool> = {
   },
   open: {
     desc: 'Open a URL and wait until it is readable; pass its id as tab to later calls. tab "front": the user\'s front tab, when he asks about it.',
-    params: { url: { type: "string", description: "address" }, background: { type: "boolean", description: "keep the current tab in front" }, group: { type: "string", description: "task name: a window of its own" }, keep: { type: "boolean", description: "leave it open for the user" }, new: { type: "boolean", description: "else your tab on its site is reused" }, snapshot: PAGE },
-    unlisted: { site: { type: "boolean", description: "a repl site global's own tab" }, again: { type: "array", items: { type: "number" }, description: "a script's tabs its session opened on this address in an earlier call (repl.ts)" }, fresh: FRESH },
+    params: { url: { type: "string", description: "address" }, background: { type: "boolean", description: "keep the current tab in front" }, group: { type: "string", description: "task name: a window of its own" }, keep: { type: "boolean", description: "leave it open for the user" }, new: { type: "boolean", description: "else your tab on its site is reused" }, fresh: FRESH, snapshot: PAGE },
+    unlisted: { site: { type: "boolean", description: "a repl site global's own tab" }, again: { type: "array", items: { type: "number" }, description: "a script's tabs its session opened on this address in an earlier call (repl.ts)" } },
     required: ["url"],
     run: async (a) => {
       pageRead(a.snapshot);
@@ -4156,10 +4156,10 @@ export const TOOLS: Record<string, Tool> = {
   },
   type: {
     desc: "Set ref's text; append keeps it. Never returns text. {{code}} fills unseen codes, texted or mailed; secret page reads from, scoped by from_selector.",
-    params: { tab: TAB, ref: REF, text: { type: "string", description: "text to enter" }, append: { type: "boolean", description: "keep the existing text" }, secret: { type: "string", enum: ["sms", "mail", "page", "passwords"], description: "code source" }, from: { type: "number", description: "source tab for secret page" }, from_selector: { type: "string", description: "CSS selecting one email for secret page" }, snapshot: PAGE },
+    params: { tab: TAB, ref: REF, text: { type: "string", description: "text to enter" }, append: { type: "boolean", description: "keep the existing text" }, secret: { type: "string", enum: ["sms", "mail", "page", "passwords"], description: "code source" }, sender: CODE_SENDER, from: { type: "number", description: "source tab for secret page" }, from_selector: { type: "string", description: "CSS selecting one email for secret page" }, snapshot: PAGE },
     // secret "env" reads only a CLI call's environment (secret.ts), so an
     // MCP client is never offered it: browser type --secret env --env VAR
-    unlisted: { env: SECRET_ENV, sender: CODE_SENDER, account: CODE_ACCOUNT, noWaitAfter: { type: "boolean", description: "answer once the field holds the text, without giving the page a moment with it; a reformat or complaint the page makes after is not seen" } },
+    unlisted: { env: SECRET_ENV, account: CODE_ACCOUNT, noWaitAfter: { type: "boolean", description: "answer once the field holds the text, without giving the page a moment with it; a reformat or complaint the page makes after is not seen" } },
     required: ["tab", "ref", "text"],
     run: action(async (a) => {
       if (typeof a.text === "string") await slackSend(a.tab, { tool: "type", text: a.text }, a);

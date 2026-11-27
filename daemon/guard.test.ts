@@ -111,6 +111,7 @@ test.each([
   ["click", "text", "ref"],
   ["hover", "text", "ref"],
   ["snapshot", "selector", "root"],
+  ["extract", "root", "selector"],
   ["scroll", "y", "dy"],
   ["scroll", "x", "dx"],
   ["upload", "files", "paths"],

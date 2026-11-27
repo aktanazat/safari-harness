@@ -6,6 +6,7 @@ import { join } from "node:path";
 // A command's flags become its tool's parameters. The daemon here records
 // what each call asked for.
 const calls: { tool: string; args: Record<string, unknown> }[] = [];
+let realSite: string | null = "done";
 const server = Bun.serve({
   port: 0,
   hostname: "127.0.0.1",
@@ -13,21 +14,26 @@ const server = Bun.serve({
     const { tool, args }: { tool: string; args: Record<string, unknown> } = await req.json();
     calls.push({ tool, args });
     // type lists tabs first, to refuse a send from Slack's own page (input.ts).
-    return Response.json({ ok: true, value: tool === "tabs" ? { tabs: [] } : "done" });
+    return Response.json({ ok: true, value: tool === "real_site" ? realSite : tool === "tabs" ? { tabs: [] } : "done" });
   },
 });
 afterAll(() => server.stop(true));
 const home = mkdtempSync(join(tmpdir(), "flags-cli-"));
 
-async function safari(argv: string[], stdin?: string) {
+async function safariOut(argv: string[], stdin?: string) {
   const p = Bun.spawn([process.execPath, join(import.meta.dir, "browser.ts"), ...argv], {
     env: { ...process.env, HOME: home, BROWSER_HARNESS_HTTP: `http://127.0.0.1:${server.port}` },
     stdin: stdin === undefined ? "ignore" : new Blob([stdin]),
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [err, code] = await Promise.all([new Response(p.stderr).text(), p.exited]);
-  return { err: err.trim(), code };
+  const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+  return { out: out.trim(), err: err.trim(), code };
+}
+
+async function safari(argv: string[], stdin?: string) {
+  const { err, code } = await safariOut(argv, stdin);
+  return { err, code };
 }
 
 // On 10-04 `browser eval --page true "const ..."` sent "true const ..." as
@@ -167,4 +173,86 @@ test("a parameter given as its flag leaves the command's words to the next param
     { tool: "select", args: { tab: 7, ref: "4", option: "Medium" } },
     { tool: "map", args: { urls: ["https://a.example/", "https://b.example/"] } },
   ]);
+});
+
+test("type takes --snapshot '<json>' as its snapshot value and rejects stray positional payload next to --text", async () => {
+  calls.length = 0;
+  realSite = null;
+  try {
+    expect(await safari(["type", "83", "--tab", "430", "--text", "2576", "--snapshot", '{"root":"[role=dialog]"}'])).toEqual({ err: "", code: 0 });
+    expect(await safari(["type", "83", "--tab", "430", "--text", "2576", '--snapshot={"root":"[role=dialog]"}'])).toEqual({ err: "", code: 0 });
+    expect(await safari(["type", "83", '{"a":1}', "--tab", "430"])).toEqual({ err: "", code: 0 });
+    expect(calls.filter((c) => c.tool === "type")).toEqual([
+      { tool: "type", args: { tab: 430, ref: "83", text: "2576", append: false, snapshot: { root: "[role=dialog]" } } },
+      { tool: "type", args: { tab: 430, ref: "83", text: "2576", append: false, snapshot: { root: "[role=dialog]" } } },
+      { tool: "type", args: { tab: 430, ref: "83", text: '{"a":1}', append: false } },
+    ]);
+
+    calls.length = 0;
+    for (const argv of [
+      ["type", "83", "extra", "--tab", "430", "--text", "2576"],
+      ["type", "--ref", "83", "extra", "--tab", "430", "--text", "2576"],
+      ["type", "83", "--tab", "430", "--text", "2576", "--snapshot", "dialog"],
+    ]) {
+      const res = await safari(argv);
+      expect(res.code).toBe(2);
+      expect(res.err).not.toBe("");
+    }
+    expect(calls).toEqual([]);
+  } finally {
+    realSite = "done";
+  }
+});
+
+test("-j passes JSON arguments on the browser CLI and unknown single-dash flags fail with exit 2", async () => {
+  calls.length = 0;
+  realSite = null;
+  try {
+    expect(await safari(["type", "-j", '{"tab":"1185364","ref":"84","text":"hello","sender":"938763"}'])).toEqual({ err: "", code: 0 });
+    expect(await safari(["type", "84", "hello", "--tab", "1185364", "-j", '{"sender":"938763"}'])).toEqual({ err: "", code: 0 });
+    expect(await safari(["open", "-j", '{"url":"https://example.com/","background":true}'])).toEqual({ err: "", code: 0 });
+    expect(await safari(["type", "84", "--tab", "430", "--text", "-j"])).toEqual({ err: "", code: 0 });
+    expect(calls.filter((c) => c.tool === "type" || c.tool === "open")).toEqual([
+      { tool: "type", args: { tab: "1185364", ref: "84", text: "hello", sender: "938763", append: false } },
+      { tool: "type", args: { tab: 1185364, ref: "84", text: "hello", sender: "938763", append: false } },
+      { tool: "open", args: { url: "https://example.com/", background: true } },
+      { tool: "type", args: { tab: 430, ref: "84", text: "-j", append: false } },
+    ]);
+
+    calls.length = 0;
+    const unknown = await safari(["type", "84", "hello", "--tab", "430", "-x"]);
+    expect(unknown.code).toBe(2);
+    expect(unknown.err).toContain("--");
+    for (const argv of [
+      ["type", "84", "extra", "--tab", "430", "-j", '{"text":"2576"}'],
+      ["open", "-j", "[1,2]"],
+      ["open", "-j"],
+    ]) {
+      const res = await safari(argv);
+      expect(res.code).toBe(2);
+      expect(res.err).not.toBe("");
+    }
+    expect(calls).toEqual([]);
+  } finally {
+    realSite = "done";
+  }
+});
+
+test("extract --root is accepted as --selector", async () => {
+  calls.length = 0;
+  const res = await safari(["extract", "--tab", "439", "--root", "main"]);
+  expect(res.code).toBe(0);
+  expect(res.err).toContain("--selector");
+  expect(calls).toEqual([{ tool: "extract", args: { tab: 439, selector: "main" } }]);
+});
+
+test("open --help lists --fresh and type --help lists --sender", async () => {
+  const openHelp = await safariOut(["open", "--help"]);
+  expect(openHelp.code).toBe(0);
+  expect(openHelp.out).toContain("--fresh");
+  const openShortHelp = await safariOut(["open", "-h"]);
+  expect(openShortHelp).toEqual(openHelp);
+  const typeHelp = await safariOut(["type", "--help"]);
+  expect(typeHelp.code).toBe(0);
+  expect(typeHelp.out).toContain("--sender");
 });

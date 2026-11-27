@@ -645,3 +645,73 @@ test("each refusal quotes lines the card holds", async () => {
     for (const q of quoted) expect(card).toContain(q);
   });
 });
+
+test.each([
+  ["command --help piped to head", "browser open --help | head -20"],
+  ["command -h piped to sed", "browser open -h | sed -n '1,20p'"],
+  ["help subcommand piped to head", "browser help open | head -20"],
+  ["guide piped to head", "browser guide ebay | head -60"],
+  ["guide piped to sed", "browser guide reference | sed -n '1,40p'"],
+  ["snapshot followed by eval --help piped to head", "browser snapshot --tab 430 --root '[role=dialog]' 2>&1; browser eval --help 2>&1 | head -0"],
+  ["stderr-only redirect to /dev/null", "browser snapshot --tab 497 --root main --maxBytes 6000 2>/dev/null"],
+  ["spaced stderr-only redirect to /dev/null", "browser snapshot --tab 497 2> /dev/null"],
+  ["map piped through jq into sed", "browser map 'https://example.com/' --json 2>&1 | jq -Rr 'select(test(\"^## \"))' | sed -E 's/foo/bar/'"],
+  ["tabs piped through jq into head", "browser tabs --json | jq '.tabs[]' | head -20"],
+  ["double-quoted regex pipe with browser learn", 'rg -n -i "a|browser learn" file.md | head -20'],
+  ["ANSI-C quoted regex pipe with browser learn", "rg -n -i $'a\\'|browser learn x' foo\\' | head -20"],
+])("shell guard allows safe command: %s", async (_name, command) => {
+  await withHook(async (_end, tool) => {
+    expect(await tool({ toolName: "bash", input: { command } }, context("main"))).toBeUndefined();
+  });
+});
+
+test("shell guard still refuses real actions and names only flags the refused tool has", async () => {
+  await withHook(async (_end, tool) => {
+    const refuse = async (command: string) => {
+      const result = await tool({ toolName: "bash", input: { command } }, context("main"));
+      expect(result).toEqual({ block: true, reason: expect.stringMatching(/^browser: refused before it ran\. /) });
+      return reasonOf(result);
+    };
+
+    const clickPipe = await refuse("browser click 18 --tab 7 | head -5");
+    expect(clickPipe).toContain("`browser click` pipes its output into head");
+    expect(clickPipe).not.toContain("--query");
+    expect(clickPipe).not.toContain("--root");
+    expect(clickPipe).not.toContain("--save");
+    expect(clickPipe).not.toContain("--id");
+
+    const shotPipe = await refuse("browser shot --tab 430 --ref 82 2>&1 | head -0");
+    expect(shotPipe).toContain("`browser shot` pipes its output into head");
+    expect(shotPipe).not.toContain("--query");
+    expect(shotPipe).not.toContain("--root");
+    expect(shotPipe).not.toContain("--save");
+    expect(shotPipe).not.toContain("--id");
+
+    const evalPipe = await refuse("browser eval 'document.title' --tab 7 | tail -1");
+    expect(evalPipe).toContain("--raw");
+    expect(evalPipe).toContain("--save");
+    expect(evalPipe).not.toContain("--query");
+    expect(evalPipe).not.toContain("--root");
+    expect(evalPipe).not.toContain("--id");
+
+    const openPipe = await refuse("browser open https://example.com/ | tail -2");
+    expect(openPipe).toContain("--id");
+    expect(openPipe).not.toContain("--query");
+    expect(openPipe).not.toContain("--root");
+    expect(openPipe).not.toContain("--save");
+
+    const clickNull = await refuse("browser click 18 --tab 7 >/dev/null");
+    expect(clickNull).toContain("`browser click` sends its output to /dev/null");
+    expect(clickNull).toContain("-q");
+
+    const serveNull = await refuse("browser serve >/dev/null");
+    expect(serveNull).toContain("`browser serve` sends its output to /dev/null");
+    expect(serveNull).not.toContain("-q");
+
+    const disguisedHelp = await refuse("browser type 83 --text -h --tab 7 | head");
+    expect(disguisedHelp).toContain("`browser type` pipes its output into head");
+
+    const stderrThenHead = await refuse("browser snapshot --tab 7 2>/dev/null | head");
+    expect(stderrThenHead).toContain("`browser snapshot` pipes its output into head");
+  });
+});

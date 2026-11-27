@@ -1,6 +1,7 @@
 ---
 name: Shopify checkout
 hosts: shop.app, worldcondoms.com
+code-senders: 938763
 ---
 # Shopify checkout
 

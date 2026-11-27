@@ -51,7 +51,7 @@ const ACTS_WITH_PAGE = ["open", "goto", "click", "type", "press", "refill", "sel
 const ALIASES: [string, string, string[]?][] = [
   ["query", "snapshot", ACTS_WITH_PAGE], ["do", "what", ["map"]],
   ["go", "do"], ["action", "do"], ["value", "option"], ["query", "text"], ["code", "expression"], ["js", "expression"], ["script", "expression"], ["note", "fact"], ["mode", "what"],
-  ["text", "ref", ["click", "hover"]], ["selector", "root"], ["y", "dy"], ["x", "dx"], ["files", "paths"], ["query", "url", ["net"]],
+  ["text", "ref", ["click", "hover"]], ["selector", "root"], ["root", "selector", ["extract"]], ["y", "dy"], ["x", "dx"], ["files", "paths"], ["query", "url", ["net"]],
   ["path", "out", ["shot", "shots", "download"]], ["outDir", "out", ["download"]], ["account", "username", ["passwords"]],
   // 11-17: contacts {query} and imessage_send {approve} each failed a call,
   // and in the work Mac's sessions map {eval}, map {out} and
