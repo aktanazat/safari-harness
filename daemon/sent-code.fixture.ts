@@ -194,6 +194,16 @@ test("a code texted after the call starts is typed, not one from minutes before,
   expect(log).not.toContain(CODE);
 });
 
+// 11-27: Shop's code came 63 s before the agent asked for it, and type
+// waited 30 s twice for a code already there.
+test("a code texted a little over a minute before the call is typed at once", async () => {
+  text(`Shop Example: ${CODE} is your verification code.`, Date.now() - 70_000);
+  const start = Date.now();
+  expect(await waited(invoke("type", CALL, true))).toMatchObject({ ok: true, source: "text from 63641" });
+  expect(fields).toEqual(typedCode(CODE));
+  expect(Date.now() - start).toBeLessThan(5_000);
+});
+
 // A site that sends its code again sends a new one; until 11-11 type took
 // the one it had typed again, at once.
 test("a code typed before is passed over, and the one the site sends again is typed", async () => {
