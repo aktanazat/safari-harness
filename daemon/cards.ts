@@ -13,10 +13,11 @@ import { INPUT_TOOLS } from "./input.ts";
 import { navigatedOf } from "./navigated.ts";
 import { rpc } from "./rpc.ts";
 
-// Embedded card fields served by Stripe, Braintree, Adyen, or Cybersource
-// Unified Checkout (AAA's renewal, 10-19). Do not trust arbitrary pages on
-// the processors' parent domains.
-const PROCESSOR_FRAME = /^(?:[a-z0-9-]+\.)*js\.stripe\.com$|^(?:[a-z0-9-]+\.)+braintreegateway\.com$|^checkoutshopper-[a-z0-9-]+\.adyen\.com$|^(?:[a-z0-9-]+\.)*cdn\.adyen\.com$|^up\.cybersource\.com$/;
+// Embedded card fields served by Stripe, Braintree, Adyen, Cybersource
+// Unified Checkout (AAA's renewal, 10-19), or Shopify's card vault (a
+// Shopify store's checkout, 11-27). Do not trust arbitrary pages on the
+// processors' parent domains.
+const PROCESSOR_FRAME = /^(?:[a-z0-9-]+\.)*js\.stripe\.com$|^(?:[a-z0-9-]+\.)+braintreegateway\.com$|^checkoutshopper-[a-z0-9-]+\.adyen\.com$|^(?:[a-z0-9-]+\.)*cdn\.adyen\.com$|^up\.cybersource\.com$|^checkout\.pci\.shopifyinc\.com$/;
 
 type Reply = Record<string, unknown>;
 // A frame of the checkout holding card fields (cardForm in content.js).
