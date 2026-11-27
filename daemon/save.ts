@@ -1,7 +1,9 @@
 
+import { statSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
+import { HarnessError } from "./failures.ts";
 import { withPageState } from "./page-state.ts";
 import { redactSecretText } from "./redact.ts";
 
@@ -44,8 +46,12 @@ export function withLimit(kind: SaveKind, args: Record<string, unknown>): Record
 // the other reads a file.
 export function targetOf(save: unknown, as: "file" | "folder"): Target {
   if (save === true) return { dir: SAVED_DIR };
-  if (typeof save !== "string" || !isAbsolute(save)) throw new Error(`save must be true or an absolute ${as} path`);
-  return as === "file" ? { path: save } : { dir: save };
+  if (typeof save !== "string" || !isAbsolute(save)) throw new HarnessError("invalid_argument", `save must be true or an absolute ${as} path`);
+  if (as === "file") return { path: save };
+  if (/\.(?:md|json|txt|html|csv|tsv)$/i.test(basename(save)) && !statSync(save, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new HarnessError("invalid_argument", `map save needs a folder path; ${save} looks like a file and is not an existing directory`);
+  }
+  return { dir: save };
 }
 
 type File = { body: string | Uint8Array; ext: string };
@@ -152,15 +158,16 @@ export async function saveOutput(kind: SaveKind, result: unknown, target: Target
   };
 }
 
-// A folder's index.json: each page a map saved there, or failed to, by
+// A folder's manifest: each page a map saved there, or failed to, by
 // address; a later map's entry for an address takes the place of the
 // earlier. One map writes it at a time. A file there that map did not
 // write is the user's, and is left as it is.
+export const MAP_INDEX = "index.manifest";
 type IndexEntry = { url: string; finalUrl?: string; title?: string; ok: boolean; status?: number; ms: number; saved?: string; error?: string };
 const INDEX_FIELDS: Record<keyof IndexEntry, true> = { url: true, finalUrl: true, title: true, ok: true, status: true, ms: true, saved: true, error: true };
 const indexing = new Map<string, Promise<string>>();
 export function writeIndex(dir: string, entries: IndexEntry[]): Promise<string> {
-  const path = join(dir, "index.json");
+  const path = join(dir, MAP_INDEX);
   const written = (indexing.get(path) ?? Promise.resolve(path)).catch(() => path).then(async () => {
     const text = await readFile(path, "utf8").catch((e: unknown) => {
       if (e instanceof Error && "code" in e && e.code === "ENOENT") return undefined;
@@ -184,7 +191,7 @@ export function writeIndex(dir: string, entries: IndexEntry[]): Promise<string> 
   return written;
 }
 
-// The entries of an index.json map wrote: never empty, and each with map's
+// The entries of a manifest map wrote: never empty, and each with map's
 // url, ok and ms and no field map does not write.
 function mapIndex(text: string): IndexEntry[] | undefined {
   let value: unknown;

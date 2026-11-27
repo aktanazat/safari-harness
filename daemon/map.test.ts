@@ -1,7 +1,7 @@
 import { afterEach, expect, jest, setSystemTime, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { connect, historyFixture } from "./fake-safari.ts";
 import { callTool, formatResult } from "./tools.ts";
@@ -133,17 +133,19 @@ const barredOnce = new Set<number>();
 
 const evaluate = historyFixture();
 function read(tab: number, op: string): { value?: unknown; error?: string } {
-  const url = tabs.get(tab)?.url ?? "";
+  const page = tabs.get(tab);
+  const url = page?.url ?? "";
+  const source = { url, title: page?.title };
   readUrls.push(url);
   asked.push(`read ${url}`);
   if (url === GONE) return { error: "no tab" };
   if (url === EMPTY) return { value: { error: "no content root" } };
-  if (url === LISTING) return { value: { ok: true, result: { links: LISTED, next: null } } };
+  if (url === LISTING) return { value: { ok: true, result: { links: LISTED, next: null }, source } };
   if (url.startsWith(PAGED)) {
     const n = Number(url.slice(PAGED.length));
-    return { value: { ok: true, result: { links: [1, 2, 3].map((k) => `https://shop.example/p/${3 * n - 3 + k}`), next: n < 3 ? `${PAGED}${n + 1}` : null } } };
+    return { value: { ok: true, result: { links: [1, 2, 3].map((k) => `https://shop.example/p/${3 * n - 3 + k}`), next: n < 3 ? `${PAGED}${n + 1}` : null }, source } };
   }
-  if (op === "eval") return { value: { ok: true, result: { cards: 2 } } };
+  if (op === "eval") return { value: { ok: true, result: { cards: 2 }, source } };
   if (op === "fetch") return { value: { status: url === MISSING ? 404 : 200, url, type: "text/html", text: `body of ${url}`, truncated: false } };
   if (url === MISSING) return { value: { url, title: "Page Not Found", text: "Page Not Found\nThe page you asked for has moved.", truncated: false } };
   if (url === SSO) return { value: { url, title: "Sign In", text: "Sign In\nPassword", truncated: false, pageState: { kind: "login_wall", next: "sign in" } } };
@@ -485,9 +487,7 @@ test("a file past 50 MB is not fetched over the link; the answer gives its size 
   expect(fetchedFiles).not.toContain(ARCHIVE);
 });
 
-// An eval or fetch read carries no title, and an address may have led to a
-// page not found.
-test("each page carries the title its tab opened with", async () => {
+test("map reports the title of the document an eval ran on", async () => {
   const pages = await map({ urls: ["https://shop.example/a", LOST], what: "eval", expression: "document.title" });
   expect(pages.map((p) => [p.url, p.title])).toEqual([["https://shop.example/a", "Page"], [LOST, "Page Not Found"]]);
 });
@@ -540,6 +540,51 @@ test("a page whose load never begins in a reader's tab opens in a tab of its own
   const pages = await map({ urls: ["https://shop.example/a", UNLOADED], concurrency: 1 });
   expect(pages[1]).toMatchObject({ url: UNLOADED, ok: true, value: { text: `text of ${UNLOADED}` } });
   expect(opened.length - before).toBe(2);
+});
+
+test("map does not count an eval without a script result as read", async () => {
+  const url = "https://cards.example/";
+  const answer = await mapPages({ urls: [url], what: "eval", expression: "cards()" }, async (tool) => {
+    if (tool === "open") return { id: 1, url };
+    return { ok: true };
+  });
+  expect(answer.pages[0]).toMatchObject({ url, ok: false, error: expect.stringContaining("no result") });
+});
+
+test.each(["extract", "snapshot", "eval"])("map attributes a redirected %s to the document read in a reused tab", async (what) => {
+  const from = "https://shop.example/old";
+  const url = "https://shop.example/requested";
+  const finalUrl = "https://shop.example/landed";
+  let pagesRead = 0;
+  const output = (at: string, title: string) => what === "eval"
+    ? { ok: true, result: 42, source: { url: at, title } }
+    : { url: at, title, [what === "extract" ? "text" : "snapshot"]: `Content at ${at}` };
+  const answer = await mapPages({ urls: [from, url], what, expression: "42", concurrency: 1 }, async (tool) => {
+    if (tool === "open") return { id: 1, url: from, title: "Old title" };
+    if (tool === "goto") return { id: 1, url, title: "Old title" };
+    if (tool === what) return pagesRead++ === 0 ? output(from, "Old title") : output(finalUrl, "Landed title");
+    return { ok: true };
+  });
+  expect(answer.pages[1]).toMatchObject({ url, finalUrl, title: "Landed title", ok: true });
+  if (what === "eval") {
+    expect(answer.pages[1].value).toEqual({ ok: true, result: 42 });
+    expect(formatResult(answer)).toContain(`redirected to ${finalUrl}`);
+  }
+});
+
+test("map reports a blank document in a reused tab as unread", async () => {
+  let read = 0;
+  const from = "https://shop.example/old";
+  const url = "https://shop.example/requested";
+  const { pages } = await mapPages({ urls: [from, url], concurrency: 1 }, async (tool) => {
+    if (tool === "open") return { id: 1, url: from, title: "Old title" };
+    if (tool === "goto") return { id: 1, url, title: "Old title" };
+    if (tool === "extract") return read++ === 0 ? { url: from, title: "Old title", text: "Old page" } : { url: "about:blank", title: "", text: "" };
+    return { ok: true };
+  });
+  expect(pages[1]).toMatchObject({ url, ok: false, error: expect.stringContaining("blank") });
+  expect(pages[1]).not.toHaveProperty("value");
+  expect(pages[1]).not.toHaveProperty("title");
 });
 
 // Nobody watches these tabs, so a check still up once open has waited on it
@@ -793,7 +838,7 @@ test("with save, a map past its time writes a file for each page it answers with
   await Bun.sleep(100);
   const saved = pages.map(savedPath);
   expect(saved.map((path) => path !== "")).toEqual([true, true, true, false, false, false]);
-  expect(readdirSync(dir).filter((name) => name !== "index.json").map((name) => join(dir, name)).sort()).toEqual(saved.slice(0, 3).sort());
+  expect(readdirSync(dir).filter((name) => name !== "index.manifest").map((name) => join(dir, name)).sort()).toEqual(saved.slice(0, 3).sort());
 });
 
 // In the two weeks of logs before 10-19 an agent copied a map's addresses
@@ -868,24 +913,43 @@ test("a page that reads as an error page, or answers an HTTP error, fails, saved
   expect(readFileSync(savedPath(saved), "utf8")).toContain("has moved");
 });
 
+test("map rejects a file-shaped save path unless it is already a folder", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "map-"));
+  const url = "https://shop.example/a";
+  try {
+    const openedBefore = opened.length;
+    for (const ext of ["md", "json", "txt", "html", "csv", "tsv"]) {
+      await expect(mapPages({ urls: [url], save: join(dir, `pages.${ext}`) }, callTool)).rejects.toThrow("existing directory");
+    }
+    expect(opened.length).toBe(openedBefore);
+    const dotted = join(dir, "existing.json");
+    mkdirSync(dotted);
+    expect((await mapPages({ urls: [url], save: dotted }, callTool)).pages[0].ok).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
 // In the October hunts an agent read a folder's files to learn which of
 // its pages had failed, and keyed its retries on the addresses inside
 // eBay's, as its files held only the expression's value (AkylHunts AH5).
-test("with save to a folder, map keeps an index.json there of every page, failed ones too, and an eval's file holds the page it came from", async () => {
+test("with save to a folder, map keeps a manifest outside the page glob and an eval's file holds the page it came from", async () => {
   const dir = mkdtempSync(join(tmpdir(), "map-"));
   const answer = await mapPages({ urls: [GONE, "https://shop.example/a"], what: "eval", expression: "cards()", save: dir }, callTool);
   const [gone, read] = answer.pages as Page[];
-  expect(answer.index).toBe(join(dir, "index.json"));
-  expect(JSON.parse(readFileSync(join(dir, "index.json"), "utf8"))).toEqual([
+  expect(answer.index).toBe(join(dir, "index.manifest"));
+  expect(JSON.parse(readFileSync(join(dir, "index.manifest"), "utf8"))).toEqual([
     { url: GONE, title: "Page", ok: false, ms: expect.any(Number), error: gone.ok ? "" : gone.error },
     { url: "https://shop.example/a", title: "Page", ok: true, ms: expect.any(Number), saved: savedPath(read) },
   ]);
   expect(JSON.parse(readFileSync(savedPath(read), "utf8"))).toEqual({ url: "https://shop.example/a", title: "Page", ok: true, ms: read.ms, value: { cards: 2 } });
   await mapPages({ urls: [GONE], what: "eval", expression: "cards()", save: dir }, callTool);
-  expect(JSON.parse(readFileSync(join(dir, "index.json"), "utf8")).map((e: { url: string }) => e.url)).toEqual(["https://shop.example/a", GONE]);
+  expect(JSON.parse(readFileSync(join(dir, "index.manifest"), "utf8")).map((e: { url: string }) => e.url)).toEqual(["https://shop.example/a", GONE]);
+
+  expect([...new Bun.Glob("*.json").scanSync(dir)]).toEqual([basename(savedPath(read))]);
 });
 
-// An index.json map did not write is the user's: on review one holding
+// A manifest map did not write is the user's: on review one holding
 // [{"name":"first"},{"name":"second"}] lost its first entry to a map that
 // saved beside it.
 test.each([
@@ -893,13 +957,13 @@ test.each([
   ['[{"url":"https://shop.example/a","title":"A"}]'],
   ['[{"url":"https://shop.example/a","ok":true,"ms":1,"notes":"mine"}]'],
   ["[]"],
-])("map leaves an index.json it did not write as it is, and says so: %s", async (theirs) => {
+])("map leaves a manifest it did not write as it is, and says so: %s", async (theirs) => {
   const dir = mkdtempSync(join(tmpdir(), "map-"));
-  writeFileSync(join(dir, "index.json"), theirs);
+  writeFileSync(join(dir, "index.manifest"), theirs);
   const answer = await mapPages({ urls: ["https://shop.example/a"], save: dir }, callTool);
-  expect({ index: answer.index, note: answer.note, file: readFileSync(join(dir, "index.json"), "utf8") }).toEqual({
+  expect({ index: answer.index, note: answer.note, file: readFileSync(join(dir, "index.manifest"), "utf8") }).toEqual({
     index: undefined,
-    note: `no index.json: ${join(dir, "index.json")} is not a map's index, so it was left as it is`,
+    note: `no index.manifest: ${join(dir, "index.manifest")} is not a map's index, so it was left as it is`,
     file: theirs,
   });
 });

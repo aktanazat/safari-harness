@@ -12,7 +12,7 @@
 
 import type { Challenge } from "./challenge.ts";
 import { site, WAIT_NEEDS, waitsOnPage } from "./receipt.ts";
-import { saveOutput, SAVED_DIR, targetOf, withLimit, writeIndex, type SaveKind, type Target } from "./save.ts";
+import { MAP_INDEX, saveOutput, SAVED_DIR, targetOf, withLimit, writeIndex, type SaveKind, type Target } from "./save.ts";
 import { failureOf, HarnessError, readFailure, type Failure } from "./failures.ts";
 import { affectsPage } from "./lanes.ts";
 import { SEARCH_GAP_MS, turnAt } from "./pace.ts";
@@ -33,6 +33,8 @@ const MAX_AT_ONCE = 4;
 // read and names the rest: the other 10 s carry the answer back.
 const BUDGET_MS = 50_000;
 export const READS: SaveKind[] = ["extract", "snapshot", "eval", "fetch"];
+// The previous address, or true when there is none. Not a public eval option.
+export const MAP_EVAL_SOURCE = Symbol("map eval source");
 
 // A check that stands in for the page leaves nothing to read; one in a box
 // on a page that otherwise reads normally is noted beside what was read.
@@ -67,12 +69,10 @@ const FOLLOWED_WAIT = "wait holds each page followed, not the listing, and none 
 // pageState: what an eval's page is, judged from its title and address
 // (readTab), when that names a page that is not content.
 type Outcome = ({ ok: true; value: unknown; pageState?: PageState } | { ok: false; error: string; failure?: Failure; value?: unknown }) & { challenge?: Challenge };
-// title: the page's as it opened, which an eval or fetch read does not
-// carry, where the address may have led to a sign-in or a page not found;
-// finalUrl: where it opened, when not at url; retried: how many times it
-// was loaded again after its site's error page; reopened: it was read in
-// a new tab after Safari barred the extension from the first; from: whose
-// read of this task's it is (reads.ts). A failed page's value is what an
+// title and finalUrl describe the document read, not the navigation reply.
+// retried: how many times it was loaded again after its site's error page;
+// reopened: it was read in a new tab after Safari barred the first;
+// from: whose read of this task's it is (reads.ts). A failed page's value is what an
 // error page read.
 // paged: its place in a listing map read page by page (pagedPages).
 export type Page = Outcome & { url: string; finalUrl?: string; title?: string; ms: number; closeError?: string; retried?: number; reopened?: true; from?: string; paged?: { n: number; of: string } };
@@ -80,10 +80,10 @@ type Call = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
 // What map does with each page: what it waits for (and how a miss names
 // it), the read, its arguments, where to save it, whether to load it
 // whatever this task has read or met, and the key its reads are kept by.
-type Job = { wait?: Record<string, unknown>; waited?: string; read: SaveKind; args: Record<string, unknown>; target?: Target; fresh?: boolean; key?: string; readOnly?: true; call: Call };
+type Job = { wait?: Record<string, unknown>; waited?: string; read: SaveKind; args: Record<string, unknown>; target?: Target; fresh?: boolean; key?: string; call: Call };
 type Opened = { id?: number; url?: string; title?: string; challenge?: Challenge; ok?: boolean; warning?: string; file?: string; note?: string };
 // What map answers: its pages; the addresses it did not read (past follow's
-// max, or past its 50 s), for the next map; the folder's index.json; with
+// max, or past its 50 s), for the next map; the folder's manifest; with
 // pages, each listing's next page left unread, for a map with the same
 // arguments.
 export type MapAnswer = { pages: (Page | Listing)[]; urls?: string[]; next?: string[]; index?: string; note?: string };
@@ -176,7 +176,7 @@ async function readAll(urls: string[], job: Job, atOnce: number, end: number, ta
   const began: number[] = [];
   const disconnected: boolean[] = [];
   const stalled: boolean[] = [];
-  const effectful = job.readOnly !== true && affectsPage(job.read, job.args);
+  const effectful = affectsPage(job.read, job.args);
   // The pages' files being written, which the answer waits on.
   const writing: Promise<void>[] = [];
   const queue = urls.map((_, i) => i);
@@ -275,7 +275,7 @@ export async function followPages(a: Record<string, unknown>, call: Call): Promi
   const tabs: Warm[] = [];
   // A selector is waited for, as a page's script may draw the list after
   // it loads; a regex reads the links there are once the page has loaded.
-  const listing: Job = { ...(typeof match === "string" ? { wait: { selector: match } } : {}), waited: `a link matching ${String(match)}`, read: "eval", args: { expression: linksIn(match) }, readOnly: true, fresh: job.fresh, call };
+  const listing: Job = { ...(typeof match === "string" ? { wait: { selector: match } } : {}), waited: `a link matching ${String(match)}`, read: "eval", args: { expression: linksIn(match), read: true }, fresh: job.fresh, call };
   const seen = new Set(urls);
   const past: string[] = [];
   let left = max;
@@ -599,9 +599,9 @@ function recalled(url: string, job: Job): Page | undefined {
 // its tab's close error, which the page keeps.
 async function visit(url: string, job: Job, warm: Warm, recovering = false, barred?: { started: number; closeError?: string }): Promise<Visit> {
   const started = barred?.started ?? performance.now();
-  const effectful = job.readOnly !== true && affectsPage(job.read, job.args);
+  const effectful = affectsPage(job.read, job.args);
   let opened: Opened | undefined;
-  let outcome: Outcome;
+  let answer: Outcome & { source?: ReadSource };
   let retried = 0;
   let disconnected = false;
   let closeError: string | undefined;
@@ -612,20 +612,31 @@ async function visit(url: string, job: Job, warm: Warm, recovering = false, barr
       await Bun.sleep(RETRY_MS[retried++]);
       opened = (await job.call("goto", { tab: opened.id, url })) as Opened;
     }
-    outcome = await readTab(opened, url, job);
+    answer = await readTab(opened, url, job, address(url) === warm.at ? undefined : warm.at);
   } catch (e) {
     const error = messageOf(e);
     disconnected = DISCONNECTED.test(error) || recovering && error === "Safari extension not connected — enable the Safari Harness extension (Safari ▸ Settings ▸ Extensions; turning it on asks for the Mac's password or Touch ID)";
-    outcome = { ok: false, error, failure: failureOf(e, { effectful: affectsPage(job.read, job.args) }) };
+    answer = { ok: false, error, failure: failureOf(e, { effectful }) };
     closeError = await drop(warm, job.call);
     if (!barred && !effectful && BARRED.test(error)) return visit(url, job, warm, recovering, { started, ...(closeError === undefined ? {} : { closeError }) });
   }
-  // extract and snapshot say the address of the document they read
-  const v = outcome.value;
-  const shown = v && typeof v === "object" && "url" in v && typeof v.url === "string" ? address(v.url) : undefined;
-  if (warm.tab !== undefined && warm.at !== undefined && shown === warm.at && address(url) !== warm.at) {
+  const { source, ...read } = answer;
+  let outcome = read;
+  const shown = address(source?.url);
+  const atOpen = address(opened?.url);
+  const blank = shown === "about:blank" || shown === "" || (shown === undefined && (atOpen === "about:blank" || atOpen === ""));
+  const previous = job.read !== "fetch" && shown !== undefined && shown === warm.at && address(url) !== warm.at;
+  if (previous && !effectful) {
     await shut(warm, job.call);
     return visit(url, job, warm, recovering, barred);
+  }
+  if (blank || previous) {
+    if (outcome.ok || outcome.value !== undefined) {
+      const error = blank ? "the tab showed a blank document, so the requested page was not read" : "the tab still showed the previous document, so the requested page was not read";
+      outcome = { ok: false, error, failure: failureOf(new HarnessError("not_content", error, { effect: effectful ? "possibly_effected" : "none" })) };
+    }
+    opened = undefined;
+    closeError ??= await drop(warm, job.call);
   }
   // map has closed the tab by the time its answer is read, so a stalled
   // page's advice to reload it there becomes mapping it again
@@ -636,10 +647,12 @@ async function visit(url: string, job: Job, warm: Warm, recovering = false, barr
     const error = told.endsWith("map it again") ? told : `${told}; map it again`;
     outcome = { ...outcome, error, ...(outcome.failure ? { failure: { ...outcome.failure, message: error } } : {}) };
   }
-  if (warm.tab !== undefined && !opened?.file) warm.at = shown ?? address(opened?.url);
+  if (warm.tab !== undefined && !opened?.file) warm.at = job.read === "fetch" ? atOpen : shown ?? atOpen;
   const ms = Math.round(performance.now() - started);
-  const finalUrl = opened?.url && opened.url !== URL.parse(url)?.href ? opened.url : undefined;
-  const about = { url, ...(finalUrl ? { finalUrl } : {}), ...(opened?.title ? { title: opened.title } : {}) };
+  const at = opened && (source?.url ?? opened.url);
+  const finalUrl = at && at !== URL.parse(url)?.href ? at : undefined;
+  const title = opened && (source ? source.title : opened.title);
+  const about = { url, ...(finalUrl ? { finalUrl } : {}), ...(title ? { title } : {}) };
   closeError ??= barred?.closeError;
   const page: Page = { ...outcome, ...about, ms, ...(retried ? { retried } : {}), ...(barred ? { reopened: true } : {}), ...(closeError === undefined ? {} : { closeError }) };
   if (warm.tab !== undefined) warm.last = page;
@@ -707,7 +720,14 @@ function address(url: string | undefined): string | undefined {
   return u.href;
 }
 
-async function readTab(opened: Opened, url: string, { wait, waited, read, args, call }: Job): Promise<Outcome> {
+type ReadSource = { url: string; title?: string };
+
+function sourceOf(value: unknown): ReadSource | undefined {
+  if (!value || typeof value !== "object" || !("url" in value) || typeof value.url !== "string") return undefined;
+  return { url: value.url, title: "title" in value && typeof value.title === "string" ? value.title : undefined };
+}
+
+async function readTab(opened: Opened, url: string, { wait, waited, read, args, call }: Job, previous: string | undefined): Promise<Outcome & { source?: ReadSource }> {
   const check = opened.challenge;
   if (check && check.where !== "box") return { ok: false, error: CHECKED[check.where], failure: failureOf(new HarnessError("blocked", CHECKED[check.where], { next: CHECKED[check.where] })), challenge: check };
   // open answers a site's error page (its guide's error-titles) as not ok,
@@ -736,21 +756,33 @@ async function readTab(opened: Opened, url: string, { wait, waited, read, args, 
   // body as the server sends it, where the others read the page it drew.
   let value: unknown;
   try {
-    value = await call(read, { ...args, tab: opened.id, ...(read === "fetch" ? { url } : {}) });
+    value = await call(read, { ...args, tab: opened.id, ...(read === "fetch" ? { url } : {}), ...(read === "eval" ? { [MAP_EVAL_SOURCE]: previous ?? true } : {}) });
   } catch (e) {
     if (read === "extract" && messageOf(e).includes("this is a PDF in Safari's viewer")) return pdfRead();
     throw e;
   }
-  // An eval's value is the expression's, which says nothing of the page it
-  // ran on, so the page's title and address are judged as its words: on
-  // 11-13 UKG's docs answered five evals under the title "You’ve been rate
-  // limited", each counted as read (LOCK#1363, #1401). A title that names
-  // no wall leaves the page unjudged.
-  const judged = read === "eval" && opened.title ? classifyPage({ url: opened.url ?? url, title: opened.title, text: opened.title }) : undefined;
+  const effectful = affectsPage(read, args);
+  const failed = pageError(value, effectful);
+  if (failed) return check ? { ...failed, challenge: check } : failed;
+  let source = sourceOf(value);
+  if (read === "eval") {
+    if (!value || typeof value !== "object" || !("result" in value)) {
+      const error = "eval returned no result; the requested page was not read";
+      return { ok: false, error, failure: failureOf(new Error(error), { effectful }) };
+    }
+    const output = "source" in value ? value : { ...value, source: undefined };
+    const { source: observed, ...result } = output;
+    source = sourceOf(observed);
+    if (!source) {
+      const error = "eval did not report which document it ran on; the requested page was not read";
+      return { ok: false, error, failure: failureOf(new Error(error), { effectful }) };
+    }
+    value = result;
+  }
+  const title = source ? source.title : opened.title;
+  const judged = read === "eval" && title ? classifyPage({ url: source?.url ?? url, title, text: title }) : undefined;
   const pageState = judged && judged.kind !== "content" && judged.kind !== "unjudged" ? judged : undefined;
-  // A page can answer with an error instead of output (extract's selector
-  // matches nothing): it read nothing, so it failed like a page that threw.
-  const outcome: Outcome = pageError(value, affectsPage(read, args)) ?? errorRead(value, opened.title, pageState) ?? { ok: true, value, ...(pageState ? { pageState } : {}) };
+  const outcome: Outcome & { source?: ReadSource } = { ...(errorRead(value, title, pageState) ?? { ok: true, value, ...(pageState ? { pageState } : {}) }), source };
   return check ? { ...outcome, challenge: check } : outcome;
 }
 
@@ -799,7 +831,7 @@ function sourced(page: Page): unknown {
   return { ...v, result: { url: page.url, ...(page.finalUrl ? { finalUrl: page.finalUrl } : {}), ...(page.title ? { title: page.title } : {}), ok: page.ok, ms: page.ms, value: v.result } };
 }
 
-// The folder's index.json (save.ts), each page's line, failed or not: for a
+// The folder's manifest (save.ts), each page's line, failed or not: for a
 // folder the caller named, as the shared one holds every task's maps.
 async function indexed(target: Target | undefined, pages: Page[]): Promise<{ index?: string; note?: string }> {
   if (!target || !("dir" in target) || target.dir === SAVED_DIR || pages.length === 0) return {};
@@ -816,7 +848,7 @@ async function indexed(target: Target | undefined, pages: Page[]): Promise<{ ind
       ...(p.ok ? {} : { error: p.error }),
     };
   });
-  return writeIndex(target.dir, entries).then((index) => ({ index }), (e: unknown) => ({ note: `no index.json: ${messageOf(e)}` }));
+  return writeIndex(target.dir, entries).then((index) => ({ index }), (e: unknown) => ({ note: `no ${MAP_INDEX}: ${messageOf(e)}` }));
 }
 
 // A page that never showed what the wait asked for is most often another
@@ -889,6 +921,7 @@ export function mapText(answer: MapAnswer, format: (value: unknown) => string, m
     const wall = state && NOT_CONTENT[state.kind];
     const notes = [
       `${p.ms} ms`,
+      ...("finalUrl" in p && p.finalUrl && !(value && typeof value === "object" && "url" in value && value.url === p.finalUrl) ? [`redirected to ${p.finalUrl}`] : []),
       ...("from" in p && p.from ? [p.from] : []),
       ...("retried" in p && p.retried ? [`loaded again ${p.retried === 1 ? "once" : `${p.retried} times`} after its error page`] : []),
       ...("reopened" in p && p.reopened ? ["read in a new tab after Safari barred the first"] : []),

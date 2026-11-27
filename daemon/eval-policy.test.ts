@@ -10,7 +10,7 @@ import { callTool } from "./tools.ts";
 const BLOCKED = "this page's security policy blocks eval; use snapshot, extract, or data";
 const WEBKIT = "Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source of script in the following Content Security Policy directive: \"script-src 'self'\".";
 const ran: string[] = [];
-function answer(op: string, args: unknown[]): { value: unknown } | { error: string } {
+function answer(op: string, args: unknown[]): { value: unknown } | { error: string; failure?: unknown } {
   if (op === "relay" && args[1] === "eval") {
     const code = Array.isArray(args[2]) ? String(args[2][0]) : "";
     if (code.includes("strict")) return { error: BLOCKED };
@@ -19,8 +19,9 @@ function answer(op: string, args: unknown[]): { value: unknown } | { error: stri
     return { value: { ok: true, result: "extension" } };
   }
   if (op === "evalPage") {
-    if (String(args[1]).includes("csp")) return { error: WEBKIT };
+    if (String(args[1]).includes("csp")) return { error: WEBKIT, failure: { code: "blocked", effect: "none" } };
     ran.push("page");
+    if (String(args[1]).includes("runtime")) return { error: "the script reports a Content Security Policy error" };
     return { value: { ok: true, result: "page" } };
   }
   return { value: { ok: true } };
@@ -43,7 +44,8 @@ test("code the page's policy refuses in the extension's world runs once, in the 
 });
 
 test("code refused in both worlds fails with words that say what to use instead", async () => {
-  await expect(run("'strict csp'")).rejects.toThrow(new Error(BLOCKED));
+  await expect(run("'strict csp'")).rejects.toMatchObject({ code: "blocked", effect: "none", message: BLOCKED });
+  expect(ran).toEqual([]);
 });
 
 // 10-07: page: true on Robinhood was refused twice with only "use
@@ -51,6 +53,11 @@ test("code refused in both worlds fails with words that say what to use instead"
 test("page: true runs only in the page's world, and its refusal points to eval without page", async () => {
   await expect(run("'csp'", true)).rejects.toThrow("Without page, eval runs in the extension's world, which this page allows");
   expect(ran).toEqual([]);
+});
+
+test("a runtime error mentioning security policy does not claim the script never ran", async () => {
+  await expect(run("'runtime'", true)).rejects.toThrow("the script reports a Content Security Policy error");
+  expect(ran).toEqual(["page"]);
 });
 
 test("an error the code itself throws is reported, not run again in the page's world", async () => {
