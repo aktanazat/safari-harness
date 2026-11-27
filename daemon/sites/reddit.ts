@@ -1,6 +1,6 @@
 // Reddit (www.reddit.com) for safari repl: threads and search, read-only.
-// Reddit answers its .json addresses with 403 even from a signed-in Safari
-// tab (11-27), so this reads what its own pages draw. A thread is read from
+// Reddit answers its .json addresses with 403 even from a browser tab
+// (11-27, Ladybird, signed out), so this reads what its own pages draw. A thread is read from
 // the page itself, loaded in the kit's background tab: a fetched copy of the
 // page has the post but no comments, and the comment fragment alone holds
 // only the first three top-level comments and no pager (11-27). Further
@@ -169,7 +169,7 @@ export function reddit(kit: SiteKit) {
     const r = await kit.eval<Reply>(ORIGIN, `(async () => {${PAGE}\nreturn run(${JSON.stringify(job)});})()`, { read: true });
     const limit = await kit.limited(SITE, r.status, (name) => (name === "retry-after" ? r.retryAfter : undefined));
     if (limit) throw rateLimited(limit.host, limit.resetAt, limit.guessed);
-    if (r.blocked) throw new Error(`${SITE} blocked the read ("You've been blocked by network security"); signing in to Reddit in Safari usually lifts it`);
+    if (r.blocked) throw new Error(`${SITE} blocked the read ("You've been blocked by network security")`);
     if (r.status !== 200) throw new Error(`${SITE} answered HTTP ${r.status}`);
     return r;
   }

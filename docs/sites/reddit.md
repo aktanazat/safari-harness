@@ -4,11 +4,11 @@ hosts: reddit.com, old.reddit.com
 ---
 # Reddit
 
-Reddit blocks reads from outside a browser. Read it through Safari with the `reddit` global, and read each thread once.
+Reddit blocks reads from outside a browser. Read it through the harness's browser with the `reddit` global, and read each thread once.
 
 ## Reading
 - `read` of Reddit pages gets "You've been blocked by network security. To continue, log in to your Reddit account or use your developer token". `read` of `old.reddit.com` goes to `/login/?reason=lor2`, and `read` of a `.json` address returns about 150 characters.
-- The `.json` addresses answer 403 from a Safari tab too, signed in or not (11-27). Reddit's own pages and the fragments they load still work, which is what the global reads.
+- The `.json` addresses answer 403 from a browser tab too (11-27, Ladybird, signed out). Reddit's own pages and the fragments they load still work, signed out included, which is what the global reads.
 - Save each thread's text to a file as you fetch it and work from the files. One session fetched 49 threads 300 times, mostly again after its context was summarized.
 
 ## In safari repl
