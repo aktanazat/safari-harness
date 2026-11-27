@@ -1902,6 +1902,7 @@ function listReader(url: string): string | undefined {
   const issue = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)/.exec(url);
   if (issue) return `gh api repos/${issue[1]}/${issue[2]}/issues/${issue[3]}/comments --paginate reads every comment`;
   if (/^https:\/\/(?:www\.|m\.)?youtube\.com\/watch\?/.test(url)) return "youtube.getComments(url) in repl reads the comments, a page at a time";
+  if (/^https:\/\/(?:www\.|old\.|new\.)?reddit\.com\/(?:(?:r|u|user)\/[^/]+\/)?comments\//.test(url)) return "reddit.getThread(url, {limit}) in repl reads the post and its comments, folded replies included";
   const x = /^https:\/\/(?:www\.)?(?:x|twitter)\.com\/(\w+)\/?(?:[?#]|$)/.exec(url);
   if (!x || /^(?:explore|search|notifications|messages|settings|i|compose)$/i.test(x[1])) return undefined;
   return x[1] === "home" ? "x.getTimeline() in repl reads the timeline, a page at a time" : `x.getUserTweets("${x[1]}") in repl reads the posts, a page at a time`;

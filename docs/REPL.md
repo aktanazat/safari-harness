@@ -237,7 +237,7 @@ count of each kind. The script itself sees the page as it is; what an
 approved send sends is never cut.
 
 `slack`, `gmail`, `googleAccounts`, `notion`, `googleDocs`, `googleSheets`,
-`googleSearch`, `youtube`, `x` (also `twitter`), `linkedin`. `safari guide <site>`
+`googleSearch`, `youtube`, `x` (also `twitter`), `linkedin`, `reddit`. `safari guide <site>`
 lists each one's methods under "In safari repl". A list comes with its
 paging: `gmail.search` answers `{results, hasMore, total, nextOffset}`.
 

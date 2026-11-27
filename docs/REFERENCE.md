@@ -1718,7 +1718,8 @@ after the text: what it left (a "Load more" control and what it holds
 back, a list of 1,000 rows that draws 16, a feed of unknown length) and
 what reads the rest, naming the site's reader when there is one (`gh api`
 for a GitHub issue's comments, `x.getUserTweets` for an X profile,
-`youtube.getComments` for a video's).
+`youtube.getComments` for a video's, `reddit.getThread` for a Reddit
+thread's).
 
 - `expand: true` clicks the list's "Load more", "Show 12 more replies" or
   "View older messages" controls until none is left, each once what it
