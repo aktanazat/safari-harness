@@ -117,8 +117,11 @@ const WAIT_MS = 30_000;
 // Gmail waits 10 s on a text, as a code texted at once needs no Gmail tab,
 // which takes 10 s to open (the median of the week to 11-11).
 const MAIL_AFTER_MS = 10_000;
-// A code often lands before the call, sent for before the field was found.
-const BEFORE_MS = 60_000;
+// A code often lands before the call, sent for before the field was found:
+// on 11-27 Shop's came 63 s before, past the minute this once was, and two
+// waits of 30 s each missed it. The newest code goes first and a typed one
+// is passed over, so an older one is never typed for a newer.
+const BEFORE_MS = 180_000;
 // Gmail is searched every 2 s, as waitForMail does: about 0.6 s a search.
 const LOOK_MS = 2_000;
 
