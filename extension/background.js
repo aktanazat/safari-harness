@@ -104,8 +104,8 @@ function connect() {
         // ran (goneBefore): on 11-02 a click, a select and a goto on a tab
         // closed long before were each answered as maybe done, and a
         // snapshot there as not (MineSessionC-6).
-        const lost = /Tab not found|Tab '(\d+)' was not found/.exec(text);
-        const id = lost ? Number(lost[1] ?? msg.args?.[0]) : undefined;
+        const lost = /Tab not found|Tab '(\d+)' was not found|No tab with id: (\d+)/.exec(text);
+        const id = lost ? Number(lost[1] ?? lost[2] ?? msg.args?.[0]) : undefined;
         const failure = err?.failure ?? (lost && await goneBefore(id, asked) ? { code: "stale_view", effect: "none", retryable: false, next: "find the tab with tabs, or open it again" } : undefined);
         answer({ id: msg.id, error: lost ? await goneText(id) : /does not have access to this tab/.test(text) ? await barredText(msg.args?.[0]) : text, ...(failure ? { failure } : {}), ...(err?.phase ? { phase: err.phase } : {}) });
       });
@@ -373,6 +373,7 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = nul
       if (!e.navigated) throw e;
       if (sent) moved = true;
       if (sent && gathers(op, args)) throw await wentOn(tabId, deadline);
+      if (sent && op === "eval") throw new Error("the page navigated while eval was running; its result was lost");
       if (sent && !READS.has(op)) return { value: { ok: true } };
       if (Date.now() >= deadline) throw new Error("the page kept navigating; read it again once it settles");
     }
@@ -506,9 +507,9 @@ function fileText(file) {
 // had before) once that answers or FILE_WAIT_MS on, whichever is first, and
 // its address is a file. On 10-29 an open of a .pkg answered its blank tab
 // within 1 s, before FILE_WAIT_MS.
-async function openedOrFile(tabId, url, until, before = "") {
+async function openedOrFile(tabId, url, until, before = "", previousTitle) {
   files.delete(tabId);
-  const opened = openedPage(tabId, until);
+  const opened = openedPage(tabId, until, previousTitle);
   let timer;
   const looked = new Promise((resolve) => { timer = setTimeout(resolve, FILE_WAIT_MS); }).then(() => api.tabs.get(tabId).catch(() => null));
   try {
@@ -691,6 +692,26 @@ function sendUntilNavigation(tabId, msg, ms, frameId = 0, script = false) {
   });
 }
 
+// A map needs the document's title and address even when the result is a scalar.
+async function sourcedEval(tabId, previous, timeoutMs, run) {
+  const until = Date.now() + timeoutMs;
+  let moved = false;
+  const stop = onNewDocument(tabId, 0, () => { moved = true; });
+  try {
+    const { value: source } = await toTab(tabId, "tabInfo", [], Math.min(timeoutMs, PING_MS));
+    const remaining = until - Date.now();
+    const at = source?.url?.split("#")[0];
+    if (moved || !at || at === "about:blank" || at === previous || remaining <= 0) {
+      throw Object.assign(new Error("the requested page could not be confirmed before eval, so the script was not run"), { failure: { code: "not_content", effect: "none" } });
+    }
+    const value = await run(remaining);
+    if (moved || value?.navigated) throw new Error("the page navigated while eval was running; its result was lost");
+    return { ...value, source: { url: source.url, title: source.title } };
+  } finally {
+    stop();
+  }
+}
+
 // A page that says it is still loading (a skeleton or "The page is loading.
 // Please wait" line where its text will come, a spinner and nothing else,
 // or aria-busy) is waited on for up to LOADING_MS within the open's limit,
@@ -703,7 +724,7 @@ function sendUntilNavigation(tabId, msg, ms, frameId = 0, script = false) {
 // within the same limit. On 10-05 open and goto answered Cvent's sign-on
 // page, a spinner on its way to AWS's sign-in, as the page they had opened.
 const LOADING_MS = 5000;
-async function openedPage(tabId, until) {
+async function openedPage(tabId, until, previousTitle) {
   let navigated = false;
   const off = onNewDocument(tabId, 0, () => { navigated = true; });
   try {
@@ -723,7 +744,7 @@ async function openedPage(tabId, until) {
           if (e.navigated && Date.now() < until) continue;
         }
       }
-      const tab = await titled(tabId, Math.max(0, Math.min(1500, until - Date.now())));
+      const tab = await titled(tabId, Math.max(0, Math.min(1500, until - Date.now())), previousTitle);
       if (!navigated || Date.now() >= until) return { tab, loading };
     }
   } finally {
@@ -1305,17 +1326,26 @@ async function pageEval(src) {
     }
   }
   try {
-    let v;
+    let v, run;
+    const blocked = (e) => ({ error: String(e && e.message || e), failure: { code: "blocked", effect: "none" } });
     try {
-      v = await new Function(code)();
+      run = new Function(code);
     } catch (e) {
-      if (refused(e)) v = await asTag(e);
-      else {
-        if (!globalThis.trustedTypes || !/Trusted ?Type/i.test(String(e && e.message))) throw e;
+      if (refused(e)) {
+        try { v = await asTag(e); } catch (failure) {
+          if (failure === e) return blocked(e);
+          throw failure;
+        }
+      } else {
+        if (!globalThis.trustedTypes || !/Trusted ?Type/i.test(String(e && e.message || e))) throw e;
         const policy = trustedTypes.createPolicy(`browser-harness-${Math.random().toString(36).slice(2)}`, { createScript: (s) => s });
-        v = await new Function(policy.createScript(code))();
+        try { run = new Function(policy.createScript(code)); } catch (failure) {
+          if (refused(failure)) return blocked(failure);
+          throw failure;
+        }
       }
     }
+    if (run) v = await run();
     // Safari passes this result on as JSON and aborts the whole browser on a
     // NaN or Infinity anywhere in it, so it leaves as plain JSON.
     if (v === undefined) return { ok: true, result: null };
@@ -1363,17 +1393,17 @@ function pageGlobals() {
 // Safari gives a page its address as a title until the page names itself,
 // and a new page's script may name it just after it loads: a web page gets
 // a moment for a title of its own, and without one it reports none.
-function titled(tabId, ms = 1500) {
+function titled(tabId, ms = 1500, previousTitle) {
   return new Promise((resolve) => {
     const done = () => {
       clearTimeout(timer);
       api.tabs.onUpdated.removeListener(onUpdated);
-      resolve(api.tabs.get(tabId));
+      resolve(api.tabs.get(tabId).then((tab) => tab.title !== previousTitle ? tab : { ...tab, title: undefined }));
     };
-    const onUpdated = (id, info, tab) => { if (id === tabId && info.title !== undefined && realTitle(tab)) done(); };
+    const onUpdated = (id, info, tab) => { if (id === tabId && info.title !== undefined && tab.title !== previousTitle && realTitle(tab)) done(); };
     const timer = setTimeout(done, ms);
     api.tabs.onUpdated.addListener(onUpdated);
-    api.tabs.get(tabId).then((t) => { if (realTitle(t) || !/^https?:/.test(t.url || "")) done(); }, done);
+    api.tabs.get(tabId).then((t) => { if ((realTitle(t) && t.title !== previousTitle) || !/^https?:/.test(t.url || "")) done(); }, () => done());
   });
 }
 
@@ -1778,11 +1808,12 @@ async function handle(msg) {
       const [tabId, url] = args;
       const known = await fileFirst(url);
       if (known) return { id: tabId, url, ...fileFields(known) };
-      const before = (await api.tabs.get(tabId).catch(() => null))?.url ?? "";
+      const before = await api.tabs.get(tabId).catch(() => null);
       ready.set(tabId, false);
       keepAwake(tabId);
       await api.tabs.update(tabId, { url });
-      const { tab: t, loading, file } = await openedOrFile(tabId, url, Date.now() + 20000, before === url ? "" : before);
+      const changed = before?.url !== url;
+      const { tab: t, loading, file } = await openedOrFile(tabId, url, Date.now() + 20000, changed ? before?.url : "", changed ? before?.title : undefined);
       if (failedPage(t)) throw unopened(url);
       return { id: t.id, url: file ? url : t.url, ...(realTitle(t) ? { title: t.title } : {}), ...(loading ? { loading: true } : {}), ...fileFields(file) };
     }
@@ -1817,9 +1848,13 @@ async function handle(msg) {
       const version = memoryRevision;
       const reading = (domOp === "extract" || domOp === "snapshot") && !frameId && memoryPolicy.researchEnabled === true;
       const readArgs = (domOp === "extract" || domOp === "snapshot") ? [{ ...(domArgs?.[0] ?? {}), memoryResearch: reading }, ...(domArgs?.slice(1) ?? [])] : domArgs;
-      const res = await relayOp(tabId, domOp, readArgs, timeoutMs, frameId);
-      if (res && res.error) throw Object.assign(new Error(res.error), res.failure ? { failure: res.failure } : {});
-      const value = res && res.value;
+      const run = async (ms) => {
+        const res = await relayOp(tabId, domOp, readArgs, ms, frameId);
+        if (res?.error) throw Object.assign(new Error(res.error), res.failure ? { failure: res.failure } : {});
+        return res?.value;
+      };
+      if (domOp === "eval" && readArgs?.[1]) return sourcedEval(tabId, readArgs[1], timeoutMs, run);
+      const value = await run(timeoutMs);
       if (!value || typeof value !== "object" || !Object.hasOwn(value, "memorySource")) return value;
       const { memorySource, ...result } = value;
       if (!reading || !await publicMemorySource(tabId, memorySource, version)) return result;
@@ -1893,12 +1928,15 @@ async function handle(msg) {
       return res && res.value;
     }
     case "evalPage": {
-      const [tabId, src, frameId, timeoutMs] = args;
+      const [tabId, src, frameId, timeoutMs, source] = args;
       keepAwake(tabId);
-      const [r] = await pageTimed(tabId, frameId, timeoutMs, api.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, world: "MAIN", func: pageEval, args: [src] }), src);
-      if (!r) throw new Error("the page did not run it");
-      if (r.result && r.result.error) throw new Error(r.result.error);
-      return r.result;
+      const run = async (ms) => {
+        const [r] = await pageTimed(tabId, frameId, ms, api.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, world: "MAIN", func: pageEval, args: [src] }), src);
+        if (!r) throw new Error("the page did not run it");
+        if (r.result?.error) throw Object.assign(new Error(r.result.error), r.result.failure ? { failure: r.result.failure } : {});
+        return r.result;
+      };
+      return source ? sourcedEval(tabId, source, timeoutMs, run) : run(timeoutMs);
     }
     case "pageData": {
       const [tabId] = args;

@@ -23,9 +23,9 @@ import { pickFields, type Fielded, type RowsSource } from "./fields.ts";
 import { firstNotes, learn, pageHost, readerFor, readersOn, realInputSite, realInputSites } from "./notes.ts";
 import { errorPage, guideFor } from "./site-guides.ts";
 import { saveAnswer, saveOutput, SAVED_CHARS, targetOf, withLimit, type SaveKind } from "./save.ts";
-import { followPages, mapPages, mapText, MAP_MAX_URLS, pagedPages, type Listing, type MapAnswer, type Page } from "./map.ts";
+import { followPages, mapPages, mapText, MAP_EVAL_SOURCE, MAP_MAX_URLS, pagedPages, type Listing, type MapAnswer, type Page } from "./map.ts";
 import { met, walled } from "./reads.ts";
-import { beside, checkCall, checkStep, fromModel, guard, type Checked } from "./guard.ts";
+import { beside, checkCall, checkStep, fromModel, guard, nameIn, type Checked } from "./guard.ts";
 import { acts, affectsPage, inLane, ordered, queuing } from "./lanes.ts";
 import { site, STILL_LOADING, urlMatch, waitsOnPage, withEffect } from "./receipt.ts";
 import { keepSecret, redacted, redactedLine, redactSecrets, redactSecretText, redactUrl, tabSecrets, unsecret, type Redacted } from "./redact.ts";
@@ -1823,7 +1823,6 @@ export async function history(opts: { tab?: number; do: string }) {
 // API for another agent that night, would have done.
 const EVAL_BLOCKED = "this page's security policy blocks eval; use snapshot, extract, or data";
 const PAGE_EVAL_BLOCKED = "this page's security policy blocks eval in its own world (page: true). Without page, eval runs in the extension's world, which this page allows: it sees the DOM, localStorage, and fetch with the page's cookies, not the page's script variables. net lists the page's own requests with their bodies";
-const EVAL_REFUSED = /unsafe-eval|Content Security Policy/i;
 
 // eval's code has 30 s, or timeoutMs, 5 minutes at most: on 10-09 an
 // agent's fetch-timing evals ran 25 to 30 s, and with no longer limit to
@@ -1832,10 +1831,10 @@ const EVAL_REFUSED = /unsafe-eval|Content Security Policy/i;
 const EVAL_MS = 30000;
 const EVAL_MAX_MS = 300000;
 
-export async function evaluate(opts: { tab?: number; expression: string; page?: boolean; timeoutMs?: number }) {
+export async function evaluate(opts: { tab?: number; expression: string; page?: boolean; timeoutMs?: number; source?: string | true }) {
   const tab = await resolveTab(opts.tab);
   const limit = opts.timeoutMs === undefined ? EVAL_MS : num(opts.timeoutMs, "timeoutMs");
-  if (limit < 1 || limit > EVAL_MAX_MS) throw new Error(`timeoutMs must be from 1 to ${EVAL_MAX_MS} (5 minutes); split longer work across calls`);
+  if (limit < 1 || limit > EVAL_MAX_MS) throw new HarnessError("invalid_argument", `timeoutMs must be from 1 to ${EVAL_MAX_MS} (5 minutes); split longer work across calls`);
   const [, frame = "0", source] = /^(?:f(\d+):)?([\s\S]*)$/.exec(str(opts.expression, "expression"))!;
   const code = asExpression(source);
   // Code that does not compile never runs: it fails here, as the page would
@@ -1849,10 +1848,12 @@ export async function evaluate(opts: { tab?: number; expression: string; page?: 
   }
   // The extension gets eval's limit too, and answers first, as through
   // bridge.tab: code past it is told so, not that the request timed out.
-  const inPage = (refused: string) => bridge.request("evalPage", [tab, code, Number(frame), limit], limit + 2000).catch((e: unknown) => {
-    throw e instanceof Error && EVAL_REFUSED.test(e.message) ? new Error(refused) : e;
+  const sourceArgs = opts.source === undefined ? [] : [opts.source];
+  const inPage = (refused: string) => bridge.request("evalPage", [tab, code, Number(frame), limit, ...sourceArgs], limit + 2000).catch((e: unknown) => {
+    throw e instanceof HarnessError && e.code === "blocked" && e.effect === "none"
+      ? new HarnessError("blocked", refused, { next: "use snapshot, extract, or data, or eval without page if only the page's own world refused it" }) : e;
   });
-  const answer = opts.page ? inPage(PAGE_EVAL_BLOCKED) : bridge.tab(tab, "eval", [code], limit, Number(frame)).catch((e: unknown) => {
+  const answer = opts.page ? inPage(PAGE_EVAL_BLOCKED) : bridge.tab(tab, "eval", [code, ...sourceArgs], limit, Number(frame)).catch((e: unknown) => {
     if (e instanceof Error && e.message === EVAL_BLOCKED) return inPage(EVAL_BLOCKED);
     throw e;
   });
@@ -1874,11 +1875,17 @@ export async function evaluate(opts: { tab?: number; expression: string; page?: 
 
 // eval {reader} runs the script an agent saved for the tab's site, or a
 // site above it (learn), in the world it was saved for.
-async function runReader(tab: number | undefined, name: string, timeoutMs?: number) {
+async function runReader(tab: number | undefined, name: string, timeoutMs?: number, source?: string | true) {
   const id = await resolveTab(tab);
   const { url } = (await relay(id, "tabInfo")) as { url?: string };
-  const reader = readerFor(url ?? "", name);
-  return evaluate({ tab: id, expression: reader.expression, page: reader.page, timeoutMs });
+  let reader;
+  try {
+    reader = readerFor(url ?? "", name);
+  } catch (e) {
+    if (!(e instanceof Error)) throw e;
+    throw new HarnessError("invalid_argument", e.message);
+  }
+  return evaluate({ tab: id, expression: reader.expression, page: reader.page, timeoutMs, source });
 }
 
 // extract's expand and scroll, and harvest, answer within ms of the relay
@@ -2775,8 +2782,13 @@ function absoluteOut(out: unknown): string | undefined {
 // backslashes.
 export async function codeFrom(file: unknown): Promise<string> {
   const path = str(file, "file");
-  if (!isAbsolute(path)) throw new Error(`file must be an absolute path, not ${path}`);
-  return readFile(path, "utf8");
+  if (!isAbsolute(path)) throw new HarnessError("invalid_argument", `file must be an absolute path, not ${path}`);
+  try {
+    return await readFile(path, "utf8");
+  } catch (e) {
+    const reason = e instanceof Error && "code" in e ? ` (${e.code})` : "";
+    throw new HarnessError("invalid_argument", `could not read code from ${path} on the daemon's machine${reason}`);
+  }
 }
 
 type ShotOpts = { ref?: string; annotate?: boolean; fullPage?: boolean; live?: boolean; tiles?: boolean; tileHeight?: number };
@@ -4209,12 +4221,14 @@ export const TOOLS: Record<string, Tool> = {
     run: saving("eval", async (a) => {
       const timeoutMs = a.timeoutMs === undefined ? undefined : num(a.timeoutMs, "timeoutMs");
       const given = [a.expression, a.file, a.reader].filter((v) => v !== undefined).length;
-      if (given === 0) throw new Error("eval needs expression, file (the code's absolute path), or reader: a script saved with learn");
-      if (given > 1) throw new Error("give one of expression, file, or reader");
-      if (a.reader !== undefined) return judgedEval(a.tab, await runReader(a.tab as number | undefined, str(a.reader, "reader"), timeoutMs));
+      if (given === 0) throw new HarnessError("invalid_argument", "eval needs expression, file (the code's absolute path), or reader: a script saved with learn");
+      if (given > 1) throw new HarnessError("invalid_argument", "give one of expression, file, or reader");
+      const asked = MAP_EVAL_SOURCE in a ? a[MAP_EVAL_SOURCE] : undefined;
+      const source = asked === true || typeof asked === "string" ? asked : undefined;
+      if (a.reader !== undefined) return judgedEval(a.tab, await runReader(a.tab as number | undefined, str(a.reader, "reader"), timeoutMs, source));
       const expression = a.file === undefined ? str(a.expression, "expression") : await codeFrom(a.file);
       await slackSend(await resolveTab(a.tab), { tool: "eval", code: expression }, a);
-      return evaluate({ tab: a.tab as number | undefined, expression, page: !!a.page, timeoutMs }).then((result) => judgedEval(a.tab, readerHint(a.tab, result)));
+      return evaluate({ tab: a.tab as number | undefined, expression, page: !!a.page, timeoutMs, source }).then((result) => judgedEval(a.tab, readerHint(a.tab, result)));
     }),
   },
   fetch: {
@@ -4947,7 +4961,13 @@ export async function callTool(name: string, args: Record<string, unknown> = {},
 }
 
 async function invokeTool(name: string, args: Record<string, unknown>, model: boolean, news: boolean): Promise<unknown> {
-  const checked = checkCall(TOOLS, name, args, model);
+  let checked: Checked;
+  try {
+    checked = checkCall(TOOLS, name, args, model);
+  } catch (e) {
+    if (model && nameIn(["eval"], name) === "eval" && e instanceof Error) throw new HarnessError("invalid_argument", e.message);
+    throw e;
+  }
   // "latest" names one tab for the whole call: its lane, a reopen of a
   // closed tab and the note on a gone one all go by the number.
   const call = checked.args.tab === "latest" ? { ...checked, args: { ...checked.args, tab: await resolveTab("latest") } } : checked;

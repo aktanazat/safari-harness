@@ -269,7 +269,10 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
       onCreated: hook(),
       onAttached: hook(),
       onReplaced: hook(),
-      get: async (id: number) => row(tabOf(id)),
+      get: async (id: number) => {
+        if (!tabs.has(id)) throw new Error(`No tab with id: ${id}.`);
+        return row(tabOf(id));
+      },
       // what Safari finds for a filter on active and windowId
       query: async (q: { active?: boolean; windowId?: number } = {}) => [...tabs.values()].map(row).filter((t) => t.active === (q.active ?? t.active) && t.windowId === (q.windowId ?? t.windowId)),
       // A tab the harness opens. Safari may tell of a tab before the call
@@ -809,6 +812,38 @@ test("an action whose page navigates while it runs is not sent again", async () 
   expect(next.ran).toEqual([]);
 });
 
+test("an eval interrupted by navigation fails without running again", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/");
+  const first = tab.doc;
+  const next = new Doc("https://example.org/");
+  first.does = () => {
+    b.navigate(tab, next);
+    return never();
+  };
+  const answer = await b.ask(tab, "eval", ["work()"]);
+  expect(answer.error).toContain("navigated while eval");
+  expect(answer.value).toBeUndefined();
+  expect(next.ran).toEqual([]);
+});
+
+test("a mapped eval reports its document separately from its scalar result", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/current");
+  tab.doc.does = (op) => op === "tabInfo" ? { url: tab.doc.url, title: "Document title" } : { ok: true, result: 42 };
+  const answer = await b.ask(tab, "eval", ["42", "https://example.com/old"]);
+  expect(answer.value).toEqual({ ok: true, result: 42, source: { url: tab.doc.url, title: "Document title" } });
+});
+
+test("a mapped eval on the previous document is refused before the script runs", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/old");
+  tab.doc.does = (op) => op === "tabInfo" ? { url: tab.doc.url, title: "Old document" } : { ok: true, result: 42 };
+  const answer = await b.ask(tab, "eval", ["42", tab.doc.url]);
+  expect(answer.failure).toMatchObject({ code: "not_content", effect: "none" });
+  expect(tab.doc.ran).not.toContain("eval");
+});
+
 // In the 11-16 work sessions 9 shots right after an eval that reloaded
 // its page failed, the page reloading under them.
 test("an eval whose code starts a load answers once that page is in, as navigated", async () => {
@@ -947,6 +982,21 @@ test.each(loads)("%s of a ready page that stays put answers without moving the c
   load(b, page.url).then((a) => { answer = a; });
   await b.clock.advance(0);
   expect(answer?.value).toMatchObject({ url: page.url, title: "Account" });
+});
+
+test("goto does not return the previous page's title before its new title arrives", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/old");
+  tab.doc.title = "Old title";
+  const page = new Doc("https://example.com/new");
+  page.title = "Old title";
+  b.serve(page);
+  let answer: Answer | undefined;
+  b.request("tabs.navigate", [tab.id, page.url]).then((a) => { answer = a; });
+  await b.clock.advance(0);
+  page.title = "New title";
+  await b.clock.advance(1500);
+  expect(answer?.value).toMatchObject({ url: page.url, title: "New title" });
 });
 
 // On 10-29 an open of a .pkg made Safari ask whether the site may download;

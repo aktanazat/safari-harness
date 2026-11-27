@@ -620,6 +620,39 @@ test("an action refused before it reaches the page reports effect none and holds
   expect(s.effects.length).toBe(clicks + 1);
 });
 
+test("missing or unreadable eval files fail without holding a retry", async () => {
+  const a = agent();
+  const tab = await open(a.pid, "https://eval-files.example/");
+  const dir = mkdtempSync("/private/var/tmp/safari-eval-file-");
+  const missing = `${dir}/missing.js`;
+  try {
+    for (const file of [missing, dir]) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await expect(call(a.pid, "eval", { tab, file })).rejects.toMatchObject({
+          code: "invalid_argument", effect: "none", message: expect.stringContaining(file),
+        });
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test.each([
+  [{}, "eval needs expression"],
+  [{ expression: "1", file: "other.js" }, "give one of expression, file, or reader"],
+  [{ file: "relative.js" }, "file must be an absolute path"],
+  [{ expression: "1", timeoutMs: 0 }, "timeoutMs must be from 1"],
+] as const)("invalid eval arguments fail without holding another try: %j", async (args, message) => {
+  const a = agent();
+  const tab = await open(a.pid, "https://eval-arguments.example/");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await expect(call(a.pid, "eval", { tab, ...args })).rejects.toMatchObject({
+      code: "invalid_argument", effect: "none", message: expect.stringContaining(message),
+    });
+  }
+});
+
 // The extension answers an action on a tab gone before it was asked as
 // never sent (background.js); the harness's own word on why the tab went
 // keeps that (MineSessionC-6).
