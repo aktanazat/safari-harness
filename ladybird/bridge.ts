@@ -17,12 +17,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { LADYBIRD_EXTENSION_ID as EXTENSION_ID } from "../daemon/front.ts";
 import { Ladybird, type BidiEvent } from "./bidi.ts";
 import { createImageBitmap, FileReader, OffscreenCanvas } from "./raster.ts";
 
 const EXT = new URL("../extension/", import.meta.url).pathname;
 const MANIFEST = await Bun.file(join(EXT, "manifest.json")).json();
-const EXTENSION_ID = "ladybird-harness";
 const ORIGIN = `safari-web-extension://${EXTENSION_ID}`;
 // The window property each frame's shim lives under: fresh each run, so a
 // page cannot have it ready.
