@@ -53,6 +53,13 @@ test("under -q a call that worked prints nothing and exits 0; a miss prints one 
   expect(await safari(["info", "--tab", "7", "-q"])).toEqual({ out: "", err: "error: that tab is gone: open it again", code: 1 });
 });
 
+test("a CSS viewport miss exits 1 and keeps the native and page sizes in JSON", async () => {
+  const value = { ok: false, size: { width: 390, height: 844 }, viewport: { width: 392, height: 700 }, missed: "the page is 392 CSS px wide, not 390" };
+  answers = { window: { ok: true, value } };
+  const result = await safari(["window", "--css-width", "390", "--height", "844", "--tab", "7", "--json"]);
+  expect(result).toMatchObject({ code: 1, out: JSON.stringify(value) });
+});
+
 // wait --quiet was used 43 times as the wait for quiet, and wait --timeout
 // came in seconds (S99PartA, S99PartC).
 test("wait --quiet waits for a quiet page and wait --timeout takes seconds", async () => {

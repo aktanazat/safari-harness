@@ -1325,17 +1325,16 @@ The size can come back a point taller than asked, the first size no
 other window has; `size` in the answer is the one the browser gave. Use it
 only on your own tab. CLI: `browser window --tab N --size 390x844`.
 
-It answers once the page has laid out again at the new size (it reads
-again for up to 1 s), with the page's viewport, so the next `shot` or read
-sees the layout at that width. For screenshots at several widths, use
-`shots` instead of a `window` and `shot` per width.
+It checks for a new viewport for up to 1 s. The native resize can succeed
+even when the page still has its old layout. For screenshots at several
+widths, use `shots` instead of a `window` and `shot` per width.
 
 `width` and `height` are the window's points, and the page's CSS width
 differs by Safari's page zoom and the window's edges: on 11-11 width 390
 gave a page 455 px wide. `cssWidth` (with `height`) resizes until the
-page's `innerWidth` is that many CSS px, at most 3 times, and answers with
-the `viewport` reached; still off by more than 1 px, it answers with
-`missed` naming the width the page reached, since the window did change.
+page's `innerWidth` is within 1 px of the request, at most 3 times. If it
+cannot verify that width, it returns `ok: false` and `missed`, with the
+native `size` and the page `viewport` if measured. The CLI exits 1.
 CLI: `browser window --tab N --css-width 390 --height 844`.
 
 ## run
@@ -1409,12 +1408,10 @@ first line counts the pages read, those that loaded but hold no content
   ".listing"}`, `{"quiet": true}`), holds each read until its page shows
   that. Pass it for pages whose script draws what you read after they
   load (listings, prices, search results): read at once, they come back
-  empty. A page that never shows it is reported with the tab's address
-  and title instead of read, saying when it was redirected, and as
-  `redirected to sign-in` (code `blocked`) when it landed on a page whose
-  address or title names a sign-in and whose read finds a sign-in form;
-  a docs page about sign-on stays a plain redirected miss. Never sleep
-  inside `expression` for this.
+  empty. A confirmed sign-in page or a bot check that blocks the whole
+  page ends the wait early. A title or address about signing in is not
+  enough. If the wait expires, the result shows the tab's address and
+  title and says whether it was redirected.
 - `follow: {"match": "a.result-title", "max": 20}` reads each of `urls`
   as a listing (search results, a category, a feed) instead. map takes
   the links on it to its own site: the link of each element the CSS

@@ -22,6 +22,7 @@ let nextId = 700;
 // asked.
 let zoom = 1;
 let stuckAt: number | undefined;
+let stuckPageAt: number | undefined;
 
 function answer(op: string, args: unknown[]): { value?: unknown; error?: string } {
   if (op === "windows.open") {
@@ -44,7 +45,7 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
     const { width: asked, height } = args[1] as { width: number; height: number };
     const width = stuckAt ?? asked;
     windowWidth.set(tab.windowId, width);
-    return { value: { windowId: tab.windowId, size: { width, height } } };
+    return { value: { ok: true, windowId: tab.windowId, size: { width, height } } };
   }
   if (op === "tabs.navigate") {
     if (!tab) return { error: "no tab" };
@@ -62,7 +63,7 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
   }
   // a relay: the quiet wait is met at once, and the page is as wide as its
   // window at its zoom
-  if (op === "relay" && args[1] === "tabInfo" && tab) return { value: { url: tab.url, viewport: { w: Math.round((windowWidth.get(tab.windowId) ?? 1000) / zoom), h: 700 } } };
+  if (op === "relay" && args[1] === "tabInfo" && tab) return { value: { url: tab.url, viewport: { w: stuckPageAt ?? Math.round((windowWidth.get(tab.windowId) ?? 1000) / zoom), h: 700 } } };
   if (op === "relay") return { value: args[1] === "wait" ? { found: true } : { ok: true } };
   return { value: { ok: true } };
 }
@@ -190,10 +191,26 @@ test("window with cssWidth resizes until the page is that wide, and names the wi
     expect(Math.abs(fit.viewport.width - 390)).toBeLessThanOrEqual(1);
     zoom = 1;
     stuckAt = 1038;
-    expect(await callTool("window", { tab: tab.id, cssWidth: 390, height: 844 })).toMatchObject({ size: { width: 1038 }, viewport: { width: 1038 }, missed: expect.stringContaining("the page is 1038 CSS px wide, not 390") });
+    expect(await callTool("window", { tab: tab.id, cssWidth: 390, height: 844 })).toMatchObject({ ok: false, size: { width: 1038 }, viewport: { width: 1038 }, missed: expect.stringContaining("the page is 1038 CSS px wide, not 390") });
   } finally {
     zoom = 1;
     stuckAt = undefined;
+    tabs.delete(tab.id);
+  }
+});
+
+test.each([391, 392])("run proceeds to the screenshot only if a 390 px viewport request comes within one pixel (%i)", async (width) => {
+  const tab = { id: ++nextId, windowId: ++nextId, url: HOME, title: "Page" };
+  tabs.set(tab.id, tab);
+  stuckPageAt = width;
+  try {
+    const steps = [{ tool: "window", args: { tab: tab.id, cssWidth: 390, height: 844 } }, { tool: "shot", args: { tab: tab.id, out: join(freshOut(), "phone.png") } }];
+    const result = await callTool("run", { steps });
+    const sized = { size: { width: 390, height: 844 }, viewport: { width, height: 700 } };
+    if (width === 391) expect(result).toMatchObject({ steps: [{ value: { ok: true, ...sized } }, { tool: "shot", value: { evidence: { url: HOME } } }], notRun: 0 });
+    else expect(result).toMatchObject({ steps: [{ tool: "window", error: expect.stringContaining("392 CSS px wide, not 390"), value: { ok: false, ...sized } }], notRun: 1 });
+  } finally {
+    stuckPageAt = undefined;
     tabs.delete(tab.id);
   }
 });

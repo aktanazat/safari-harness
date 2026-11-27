@@ -35,6 +35,7 @@ const BUDGET_MS = 50_000;
 export const READS: SaveKind[] = ["extract", "snapshot", "eval", "fetch"];
 // The previous address, or true when there is none. Not a public eval option.
 export const MAP_EVAL_SOURCE = Symbol("map eval source");
+export const MAP_WAIT_CHECK = Symbol("map wait check");
 
 // A check that stands in for the page leaves nothing to read; one in a box
 // on a page that otherwise reads normally is noted beside what was read.
@@ -68,7 +69,7 @@ const FOLLOWED_WAIT = "wait holds each page followed, not the listing, and none 
 
 // pageState: what an eval's page is, judged from its title and address
 // (readTab), when that names a page that is not content.
-type Outcome = ({ ok: true; value: unknown; pageState?: PageState } | { ok: false; error: string; failure?: Failure; value?: unknown }) & { challenge?: Challenge };
+type Outcome = ({ ok: true; value: unknown } | { ok: false; error: string; failure?: Failure; value?: unknown }) & { challenge?: Challenge; pageState?: PageState };
 // title and finalUrl describe the document read, not the navigation reply.
 // retried: how many times it was loaded again after its site's error page;
 // reopened: it was read in a new tab after Safari barred the first;
@@ -721,6 +722,14 @@ function address(url: string | undefined): string | undefined {
 }
 
 type ReadSource = { url: string; title?: string };
+export type WaitWall = Extract<Outcome, { ok: false }> & { source?: ReadSource };
+export type MapWaitCheck = (seen: ReadSource & { text: string; challenge?: Challenge }) => Promise<WaitWall | undefined>;
+
+function checkedWall(check: Challenge | undefined, source?: ReadSource): WaitWall | undefined {
+  if (!check || check.where === "box") return undefined;
+  const error = CHECKED[check.where];
+  return { ok: false, error, failure: failureOf(new HarnessError("blocked", error, { next: error })), challenge: check, source };
+}
 
 function sourceOf(value: unknown): ReadSource | undefined {
   if (!value || typeof value !== "object" || !("url" in value) || typeof value.url !== "string") return undefined;
@@ -729,7 +738,8 @@ function sourceOf(value: unknown): ReadSource | undefined {
 
 async function readTab(opened: Opened, url: string, { wait, waited, read, args, call }: Job, previous: string | undefined): Promise<Outcome & { source?: ReadSource }> {
   const check = opened.challenge;
-  if (check && check.where !== "box") return { ok: false, error: CHECKED[check.where], failure: failureOf(new HarnessError("blocked", CHECKED[check.where], { next: CHECKED[check.where] })), challenge: check };
+  const wall = checkedWall(check);
+  if (wall) return wall;
   // open answers a site's error page (its guide's error-titles) as not ok,
   // with a warning: the page holds nothing to read. On 10-16 a hunt's eBay
   // searches answered "Error Page | eBay", read as no listings (HuntsUsage).
@@ -745,11 +755,23 @@ async function readTab(opened: Opened, url: string, { wait, waited, read, args, 
   }
   const pdfRead = async (): Promise<Outcome> => ({ ok: true, value: await call("pdf", { do: "read", url: opened.url ?? url, ...(typeof args.maxBytes === "number" ? { maxBytes: args.maxBytes } : {}) }) });
   if (wait) {
-    const seen = await call("wait", { ...wait, tab: opened.id });
+    let lastLook: { url: string; title?: string; text: string } | undefined;
+    const inspect: MapWaitCheck = async (seen) => {
+      if (previous !== undefined && address(seen.url) === previous && address(url) !== previous) return undefined;
+      const blocked = checkedWall(seen.challenge, sourceOf(seen));
+      if (blocked) return blocked;
+      if (lastLook?.url === seen.url && lastLook.title === seen.title && lastLook.text === seen.text) return undefined;
+      lastLook = seen;
+      return signedOut(seen, url, waited, opened.id, call, true);
+    };
+    const early = await signedOut(opened, url, waited, opened.id, call);
+    if (early) return early;
+    const seen = await call("wait", { ...wait, tab: opened.id, [MAP_WAIT_CHECK]: inspect }) as { wall?: WaitWall; challenge?: Challenge } | undefined;
+    if (seen?.wall) return seen.wall;
     const missed = missOf(seen, waited, url);
     if (missed) {
-      const outcome = (await signedOut(seen, url, waited, opened.id, call)) ?? missed;
-      return check ? { ...outcome, challenge: check } : outcome;
+      const outcome = checkedWall(seen?.challenge, sourceOf(seen)) ?? await signedOut(seen, url, waited, opened.id, call) ?? missed;
+      return check && !("challenge" in outcome) ? { ...outcome, challenge: check } : outcome;
     }
   }
   // fetch asks again for the address the tab opened, with its cookies: the
@@ -884,16 +906,19 @@ function redirectedTo(seen: object, asked: string | undefined): URL | undefined 
 // login_wall). The address is read without its query (?next=/login).
 const SIGN_IN_AT = /^https?:\/\/(?:(?:login|signin|sso|auth|accounts|idp)\.|[^/]*\.(?:okta|onelogin|microsoftonline)\.com\/)|\/(?:signin|sign-in|login|log-in|sso|saml2?|oauth2?|auth)(?:\/|$)/i;
 const SIGN_IN_TITLE = /\b(?:sign[ -]?in|log[ -]?in|login|single sign-on)\b/i;
-async function signedOut(seen: unknown, asked: string, waited = "what wait asked for", tab: number | undefined, call: Call): Promise<{ ok: false; error: string; failure: Failure } | undefined> {
+async function signedOut(seen: unknown, asked: string, waited = "what wait asked for", tab: number | undefined, call: Call, includeDirect = false): Promise<WaitWall | undefined> {
   if (!seen || typeof seen !== "object") return undefined;
-  const at = redirectedTo(seen, asked);
+  const redirect = redirectedTo(seen, asked);
+  const at = redirect ?? (includeDirect ? URL.parse(sourceOf(seen)?.url ?? "") : null);
   const named = "title" in seen && typeof seen.title === "string" ? seen.title : "";
   if (!at || !(SIGN_IN_AT.test(at.origin + at.pathname) || SIGN_IN_TITLE.test(named))) return undefined;
   const read = await call("extract", { tab, maxBytes: 2000 }).catch(() => undefined);
-  const state = read && typeof read === "object" && "pageState" in read && read.pageState && typeof read.pageState === "object" && "kind" in read.pageState ? read.pageState.kind : undefined;
-  if (state !== "login_wall") return undefined;
-  const error = `redirected to sign-in at ${at.href}${named ? ` ("${named}")` : ""}, so it shows no ${waited}`;
-  return { ok: false, error, failure: failureOf(new HarnessError("blocked", error, { next: "sign in to the site in a tab (handoff for a step only the user can do), then map it again" })) };
+  const source = sourceOf(read);
+  if (address(source?.url) !== address(at.href)) return undefined;
+  const state = read && typeof read === "object" && "pageState" in read ? read.pageState as PageState | undefined : undefined;
+  if (state?.kind !== "login_wall") return undefined;
+  const error = `${redirect ? "redirected to sign-in" : "sign-in page"} at ${at.href}${source?.title ? ` ("${source.title}")` : ""}, so it shows no ${waited}`;
+  return { ok: false, error, failure: failureOf(new HarnessError("blocked", error, { next: "sign in to the site in a tab (handoff for a step only the user can do), then map it again" })), pageState: state, source };
 }
 
 type Row = { page: Page | Listing; depth: number; head: string; body: string; sep: string; wall?: string };

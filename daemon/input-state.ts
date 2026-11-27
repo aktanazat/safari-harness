@@ -3,10 +3,9 @@ import { HarnessError } from "./failures.ts";
 import type { Tool } from "./tools.ts";
 
 export type InputState = { marks: number; focus: boolean };
-type EvaluateInputState = (options: { tab: number; frame: number; expression: string; timeoutMs: number }) => Promise<unknown>;
-const isolatedState: EvaluateInputState = ({ tab, frame, expression, timeoutMs }) => bridge.tab(tab, "eval", [expression], timeoutMs, frame);
+type ReadInputState = (tab: number, frame: number, options: { focus: boolean; after: number; ms: number }) => Promise<unknown>;
+const isolatedState: ReadInputState = (tab, frame, options) => bridge.tab(tab, "inputState", [options], options.ms + 1000, frame);
 const FIELDS: Record<string, true> = { tab: true, frame: true, focus: true, after: true, ms: true };
-const MARKS = `(window.__realInputTrustedMarks ??= (() => { const s = { n: 0 }; addEventListener("keyup", (e) => { if (e.isTrusted && e.code === "F20") s.n++; }, true); return s; })())`;
 
 function integer(value: unknown, name: string, minimum: number, maximum: number): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum || value > maximum) {
@@ -15,7 +14,7 @@ function integer(value: unknown, name: string, minimum: number, maximum: number)
   return value;
 }
 
-export function inputStateTool(evaluate: EvaluateInputState = isolatedState): Tool {
+export function inputStateTool(read: ReadInputState = isolatedState): Tool {
   return {
     desc: "Read only trusted native-input completion count and page focus.",
     hidden: true,
@@ -36,24 +35,13 @@ export function inputStateTool(evaluate: EvaluateInputState = isolatedState): To
       const after = integer(args.after, "after", -1, Number.MAX_SAFE_INTEGER);
       const ms = integer(args.ms, "ms", 0, 3000);
       if (typeof args.focus !== "boolean") throw new HarnessError("invalid_argument", "focus must be a boolean", { effect: "none" });
-      const expression = `(() => {
-        const s = ${MARKS};
-        const end = Date.now() + ${ms};
-        const {promise, resolve} = Promise.withResolvers();
-        const check = () => {
-          if ((s.n > ${after} && (${!args.focus} || document.hasFocus())) || Date.now() >= end) resolve({ marks: s.n, focus: document.hasFocus() });
-          else setTimeout(check, 10);
-        };
-        check();
-        return promise;
-      })()`;
-      const raw = await evaluate({ tab, frame, expression, timeoutMs: ms + 1000 });
-      if (!raw || typeof raw !== "object" || !("result" in raw) || !raw.result || typeof raw.result !== "object"
-        || !("marks" in raw.result) || typeof raw.result.marks !== "number" || !Number.isSafeInteger(raw.result.marks) || raw.result.marks < 0
-        || !("focus" in raw.result) || typeof raw.result.focus !== "boolean") {
+      const raw = await read(tab, frame, { focus: args.focus, after, ms });
+      if (!raw || typeof raw !== "object"
+        || !("marks" in raw) || typeof raw.marks !== "number" || !Number.isSafeInteger(raw.marks) || raw.marks < 0
+        || !("focus" in raw) || typeof raw.focus !== "boolean") {
         throw new HarnessError("unavailable", "the page did not report its native input state", { effect: "none" });
       }
-      return { marks: raw.result.marks, focus: raw.result.focus };
+      return { marks: raw.marks, focus: raw.focus };
     },
   };
 }

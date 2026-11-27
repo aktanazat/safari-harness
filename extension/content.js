@@ -6230,6 +6230,7 @@
     tabIntent: (since) => tabSaid >= since,
     typeMark,
     typeField,
+    inputState,
     sendButton,
     annotate,
     capturePrivacy,
@@ -6278,6 +6279,27 @@
     watchTarget(el);
     fireClick(el, x, y);
     return { ok: true, tag: el.tagName };
+  }
+
+  let inputMarks = handed?.inputMarks;
+  const watchInputMarks = () => addEventListener("keyup", (event) => {
+    if (event.isTrusted && event.code === "F20") inputMarks++;
+  }, { capture: true, signal: life.signal });
+  if (inputMarks !== undefined) watchInputMarks();
+  function inputState({ focus, after, ms }) {
+    if (inputMarks === undefined) {
+      inputMarks = 0;
+      watchInputMarks();
+    }
+    const end = Date.now() + ms;
+    const { promise, resolve } = Promise.withResolvers();
+    const check = () => {
+      const focused = document.hasFocus();
+      if (inputMarks > after && (!focus || focused) || Date.now() >= end) resolve({ marks: inputMarks, focus: focused });
+      else setTimeout(check, 10);
+    };
+    check();
+    return promise;
   }
 
   // Safari hands every reply to its native side as JSON, and a NaN or
@@ -6347,7 +6369,7 @@
     life.abort();
     pendingWait?.done(false);
     pendingDownload?.(null);
-    return { refSeq, refMap, refOf, fingerprints, secretFields, secretTexts };
+    return { refSeq, refMap, refOf, fingerprints, secretFields, secretTexts, inputMarks };
   };
   api.runtime.onMessage.addListener((msg) => {
     if (!msg || msg.__safariHarness !== 1 || window.__safariHarnessInjected !== claim) return;
