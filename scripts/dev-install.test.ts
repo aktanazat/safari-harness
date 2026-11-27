@@ -1,6 +1,6 @@
 // Deploys must preserve the installed history before touching a release or native app.
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -154,6 +154,23 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 test("a descendant containing the selected and running releases reaches checkpoint admission", () => {
   expectAccepted(descendant);
   expect(readlinkSync(current)).toBe(`releases/${short(installed)}`);
+});
+
+// 11-27: Safari Harness became Browser Harness. Its data held every
+// release, checkpoint and saved page, and its daemon still ran from the old
+// path while the first deploy of the new name ran.
+test("the first deploy after the rename moves Safari Harness's data once, links the old path to it, and keeps the Ladybird choice as a mode", () => {
+  const old = join(home, ".local/share/safari-harness");
+  renameSync(data, old);
+  writeFileSync(join(old, "browser.json"), JSON.stringify({ bundle: "org.ladybird.Ladybird.Harness", profilePath: "/profiles/main" }));
+  running(join(old, "releases", installed));
+  expectAccepted(descendant);
+  expect(lstatSync(data).isDirectory()).toBe(true);
+  expect(readlinkSync(old)).toBe("browser-harness");
+  expect(JSON.parse(readFileSync(join(data, "browser.json"), "utf8"))).toEqual({ mode: "ladybird", profilePath: "/profiles/main" });
+  expect(readlinkSync(current)).toBe(`releases/${short(installed)}`);
+  expectAccepted(descendant);
+  expect(readlinkSync(old)).toBe("browser-harness");
 });
 
 test.each([7, 12, 40])("redeploying the same commit resolves a %i-character release id", length => {

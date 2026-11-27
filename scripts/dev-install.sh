@@ -282,8 +282,9 @@ until mkdir "$LOCK" 2>/dev/null; do sleep 1; done
 tmp=""
 checkpoint=""
 trap '[ -z "$tmp" ] || trash "$tmp"; [ -z "$checkpoint" ] || echo "checkpoint rollback backup retained: $checkpoint" >&2; rm -f "$DATA/deploying"; rmdir "$LOCK"' EXIT
-mkdir -p "$RELEASES"
+# Before anything makes the new data folder, which would stop the move.
 migrate
+mkdir -p "$RELEASES"
 before="$(readlink "$CURRENT" 2>/dev/null || true)"
 
 # A commit from before deploys by release has no daemon/codehash.ts: its
