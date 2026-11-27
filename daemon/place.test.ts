@@ -67,7 +67,8 @@ function mac(windows: Win[], tabs: Record<number, number>, owners: Record<number
           const on = screens.reduce((a, b) => (shared(w, b.frame) > shared(w, a.frame) ? b : a)).frame;
           Object.assign(w, { x: on.x + bounds.left, y: on.y + bounds.top + (moves?.length === 1 ? moveOffset : 0) });
         }
-        return reply({ value: { width: w.width, height: w.height, state: "normal" } });
+        const on = screens.reduce((a, b) => (shared(w, b.frame) > shared(w, a.frame) ? b : a)).frame;
+        return reply({ value: { width: w.width, height: w.height, left: w.x - on.x, top: w.y - on.y, state: "normal" } });
       }
       if (op === "shot") {
         const w = windowOf(tab);
@@ -224,6 +225,28 @@ test("a sweep moves a window of only the user's tabs off the Agents display to t
     await fresh.sweep();
     const moved = byId(windows, 3);
     expect([first, shared(moved, MAIN.frame), onAgents(byId(windows, space.window))]).toEqual([true, moved.width * moved.height, true]);
+  } finally {
+    setSystemTime();
+  }
+});
+
+// 11-27: three of the user's Ladybird windows lay one on another on the
+// Agents display, each its full size; no sweep could tell which was which
+// by size, so they stayed out of his sight.
+test.each([
+  ["at one place", 0],
+  ["at two places", 200],
+])("a sweep moves two windows of only the user's tabs, of one size %s on the Agents display, to his display", async (_, apart) => {
+  const his = (id: number, x: number) => ({ id, safari: true, x: AGENTS.visible.x + x, y: AGENTS.visible.y, width: 900, height: 700 });
+  const windows = mac([{ ...HIS }, his(3, 0), his(4, apart)], { 11: 1, 31: 3, 41: 4 }, {}, undefined, 0, [MAIN, ABOVE, AGENTS]);
+  // Isolate this window from other tests' module records.
+  const fresh = (await import(`./spaces.ts?alike${apart}`)) as typeof spaces;
+  await runAs(process.pid, () => fresh.spaceWindow(`alike${apart}`));
+  try {
+    await fresh.sweep();
+    setSystemTime(Date.now() + 11_000);
+    await fresh.sweep();
+    expect([onAgents(byId(windows, 3)), onAgents(byId(windows, 4))]).toEqual([false, false]);
   } finally {
     setSystemTime();
   }
