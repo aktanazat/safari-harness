@@ -23,12 +23,26 @@ function git(...args: string[]): string {
   return result.stdout.toString().trim();
 }
 function short(commit: string): string { return git("rev-parse", "--short=7", commit); }
-function release(id: string, format = 2): string {
+// renamed: a Browser Harness release, which has cli/browser.ts; Safari
+// Harness's releases, from before 11-27, do not.
+function release(id: string, format = 2, renamed = true): string {
   const path = join(releases, id);
   mkdirSync(join(path, "daemon"), { recursive: true });
   writeFileSync(join(path, "daemon/codehash.ts"), "");
   writeFileSync(join(path, "package.json"), JSON.stringify({ safariHarnessCheckpointFormat: format }));
+  if (renamed) {
+    mkdirSync(join(path, "cli"), { recursive: true });
+    writeFileSync(join(path, "cli/browser.ts"), "");
+  }
   return path;
+}
+function lstatExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 function select(id: string, absolute = false): void {
   rmSync(current, { force: true });
@@ -157,17 +171,22 @@ test("a descendant containing the selected and running releases reaches checkpoi
 });
 
 // 11-27: Safari Harness became Browser Harness. Its data held every
-// release, checkpoint and saved page, and its daemon still ran from the old
-// path while the first deploy of the new name ran.
-test("the first deploy after the rename moves Safari Harness's data once, links the old path to it, and keeps the Ladybird choice as a mode", () => {
+// release, checkpoint and saved page, its daemon still ran from the old
+// path while the first deploy of the new name ran, and a test had already
+// written a task file under the new name.
+test("the first deploy after the rename moves Safari Harness's data once over a stray new folder, links the old path to it, and keeps the Ladybird choice as a mode", () => {
   const old = join(home, ".local/share/safari-harness");
   renameSync(data, old);
   writeFileSync(join(old, "browser.json"), JSON.stringify({ bundle: "org.ladybird.Ladybird.Harness", profilePath: "/profiles/main" }));
+  mkdirSync(join(data, "tasks"), { recursive: true });
+  writeFileSync(join(data, "tasks", "session-a"), "[]");
+  mkdirSync(join(home, ".Trash"));
   running(join(old, "releases", installed));
   expectAccepted(descendant);
   expect(lstatSync(data).isDirectory()).toBe(true);
   expect(readlinkSync(old)).toBe("browser-harness");
-  expect(JSON.parse(readFileSync(join(data, "browser.json"), "utf8"))).toEqual({ mode: "ladybird", profilePath: "/profiles/main" });
+  expect(existsSync(join(data, "tasks", "session-a"))).toBe(false);
+  expect(JSON.parse(readFileSync(join(data, "browser.json"), "utf8"))).toEqual({ bundle: "org.ladybird.Ladybird.Harness", profilePath: "/profiles/main", mode: "ladybird" });
   expect(readlinkSync(current)).toBe(`releases/${short(installed)}`);
   expectAccepted(descendant);
   expect(readlinkSync(old)).toBe("browser-harness");
@@ -333,6 +352,15 @@ test("an explicit rollback cannot bypass checkpoint compatibility", () => {
   expectRefused("--rollback", "manual rollback across checkpoint formats is blocked");
 });
 
+// A Safari Harness release runs from paths, labels, a command and an MCP
+// name the rename moved, so a rollback to one would leave nothing working.
+test("a rollback to a release from before the rename is refused before anything changes", () => {
+  rmSync(join(releases, short(sibling)), { recursive: true });
+  release(short(sibling), 2, false);
+  writeFileSync(join(data, "deploys.log"), `2000-01-01T00:00:00Z ${short(installed)} ${short(sibling)} deploy\n`);
+  expectRefused("--rollback", "rolling back across the rename is not supported");
+});
+
 // The whole deploy, past checkpoint admission: the daemon's code changed,
 // so it restarts; the app and extension stay as they are.
 function deployThrough(target: string) {
@@ -365,6 +393,20 @@ test("a deploy of a commit on origin/master logs no warning and records that it 
   expect(deployed).toMatchObject({ code: 0, err: "" });
   expect(deployed.log).toEndWith(`${short(descendant)} ${short(installed)} deploy`);
   expect(JSON.parse(readFileSync(join(releases, short(descendant), ".upstream"), "utf8"))).toMatchObject({ ahead: 0 });
+});
+
+// The links kept for agents started before the rename go once no process
+// names the old paths; kept forever, they would hide a caller of the old
+// names.
+test("a deploy removes the links from Safari Harness's paths once no process uses them", () => {
+  git("update-ref", "refs/remotes/origin/master", descendant);
+  const old = join(home, ".local/share/safari-harness");
+  const command = join(home, ".bun/bin/safari");
+  mkdirSync(join(home, ".bun/bin"), { recursive: true });
+  symlinkSync("browser-harness", old);
+  symlinkSync(join(current, "cli/browser.ts"), command);
+  expect(deployThrough(descendant)).toMatchObject({ code: 0, err: "" });
+  expect([existsSync(old), lstatExists(old), lstatExists(command)]).toEqual([false, false, false]);
 });
 
 // I-3 (11-06): omp's entry for the harness had no timeout, so omp gave up on

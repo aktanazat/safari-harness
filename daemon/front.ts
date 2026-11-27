@@ -33,7 +33,7 @@ export function readChoice(): Choice {
   return existsSync(BROWSER_CHOICE) ? JSON.parse(readFileSync(BROWSER_CHOICE, "utf8")) as Choice : {};
 }
 const chosen = readChoice();
-export const MODE: Mode = chosen.mode ?? "safari";
+export const MODE: Mode = chosen.mode !== undefined && Object.hasOwn(MODES, chosen.mode) ? chosen.mode : "safari";
 export const BROWSER = process.env.BROWSER_HARNESS_BUNDLE ?? MODES[MODE];
 // Ladybird's --profile-path, when it is not its default profile.
 export const LADYBIRD_PROFILE_PATH = process.env.LADYBIRD_PROFILE_PATH ?? chosen.profilePath;

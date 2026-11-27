@@ -126,27 +126,37 @@ strays() {
 # mode: the browser the harness drives (daemon/front.ts), safari when unset
 mode() { jq -r '.mode // "safari"' "$DATA/browser.json" 2>/dev/null || echo safari; }
 
-# migrate: once, from Safari Harness. The data and logs move (a rename on
-# one disk, so files the old daemon holds open stay its own), the old
-# paths become links to the new, the browser choice becomes a mode, and
-# the routine and Ladybird bridge jobs get new labels and paths. The old
-# daemon's job goes in restart, once the new one is ready to start.
+# migrate: once, from Safari Harness, before anything is checked or built.
+# The data and logs move (a rename on one disk, so files the old daemon
+# holds open stay its own), the old paths become links to the new, and the
+# browser choice gains its mode beside the bundle old code reads. A folder
+# under the new name with no install in it (a test's task file, 11-27) goes
+# to the Trash; an install under both names stops the deploy.
 migrate() {
-  local plist label port helper
-  if [ -d "$OLD" ] && [ ! -L "$OLD" ] && [ ! -e "$DATA" ]; then
-    mv "$OLD" "$DATA"
-    ln -s browser-harness "$OLD"
-    echo "migrate: $OLD moved to $DATA"
-  fi
-  if [ -d "$OLD_LOGS" ] && [ ! -L "$OLD_LOGS" ] && [ ! -e "$HOME/Library/Logs/browser-harness" ]; then
-    mv "$OLD_LOGS" "$HOME/Library/Logs/browser-harness"
-    ln -s browser-harness "$OLD_LOGS"
-  fi
-  if [ -f "$DATA/browser.json" ] && jq -e 'has("bundle")' "$DATA/browser.json" >/dev/null 2>&1; then
-    jq '{mode: (if (.bundle // "") | startswith("org.ladybird.") then "ladybird" else "safari" end)} + (if .profilePath then {profilePath} else {} end)' "$DATA/browser.json" >"$DATA/browser.json.new"
+  local from to
+  for from in "$OLD" "$OLD_LOGS"; do
+    to="${from%/*}/browser-harness"
+    [ -d "$from" ] && [ ! -L "$from" ] || continue
+    if [ -e "$to" ]; then
+      [ ! -e "$to/current" ] && [ ! -e "$to/releases" ] && [ ! -e "$to/daemon.log" ] || { echo "both $from and $to hold an install; move one aside, then deploy again" >&2; exit 1; }
+      trash "$to"
+    fi
+    mv "$from" "$to"
+    ln -s browser-harness "$from"
+    echo "migrate: $from moved to $to"
+  done
+  if [ -f "$DATA/browser.json" ] && ! jq -e 'has("mode")' "$DATA/browser.json" >/dev/null 2>&1; then
+    jq '. + {mode: (if (.bundle // "") | startswith("org.ladybird.") then "ladybird" else "safari" end)}' "$DATA/browser.json" >"$DATA/browser.json.new"
     mv "$DATA/browser.json.new" "$DATA/browser.json"
     echo "migrate: browser mode $(mode)"
   fi
+}
+
+# relabel: once current is the new release, Safari Harness's routine and
+# Ladybird bridge jobs run it under new labels, and saved routine prompts
+# name the browser tools and skill.
+relabel() {
+  local plist label port helper
   for plist in "$JOBS"/at.aktan.safari-harness.routine.*.plist; do
     [ -f "$plist" ] || continue
     label="$(basename "$plist" .plist)"
@@ -156,6 +166,10 @@ migrate() {
     rm -f "$plist"
     launchctl bootstrap "gui/$(id -u)" "$JOBS/$label.plist"
     echo "migrate: routine ${label##*.} is $label now"
+  done
+  for plist in "$DATA"/routines/*.md; do
+    [ -f "$plist" ] && grep -qF -e "safari tools" -e "skill://safari" -e "safari guide" "$plist" || continue
+    sed -i '' -e "s#a scheduled Safari routine#a scheduled browser routine#" -e "s#the safari tools (read skill://safari first)#the browser tools (read skill://browser first)#" -e "s#safari guide#browser guide#g" "$plist"
   done
   for plist in "$JOBS"/dev.aktan.safari-harness.ladybird-bridge-*.plist; do
     [ -f "$plist" ] || continue
@@ -180,8 +194,11 @@ migrate() {
 # names its bridge's helper there (ladybird/install-app.sh writes the new
 # path; the app is not changed while it runs).
 retire() {
+  local procs link
   [ -L "$OLD" ] || [ -L "$HOME/.bun/bin/safari" ] || [ -L "$OLD_LOGS" ] || return 0
-  if ps -axww -o command= | grep -qF -e "$OLD/" -e "$HOME/.bun/bin/safari"; then
+  # Read whole before matching, so the match is not of grep's own command.
+  procs="$(ps -axww -o command=)"
+  if grep -qF -e "$OLD/" -e "$HOME/.bun/bin/safari" <<<"$procs"; then
     echo "note: processes started before the rename still run from $OLD; it stays a link until they end"
     return 0
   fi
@@ -189,7 +206,7 @@ retire() {
     echo "note: Ladybird Harness still starts its bridge through $OLD; it stays a link until ladybird/install-app.sh --bridge runs again"
     return 0
   fi
-  rm -f "$OLD" "$OLD_LOGS" "$HOME/.bun/bin/safari"
+  for link in "$OLD" "$OLD_LOGS" "$HOME/.bun/bin/safari"; do [ ! -L "$link" ] || rm "$link"; done
   echo "retired the links from Safari Harness's old paths"
 }
 
@@ -292,6 +309,9 @@ before="$(readlink "$CURRENT" 2>/dev/null || true)"
 if [ "$what" = rollback ]; then
   sha="$(tail -n 1 "$DATA/deploys.log" 2>/dev/null | cut -d' ' -f3)"
   [ -n "$sha" ] && [ -f "$RELEASES/$sha/daemon/codehash.ts" ] || { echo "no earlier release deployed by this script is recorded in $DATA/deploys.log" >&2; exit 1; }
+  # Releases before 11-27 are Safari Harness: other paths, labels, command
+  # and MCP name, none of which this deploy can put back.
+  [ -f "$RELEASES/$sha/cli/browser.ts" ] || { echo "$sha is from before Safari Harness became Browser Harness; rolling back across the rename is not supported" >&2; exit 1; }
 else
   full="$(git -C "$ROOT" rev-parse --verify --quiet "${1:-HEAD}^{commit}")" || { echo "not a commit: ${1:-HEAD}" >&2; exit 2; }
   sha="$(git -C "$ROOT" rev-parse --short=7 "$full")"
@@ -411,6 +431,7 @@ fi
 checkpoint="$(bun "$CHECKPOINTS" snapshot "$DATA" "$BASE" "$previous")"
 point "$sha"
 echo "current: release $sha"
+relabel
 [ "$(readlink "$HOME/.bun/bin/browser" || true)" = "$CURRENT/cli/browser.ts" ] || ln -sfn "$CURRENT/cli/browser.ts" "$HOME/.bun/bin/browser"
 # Agents started before the rename call safari until they end (retire).
 [ ! -L "$HOME/.bun/bin/safari" ] || [ "$(readlink "$HOME/.bun/bin/safari")" = "$CURRENT/cli/browser.ts" ] || ln -sfn "$CURRENT/cli/browser.ts" "$HOME/.bun/bin/safari"

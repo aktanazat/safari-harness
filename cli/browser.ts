@@ -853,7 +853,7 @@ async function main() {
     const { MODE, MODES } = await import("../daemon/front.ts");
     const want = rest[0];
     if (want === undefined) return console.log(`${MODE} (${MODES[MODE]})`);
-    if (!(want in MODES)) fail(`usage: browser mode [${Object.keys(MODES).join("|")}]`, 2);
+    if (!Object.hasOwn(MODES, want)) fail(`usage: browser mode [${Object.keys(MODES).join("|")}]`, 2);
     const { setMode } = await import("./launchd.ts");
     console.log(await setMode(want as keyof typeof MODES));
     return;
