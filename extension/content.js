@@ -1255,7 +1255,7 @@
     return `the page has drawn nothing, and it hit ${count}: ${errors.slice(-3).join("; ")}. Waiting for its text may not help: read them with console (do: read), or reload it (history, do: reload), then snapshot again`;
   }
   function snapshot(opts = {}) {
-    if (!document.body) return hasBody().then((has) => (has ? snapshot(opts) : { url: location.href, title: document.title, nodes: 0, truncated: false, snapshot: "", hint: noBody() }));
+    if (!document.body || document.readyState === "loading") return hasBody().then((has) => (has ? snapshot(opts) : { url: location.href, title: document.title, nodes: 0, truncated: false, snapshot: "", hint: noBody() }));
     if (shownPdf()) return { url: location.href, title: document.title, nodes: 0, truncated: false, snapshot: "", hint: shownPdfText() };
     const top = window === window.top;
     // Flutter's host element sits in the page itself, so only a page with
@@ -1313,9 +1313,19 @@
   // again, or the read came before the parser put one in. On 10-23 map read
   // 23 such pages as "no content root", and open said nothing matched root
   // "undefined" (K2, SR-4). A read waits for one as it waits for a page to
-  // draw; an XML or SVG file never has one.
+  // draw; an XML or SVG file never has one. A page still coming in is read
+  // once the parser has all of it: on 11-27 verde-ceramics.com's catalog,
+  // loaded again by its bot check's script, read as its header's menu,
+  // before any of its products had come (PARSE_WAIT_MS).
+  const PARSE_WAIT_MS = 5000;
   const webDocument = () => !document.documentElement || document.documentElement.namespaceURI === "http://www.w3.org/1999/xhtml";
   async function hasBody() {
+    if (document.readyState === "loading") {
+      let parsed;
+      const done = new Promise((resolve) => document.addEventListener("readystatechange", (parsed = resolve), { once: true }));
+      await Promise.race([done, whenPage(() => document.readyState !== "loading", PARSE_WAIT_MS)]);
+      document.removeEventListener("readystatechange", parsed);
+    }
     if (document.body) return true;
     if (document.documentElement && webDocument()) await whenPage(() => !!document.body, DRAW_WAIT_MS);
     return !!document.body;
