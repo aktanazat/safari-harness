@@ -860,7 +860,11 @@ function makeApi(b: Browser, ctx: { storageFile: string; preloads: Preloads; rel
 
   // left and top count, as in Safari, from the top-left of the display
   // holding most of the window, or for a new window from the display Safari
-  // opens one on (the helper's reference display).
+  // opens one on (the helper's reference display). A window that moves
+  // takes its size again on the display it lands on: Set Window Rect sizes
+  // before it moves, and a window sized on a 2x display and moved to a 1x
+  // one came out a point wider (11-27: 1159 asked, 1160 on the Agents
+  // display), so no size check found it.
   async function setBounds(id: number, p: { left?: number; top?: number; width?: number; height?: number }, opening = false) {
     if (p.left === undefined && p.top === undefined && p.width === undefined && p.height === undefined) return;
     const tabId = b.active.get(id);
@@ -871,10 +875,12 @@ function makeApi(b: Browser, ctx: { storageFile: string; preloads: Preloads; rel
     const origin = (opening ? b.layout.reference : holdingScreen({ x, y, width, height }, b.layout.screens)) ?? { x: 0, y: 0 };
     const rect = await b.lb.classic(async (send) => {
       await send("POST", "/window", { handle: b.tab(tabId).context });
-      return send<Rect>("POST", "/window/rect", {
-        x: p.left === undefined ? null : origin.x + p.left, y: p.top === undefined ? null : origin.y + p.top,
-        width: p.width ?? null, height: p.height ?? null,
+      const size = { width: p.width ?? null, height: p.height ?? null };
+      const placed = await send<Rect>("POST", "/window/rect", {
+        x: p.left === undefined ? null : origin.x + p.left, y: p.top === undefined ? null : origin.y + p.top, ...size,
       });
+      const moved = p.left !== undefined && p.top !== undefined;
+      return moved && p.width !== undefined && p.height !== undefined ? send<Rect>("POST", "/window/rect", { x: null, y: null, ...size }) : placed;
     });
     b.win(id).bounds = [rect.x, rect.y, rect.width, rect.height];
   }
