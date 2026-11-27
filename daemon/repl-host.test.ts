@@ -264,6 +264,13 @@ test("a value one plain browser repl call sets, the same agent's next plain call
   expect(await run([process.execPath, CLI, "repl", "globalThis.dmid"])).toBe("D0123\n");
 }, 30_000);
 
+// On 11-27 `browser repl --file f --close` ran the script and left its
+// session open: --close with no name was dropped. Two agents reached for it.
+test("a browser repl call with a bare --close runs its code, then ends its session", async () => {
+  expect(await run([process.execPath, CLI, "repl", "--session", "closed-after", "40 + 2", "--close"])).toBe("42\n");
+  expect(((await command("listSessions()")) as { id: string }[]).map((s) => s.id)).not.toContain("closed-after");
+}, 30_000);
+
 test("the session of an agent's plain browser repl calls ends when that agent exits", async () => {
   // an agent of its own: it runs one plain call, says so, and stays
   const agent = Bun.spawn([omp, "-e", `await Bun.spawn([process.execPath, ${JSON.stringify(CLI)}, "repl", "1"], { stdout: "ignore", stderr: "inherit" }).exited; console.log("ran"); await Bun.sleep(60_000);`], { env, stdout: "pipe", stderr: "inherit" });
