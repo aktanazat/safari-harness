@@ -1,4 +1,4 @@
-// LinkedIn (www.linkedin.com) for safari repl: the web app's own Voyager
+// LinkedIn (www.linkedin.com) for browser repl: the web app's own Voyager
 // API, called from the kit's background tab so the owner's session goes
 // with each request. The tab parks on a path LinkedIn has nothing for (its
 // small not-found page), because the feed starves a hidden tab's scripts.

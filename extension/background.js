@@ -75,7 +75,7 @@ function connect() {
         return;
       }
       // The daemon asks for this once the extension has answered nothing
-      // for a minute, or when safari extension reload asks (bridge.ts):
+      // for a minute, or when browser extension reload asks (bridge.ts):
       // Safari unloads it and loads it again, as turning it off and on in
       // Safari Settings does, but asks for no password (10-13). Nothing
       // answers it: this page goes with the reload. Once asked, a stalled
@@ -1205,7 +1205,7 @@ async function capture(tabId, op, args) {
 // Runs in the page, so it must be self-contained.
 function pageCapture(kind, cmd) {
   if (kind === "net") {
-    const page = window[Symbol.for("safari-harness.page")];
+    const page = window[Symbol.for("browser-harness.page")];
     const net = page?.net;
     if (!net) return null;
     if (cmd === "read") return net.log.slice(-100);
@@ -1214,14 +1214,14 @@ function pageCapture(kind, cmd) {
     if (net.on) net.log.length = 0;
     return true;
   }
-  const key = Symbol.for("safari-harness.capture");
+  const key = Symbol.for("browser-harness.capture");
   // The page's uncaught errors and failed script loads since it loaded
   // come too, start or not, kept by dialogs.js from the page's first
   // script: a page that threw as it loaded read 0 nodes, and console read
   // had none of its errors (S99PartB). A read puts nothing in the page: the
   // daemon's wait reads them on a page that drew nothing.
   if (cmd === "read") {
-    const thrown = (window[Symbol.for("safari-harness.page")]?.errors ?? []).map(({ t, message }) => ({ level: "error", text: message, t, uncaught: true }));
+    const thrown = (window[Symbol.for("browser-harness.page")]?.errors ?? []).map(({ t, message }) => ({ level: "error", text: message, t, uncaught: true }));
     return { entries: [...thrown, ...(window[key]?.console.log ?? [])].sort((a, b) => a.t - b.t).slice(-100) };
   }
   let s = window[key];
@@ -1263,7 +1263,7 @@ async function pageEval(src) {
     const typed = (kind, s) => {
       if (!globalThis.trustedTypes) return s;
       try {
-        policy ??= trustedTypes.createPolicy(`safari-harness-${Math.random().toString(36).slice(2)}`, { createScript: (x) => x, createScriptURL: (x) => x });
+        policy ??= trustedTypes.createPolicy(`browser-harness-${Math.random().toString(36).slice(2)}`, { createScript: (x) => x, createScriptURL: (x) => x });
         return kind === "url" ? policy.createScriptURL(s) : policy.createScript(s);
       } catch {
         return s;
@@ -1305,7 +1305,7 @@ async function pageEval(src) {
       if (refused(e)) v = await asTag(e);
       else {
         if (!globalThis.trustedTypes || !/Trusted ?Type/i.test(String(e && e.message))) throw e;
-        const policy = trustedTypes.createPolicy(`safari-harness-${Math.random().toString(36).slice(2)}`, { createScript: (s) => s });
+        const policy = trustedTypes.createPolicy(`browser-harness-${Math.random().toString(36).slice(2)}`, { createScript: (s) => s });
         v = await new Function(policy.createScript(code))();
       }
     }

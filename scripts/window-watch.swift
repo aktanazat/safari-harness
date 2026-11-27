@@ -5,7 +5,7 @@ import ScreenCaptureKit
 import CoreMedia
 
 // The browser the harness drives: Safari, or Ladybird Harness (daemon/front.ts).
-let BROWSER = ProcessInfo.processInfo.environment["SAFARI_HARNESS_BUNDLE"] ?? "com.apple.Safari"
+let BROWSER = ProcessInfo.processInfo.environment["BROWSER_HARNESS_BUNDLE"] ?? "com.apple.Safari"
 
 @_silgen_name("_AXUIElementGetWindow")
 func nativeWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError

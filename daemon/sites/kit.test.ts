@@ -34,7 +34,7 @@ test("a call on a site's tab that is gone runs once more in a new tab where the 
   expect(opened).toHaveLength(3);
 });
 
-// 11-18: safari repl --list showed six sessions with 0 tabs while each held
+// 11-18: browser repl --list showed six sessions with 0 tabs while each held
 // a Slack tab its site global opened.
 test("the kit lists the tabs it holds open, the one that replaced a gone tab in its place, and none once closed", async () => {
   const gone = new Set<number>();

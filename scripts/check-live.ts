@@ -1,5 +1,5 @@
 // Live checks against the real Safari extension through the running daemon.
-// Needs `safari status` to show the extension connected. Works only in tabs
+// Needs `browser status` to show the extension connected. Works only in tabs
 // it opens in the background, and closes them; the user's tabs stay as they are.
 //
 //   bun scripts/check-live.ts
@@ -95,7 +95,7 @@ async function withPage(html: string, setup: string, body: (tab: number) => Prom
 //   Safari gives every tab a new id on a reload and the extension maps the
 //   old ones, except across the reload that installs that mapping; refs
 //   from the page's old script likewise (content.js hands them over). To
-//   check what is installed, run `safari extension reload` in place of
+//   check what is installed, run `browser extension reload` in place of
 //   the deploy.
 const HEALTH = "http://127.0.0.1:37334/health";
 const INSTALL_STATE = "/private/var/tmp/check-live-install.json";
@@ -206,11 +206,11 @@ await withPage(FORM, FORM_JS, async (tab) => {
   const keyed = (await call("eval", { tab, expression: 'document.getElementById("kout").textContent' })).result;
   check("a key combo arrives as its key with the modifiers held", keyed === "key C KeyC shift=true alt=true meta=false", keyed);
 
-  const file = "/private/var/tmp/safari-harness-upload-check.txt";
+  const file = "/private/var/tmp/browser-harness-upload-check.txt";
   await Bun.write(file, "hello from safari harness\n");
   await call("upload", { tab, paths: [file] });
   check("upload delivers the file's name and bytes",
-    (await call("wait", { tab, text: "got safari-harness-upload-check.txt hello from safari harness", ms: 3000 })).found === true,
+    (await call("wait", { tab, text: "got browser-harness-upload-check.txt hello from safari harness", ms: 3000 })).found === true,
     await call("eval", { tab, expression: 'document.getElementById("fout").textContent' }));
   await Bun.file(file).delete();
 
@@ -320,7 +320,7 @@ await withPage("<p>front check</p>", 'document.title = "front check"', async (ta
 });
 
 // A close of a tab the harness closed already succeeds at once and says
-// when (closeTab): on 10-16 `safari close 5203` failed after the repl had
+// when (closeTab): on 10-16 `browser close 5203` failed after the repl had
 // closed it.
 const closed = (await call("open", { url: HOME, background: true })).id as number;
 await call("close", { tab: closed });
@@ -576,10 +576,10 @@ await withPage("<div id=host><span>slotted words</span></div>", SHADOW_JS, async
   const clicked = await call("click", { tab, ref: "Upload front" }).catch((e: Error) => e.message);
   const shown = await call("wait", { tab, text: "front chosen", ms: 2000 });
   check("click by text reaches a button inside a shadow root", shown.found === true, { clicked, shown });
-  const file = "/private/var/tmp/safari-harness-shadow-check.txt";
+  const file = "/private/var/tmp/browser-harness-shadow-check.txt";
   await Bun.write(file, "card\n");
   const up = await call("upload", { tab, paths: [file] }).catch((e: Error) => e.message);
-  const got = await call("wait", { tab, text: "got safari-harness-shadow-check.txt", ms: 3000 });
+  const got = await call("wait", { tab, text: "got browser-harness-shadow-check.txt", ms: 3000 });
   check("upload without a ref finds the file input inside a shadow root", got.found === true, { up, got });
   await Bun.file(file).delete();
 });
@@ -867,13 +867,13 @@ await withPage(BOT_CHECK, BOT_CHECK_JS, async (tab) => {
   check("snapshot says the tab shows a bot check", snap.challenge?.kind === "cloudflare" && snap.challenge?.where === "box", snap.challenge);
   const userFront = ((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id;
   const [userApp, textsBefore] = [await frontNow(), alertTexts()];
-  process.env.SAFARI_HARNESS_AWAY = "0";
+  process.env.BROWSER_HARNESS_AWAY = "0";
   try {
     const both = await Promise.all([0, 1].map(() => CALLER_TOOLS.handoff.run({ tab, why: SELF_TEST, ms: 8000 }))) as { done: boolean; joined?: true; challenge?: unknown; waitedMs: number }[];
     check("two handoffs of a tab share one, and both return once the check is gone",
       both.every((h) => h.done && h.challenge === undefined && h.waitedMs < 8000) && both.filter((h) => h.joined).length === 1, both);
   } finally {
-    delete process.env.SAFARI_HARNESS_AWAY;
+    delete process.env.BROWSER_HARNESS_AWAY;
   }
   const [nowFront, nowApp] = [((await call("tabs")).tabs as Tab[]).find((t) => t.front)?.id, await frontNow()];
   await checkFront("handoff gives back the tab and app the user had in front", nowFront === userFront, userApp, nowApp, { nowFront, userFront });
@@ -919,7 +919,7 @@ await withPage(DIALOG, "", async (tab) => {
 // Inline handlers see document.URL as URL, hence window.URL.
 const FILES = '<a id=dl download="hello.txt" href="data:text/plain,hello%20world">Get file</a>' +
   `<button id=blob onclick="const a = document.createElement('a'); a.href = window.URL.createObjectURL(new Blob(['blob body'], { type: 'text/plain' })); a.download = 'made.txt'; a.click()">Make file</button>`;
-const FILE_DIR = `/private/var/tmp/safari-harness-check-${process.pid}`;
+const FILE_DIR = `/private/var/tmp/browser-harness-check-${process.pid}`;
 
 await withPage(FILES, "", async (tab) => {
   const link = await call("download", { tab, ref: "#dl", out: `${FILE_DIR}/hello.txt` });
@@ -1158,17 +1158,17 @@ function stopProgram(pid: number) {
     // it has exited already
   }
 }
-// The tab id in a line `safari open --json` printed.
+// The tab id in a line `browser open --json` printed.
 function openedTab(line = ""): number {
   const opened: unknown = line.startsWith("{") ? JSON.parse(line) : null;
-  if (!opened || typeof opened !== "object" || !("id" in opened) || typeof opened.id !== "number") throw new Error(`safari open failed: ${line}`);
+  if (!opened || typeof opened !== "object" || !("id" in opened) || typeof opened.id !== "number") throw new Error(`browser open failed: ${line}`);
   return opened.id;
 }
 
 // Here that program runs the CLI and exits. The daemon looks each second
 // (owner.ts), so the tab is gone within a few seconds; the --keep tab must
 // outlive a look after that.
-const CLI = new URL("../cli/safari.ts", import.meta.url).pathname;
+const CLI = new URL("../cli/browser.ts", import.meta.url).pathname;
 async function openFromChild(keep: boolean): Promise<number> {
   const argv = [process.execPath, CLI, "open", HOME, "--bg", "--json", ...(keep ? ["--keep"] : [])];
   const { lines, ended } = await agentProgram(`const r = Bun.spawnSync(${JSON.stringify(argv)}); process.stdout.write((r.stdout.toString().trim() || r.stderr.toString().trim().replaceAll("\\n", " ")) + "\\n")`, 1);
@@ -1284,7 +1284,7 @@ async function agentWithGroup(task: string) {
   for (const line of lines) openedTab(line);
   const opened: unknown = lines[0]?.startsWith("{") ? JSON.parse(lines[0]) : null;
   const space = opened && typeof opened === "object" && "space" in opened ? opened.space : null;
-  if (!space || typeof space !== "object" || !("name" in space) || typeof space.name !== "string" || !("group" in space) || typeof space.group !== "string") throw new Error(`safari open --group failed: ${lines[0]}`);
+  if (!space || typeof space !== "object" || !("name" in space) || typeof space.name !== "string" || !("group" in space) || typeof space.group !== "string") throw new Error(`browser open --group failed: ${lines[0]}`);
   return { pid, space: { name: space.name, group: space.group, why: "why" in space && typeof space.why === "string" ? space.why : undefined } };
 }
 const spaceState = async () => (await call("space", { op: "state" })) as { connected: boolean; spaces: SpaceRow[] };

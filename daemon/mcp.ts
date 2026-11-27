@@ -9,12 +9,12 @@ import { redactUrl } from "./redact.ts";
 import { failureOf } from "./failures.ts";
 import { affectsPage } from "./lanes.ts";
 
-const SERVER_INFO = { name: "safari-harness", version: "0.1.0" };
+const SERVER_INFO = { name: "browser-harness", version: "0.1.0" };
 
-// The Mac whose Safari this drives: SAFARI_HARNESS_HOST (safari mcp
-// --host), else the saved default (safari host use). Tool calls wait for
+// The Mac whose Safari this drives: BROWSER_HARNESS_HOST (browser mcp
+// --host), else the saved default (browser host use). Tool calls wait for
 // the tunnel; listing tools does not.
-const hostReady = connectHost(process.env.SAFARI_HARNESS_HOST);
+const hostReady = connectHost(process.env.BROWSER_HARNESS_HOST);
 hostReady.catch(() => {});
 
 // The daemon owns the extension bridge; MCP mode is a thin client that
@@ -29,14 +29,14 @@ function replyErr(id: number | string | undefined, code: number, message: string
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }) + "\n");
 }
 
-// A routine's run (cli/launchd.ts) names its log in SAFARI_ROUTINE_LOG, and
+// A routine's run (cli/launchd.ts) names its log in BROWSER_ROUTINE_LOG, and
 // each call goes there on a line of its own, before the model's summary: a
 // run's log held only that summary, with no trace of which call failed or
 // how long each took (USCIS, 09-30). A string is shown only for these
 // names, with any secret in an address cut; any other is given as its
 // length, since a type's text or a repl's code can hold a password. The
 // log stops at 400 lines or 64 KB, so a looping run cannot fill the disk.
-const ROUTINE_LOG = process.env.SAFARI_ROUTINE_LOG;
+const ROUTINE_LOG = process.env.BROWSER_ROUTINE_LOG;
 const SHOWN: Record<string, true> = { tab: true, ref: true, do: true, url: true, key: true, selector: true, option: true, root: true, query: true, pick: true, site: true };
 const LOG_MAX_LINES = 400;
 const LOG_MAX_BYTES = 64 * 1024;

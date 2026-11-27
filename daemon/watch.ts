@@ -17,7 +17,7 @@ import { rpc } from "./rpc.ts";
 
 // How the value is read: a CSS selector's text, a regex over the page's
 // text (its first group, else the whole match), a JS expression's value,
-// or the last read of a recording played back (safari replay).
+// or the last read of a recording played back (browser replay).
 export type How = "selector" | "text" | "eval" | "replay";
 // What a change means: any change (the default), a price that fell below
 // the series' lowest, or an opening after none.
@@ -38,7 +38,7 @@ const SERIES_MAX = 100;
 const VALUE_MAX = 2_000;
 // Only the user's account may read the series: it records what he watches.
 const OWNER_ONLY = 0o600;
-const CLI = join(import.meta.dir, "..", "cli", "safari.ts");
+const CLI = join(import.meta.dir, "..", "cli", "browser.ts");
 const NO_REPLAY = "this safari has no replay command, so a watch cannot play a recording back; deploy a release that has it";
 
 type Reading = { at: number; value: string };
@@ -134,7 +134,7 @@ export async function parseWatch(url: string, reads: Partial<Record<How, string>
   return { url, how, what, ...(k ? { kind: k } : {}) };
 }
 
-// Whether the safari command lacks replay: it answers an unknown command
+// Whether the browser command lacks replay: it answers an unknown command
 // with exit 2.
 async function replayMissing(): Promise<boolean> {
   const p = Bun.spawn([process.execPath, CLI, "replay", "--help"], { stdout: "ignore", stderr: "pipe" });

@@ -4,7 +4,7 @@ hosts: instagram.com, www.instagram.com
 ---
 # Instagram
 
-Public profiles and posts read in Safari as the signed-in user sees them. Notes from 10-23.
+Public profiles and posts read in the browser as the signed-in user sees them. Notes from 10-23.
 
 ## Profiles
 - A profile is `www.instagram.com/<user>/`. Wait on the selector `a[href*="/p/"]` (a post's link): a text wait on the user name returned before the grid drew, with no posts on the page.

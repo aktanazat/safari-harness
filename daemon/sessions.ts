@@ -1,4 +1,4 @@
-// safari do sessions: every run keeps its whole conversation on disk, so it
+// browser do sessions: every run keeps its whole conversation on disk, so it
 // can be read later, resumed with a new prompt, or talked to while it runs
 // from another terminal (steer, queue, stop). A running loop takes those
 // messages from its inbox folder between steps; each message is a file of
@@ -12,7 +12,7 @@ import { mintMessages, runMintAgent, type MintRequest, type MintState } from "./
 import { tryLock } from "./flock.ts";
 import { ompCompletion } from "./omp-provider.ts";
 
-export const SESSIONS_DIR = join(homedir(), ".local/share/safari-harness/sessions");
+export const SESSIONS_DIR = join(homedir(), ".local/share/browser-harness/sessions");
 
 export type SessionRecord = {
   id: string;
@@ -33,7 +33,7 @@ const recordPath = (id: string) => join(SESSIONS_DIR, `${id}.json`);
 const inboxOf = (id: string) => join(SESSIONS_DIR, `${id}.inbox`);
 
 function checkId(id: string): string {
-  if (!/^[a-z0-9]{8}$/.test(id)) throw new Error(`no session ${JSON.stringify(id)}; see: safari session list`);
+  if (!/^[a-z0-9]{8}$/.test(id)) throw new Error(`no session ${JSON.stringify(id)}; see: browser session list`);
   return id;
 }
 
@@ -42,7 +42,7 @@ export async function loadSession(id: string): Promise<SessionRecord> {
     return JSON.parse(await readFile(recordPath(checkId(id)), "utf8")) as SessionRecord;
   } catch (e) {
     if (e instanceof Error && e.message.startsWith("no session")) throw e;
-    throw new Error(`no session ${id}; see: safari session list`);
+    throw new Error(`no session ${id}; see: browser session list`);
   }
 }
 
@@ -95,7 +95,7 @@ export async function newSession(task: string, opts: { tab?: number; host: strin
 // nothing would ever read it.
 export async function sendControl(id: string, c: Control): Promise<void> {
   const rec = await loadSession(id);
-  if (!isRunning(rec)) throw new Error(`session ${id} is not running (${statusOf(rec)}); go on with: safari session resume ${id} "<prompt>"`);
+  if (!isRunning(rec)) throw new Error(`session ${id} is not running (${statusOf(rec)}); go on with: browser session resume ${id} "<prompt>"`);
   const dir = inboxOf(id);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dir, 0o700);
@@ -124,7 +124,7 @@ export async function deleteSession(id: string): Promise<void> {
   const lock = await lockSession(id);
   try {
     const rec = await loadSession(id);
-    if (isRunning(rec)) throw new Error(`session ${id} is running; stop it first: safari session stop ${id}`);
+    if (isRunning(rec)) throw new Error(`session ${id} is running; stop it first: browser session stop ${id}`);
     await rm(recordPath(id), { force: true });
     await rm(inboxOf(id), { recursive: true, force: true });
   } finally {

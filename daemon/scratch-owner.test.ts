@@ -39,13 +39,13 @@ const probes = [Bun.serve({ port: 0, fetch: () => new Response() }), Bun.serve({
 const [wsPort, httpPort] = probes.map((s) => s.port);
 await Promise.all(probes.map((s) => s.stop(true)));
 const home = mkdtempSync(join(tmpdir(), "scratch-owner-"));
-const state = join(home, ".local/share/safari-harness");
+const state = join(home, ".local/share/browser-harness");
 mkdirSync(state, { recursive: true });
 // A keeper counts as running, so none starts to group a window in the real
 // Safari (claimSpaces in call.ts).
 writeFileSync(join(state, "keeper.pid"), String(process.pid));
 const daemon = Bun.spawn([process.execPath, join(import.meta.dir, "main.ts")], {
-  env: { ...process.env, HOME: home, SAFARI_HARNESS_WS: String(wsPort), SAFARI_HARNESS_HTTP_PORT: String(httpPort) },
+  env: { ...process.env, HOME: home, BROWSER_HARNESS_WS: String(wsPort), BROWSER_HARNESS_HTTP_PORT: String(httpPort) },
   stdout: "pipe",
   stderr: "inherit",
 });
@@ -69,7 +69,7 @@ void (async () => {
 function logs(what: string): Promise<void> {
   const { promise, resolve, reject } = Promise.withResolvers<void>();
   heard = () => {
-    if (logged.some((l) => l.split("[safari-harness] ")[1]?.startsWith(what))) resolve();
+    if (logged.some((l) => l.split("[browser-harness] ")[1]?.startsWith(what))) resolve();
     else if (ended) reject(new Error(`the daemon exited before it logged ${what}`));
   };
   heard();

@@ -4,7 +4,7 @@ hosts: x.com, twitter.com, www.x.com, mobile.twitter.com
 ---
 # X
 
-Signed out, the global throws "not signed in to x.com in Safari". If Safari is on the wrong account, the user switches accounts from the account menu at the bottom of the left column on `x.com/home` instead of signing out.
+Signed out, the global throws "not signed in to x.com in <browser>". If the browser is on the wrong account, the user switches accounts from the account menu at the bottom of the left column on `x.com/home` instead of signing out.
 
 ## Posts
 - Status pages (`x.com/<handle>/status/<id>`) by `open` or `map`: wait on `{"selector": "article"}`. A text wait such as `{"text": "NASA"}` matches the title ("NASA on X: …") before the post draws: on 10-23 three `map` pages returned with no article and no text that way.
@@ -17,8 +17,8 @@ Signed out, the global throws "not signed in to x.com in Safari". If Safari is o
 - X can ask for an image puzzle on sign-in or sign-up: a count on the left to match against pictures on the right. If it persists after waiting in the tab, report that sign-in needs a human check rather than handing it off.
 - A Cloudflare check on /account/access may clear by itself. If it stays, use another permitted source or report the inaccessible page; never click in its box, real input included.
 
-## In safari repl
-The `x` global (also `twitter`) reads X through the session in Safari, from one background tab of its own, the way the X web app does. Reading marks nothing seen: notifications and messages keep their unread state. The paged reads (`getTimeline`, `search`, `getUserTweets`, `getBookmarks`) answer `nextCursor` for the next page; past the last page X repeats the cursor it was asked with, and that page comes back with no `nextCursor`.
+## In browser repl
+The `x` global (also `twitter`) reads X through the browser's session, from one background tab of its own, the way the X web app does. Reading marks nothing seen: notifications and messages keep their unread state. The paged reads (`getTimeline`, `search`, `getUserTweets`, `getBookmarks`) answer `nextCursor` for the next page; past the last page X repeats the cursor it was asked with, and that page comes back with no `nextCursor`.
 - Requests go out at least 1 s apart, across every session. X limits each kind of read on its own (50 searches per 15 minutes) and says on every answer how many are left: once one runs out, that read fails with `rate_limited` until the reset X named (`e.detail.resetAt`, epoch ms), and the others go on.
 - `x.getMe()`: the signed-in account: id, handle, name, bio, follower and following counts.
 - `x.getUser(handle)`: one account by handle (or profile url).

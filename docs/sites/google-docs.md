@@ -6,9 +6,9 @@ hosts: docs.google.com/document
 
 Documents are read through their export links, so the editor never opens and nothing changes in the document.
 
-## In safari repl
+## In browser repl
 
-The `googleDocs` global reads a document through its export endpoints with the signed-in Safari session; nothing is opened in the editor.
+The `googleDocs` global reads a document through its export endpoints with the signed-in browser session; nothing is opened in the editor.
 
 - `parseUrl(url)`: `{id, kind, account?}` from a Docs, Sheets, Slides, Forms, or Drive link (`kind` is document, spreadsheet, presentation, form, or file; `account` is the `/u/<n>/` index when the link has one).
 - `getDocumentText(idOrUrl, {account})`: the document as plain text.

@@ -4,13 +4,13 @@ hosts: gmail.com, mail.google.com
 ---
 # Gmail
 
-Signed out, or on an account Gmail wants to re-check, the global throws "not signed in to Gmail in Safari". Ask the user to open Gmail in Safari and sign in, then run it again.
+Signed out, or on an account Gmail wants to re-check, the global throws "not signed in to Gmail in <browser>", naming the browser in use. Ask the user to open Gmail in that browser and sign in, then run it again.
 
-## In safari repl
+## In browser repl
 
-The `gmail` global reads mail through the signed-in Safari session, in a background tab of its own. `account` is the `/u/<n>/` index (from `googleAccounts.list()`) or the account's email: 0 is aktanaazat@gmail.com, 1 aktan@99point.co, 2 aazat@ucdavis.edu. Thread ids come from search results.
+The `gmail` global reads mail through the signed-in browser session, in a background tab of its own. `account` is the `/u/<n>/` index (from `googleAccounts.list()`) or the account's email: 0 is aktanaazat@gmail.com, 1 aktan@99point.co, 2 aazat@ucdavis.edu. Thread ids come from search results.
 
-Do Gmail work in one named session, `safari repl --session <name>`: its variables last from one script to the next, and its tab for the rest of your turn, so keep the threads you read in variables and filter and slice inside the script, printing only what you need. A call waits at most 120 s for its script; split longer loops across calls.
+Do Gmail work in one named session, `browser repl --session <name>`: its variables last from one script to the next, and its tab for the rest of your turn, so keep the threads you read in variables and filter and slice inside the script, printing only what you need. A call waits at most 120 s for its script; split longer loops across calls.
 
 - `getInbox(account, {offset, limit})`: the inbox, newest first, in the shape `search` returns.
 - `search(account, query, {offset, limit})`: threads matching a Gmail search (`from:`, `subject:`, `has:attachment`, `is:unread`, `newer_than:7d`). Returns `{results, hasMore, total, nextOffset}`; `total` is null while Gmail still says "many". Each result is `{id, threadId, from, fromEmail, senders, subject, snippet, date, unread}`: `from` holds the senders' names, `fromEmail` their addresses, and `senders` both, as `[{name, email}]`.

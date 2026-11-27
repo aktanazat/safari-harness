@@ -88,7 +88,7 @@ export function noteLoad(load: { from: number; to: number; urls: (string | undef
     appendFileSync(file, `${JSON.stringify({ from: load.from, to: load.to, urls })}\n`);
     if (++appended >= MAX) rewrite(file);
   } catch (err) {
-    console.error("[safari-harness] load not noted:", err instanceof Error ? err.message : err);
+    console.error("[browser-harness] load not noted:", err instanceof Error ? err.message : err);
   }
 }
 

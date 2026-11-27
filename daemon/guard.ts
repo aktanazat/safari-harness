@@ -107,7 +107,7 @@ function meant({ taken, aliases }: Taken, key: string): [string, Param] | undefi
 
 // The parameter of tool a name given for it means, and how it is typed:
 // itself, itself written another way, or the name an alias stands for.
-// The CLI reads its flags so (cli/safari.ts).
+// The CLI reads its flags so (cli/browser.ts).
 export function paramFor(tools: Record<string, Tool>, tool: string, key: string): [string, Param] | undefined {
   return meant(takenBy(tools, tool), key);
 }

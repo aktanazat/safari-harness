@@ -47,7 +47,7 @@ function busyError(busy: SearchBusy[]): HarnessError {
   const why = stalled === undefined
     ? `Google and Bing each load one results page every ${SEARCH_GAP_MS / 1000} s for every agent on this Mac, and their lines are full until ${clock(resetAt)}`
     : `Safari has loaded no results page since ${clock(stalled)} (it is overloaded or stuck)`;
-  return new HarnessError("rate_limited", `web search is busy: ${why}. Search again in ${s} s; meanwhile read addresses you already know with read, or search inside a site with its own search page (safari guide reference research).`, { detail: { host: "web search", resetAt } });
+  return new HarnessError("rate_limited", `web search is busy: ${why}. Search again in ${s} s; meanwhile read addresses you already know with read, or search inside a site with its own search page (browser guide reference research).`, { detail: { host: "web search", resetAt } });
 }
 
 type Stored = { engine: string; results: SearchResult[]; at: number };

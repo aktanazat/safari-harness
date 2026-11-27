@@ -109,7 +109,7 @@ test("a caller with no agent behind it gets every tab, secrets in addresses stil
 test("type answers how much it typed and whether the field kept it, never the text", async () => {
   expect(await as("type", { tab: mine.id, ref: "1", text: "hunter2" })).toEqual({ ok: true, kept: true, typed: "7 chars" });
   // Only the caller fills a code in; over the port it would be typed as is.
-  await expect(as("type", { tab: mine.id, ref: "1", text: "{{code}}" })).rejects.toThrow("safari CLI or MCP");
+  await expect(as("type", { tab: mine.id, ref: "1", text: "{{code}}" })).rejects.toThrow("browser CLI or MCP");
   expect(typed).toEqual([["1", "hunter2", { append: false, secret: false }]]);
 });
 

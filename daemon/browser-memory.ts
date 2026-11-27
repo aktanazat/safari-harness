@@ -227,7 +227,7 @@ export class BrowserMemory {
   constructor(options: BrowserMemoryOptions = {}) {
     this.now = options.now ?? Date.now;
     this.summarize = options.summarize ?? ompSummary;
-    const directory = resolve(options.directory ?? join(homedir(), ".local/share/safari-harness/browser-memory"));
+    const directory = resolve(options.directory ?? join(homedir(), ".local/share/browser-harness/browser-memory"));
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     const folder = lstatSync(directory);
     if (!folder.isDirectory() || folder.isSymbolicLink()) throw new Error("browser memory needs a private regular directory");

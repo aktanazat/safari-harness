@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// safari eval hands the daemon the code and where to save its answer. The
+// browser eval hands the daemon the code and where to save its answer. The
 // daemon here records what each call asked for.
 const calls: { tool: string; args: Record<string, unknown> }[] = [];
 const server = Bun.serve({
@@ -19,8 +19,8 @@ afterAll(() => server.stop(true));
 const home = mkdtempSync(join(tmpdir(), "eval-cli-"));
 
 async function safari(argv: string[], stdin?: string) {
-  const p = Bun.spawn([process.execPath, join(import.meta.dir, "safari.ts"), ...argv], {
-    env: { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: `http://127.0.0.1:${server.port}` },
+  const p = Bun.spawn([process.execPath, join(import.meta.dir, "browser.ts"), ...argv], {
+    env: { ...process.env, HOME: home, BROWSER_HARNESS_HTTP: `http://127.0.0.1:${server.port}` },
     stdin: stdin === undefined ? "ignore" : new Blob([stdin]),
     stdout: "pipe",
     stderr: "pipe",

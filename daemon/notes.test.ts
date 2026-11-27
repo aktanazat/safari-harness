@@ -12,16 +12,16 @@ import { callTool } from "./tools.ts";
 
 // Site notes keep what agents learn about a site past the session that
 // learned it (notes.ts). Each test gets its own notes directory.
-const before = process.env.SAFARI_HARNESS_NOTES;
+const before = process.env.BROWSER_HARNESS_NOTES;
 let dir = "";
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "site-notes-"));
-  process.env.SAFARI_HARNESS_NOTES = dir;
+  process.env.BROWSER_HARNESS_NOTES = dir;
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 afterAll(() => {
-  if (before === undefined) delete process.env.SAFARI_HARNESS_NOTES;
-  else process.env.SAFARI_HARNESS_NOTES = before;
+  if (before === undefined) delete process.env.BROWSER_HARNESS_NOTES;
+  else process.env.BROWSER_HARNESS_NOTES = before;
 });
 
 const learn = (args: Record<string, unknown>) => runAs(process.pid, () => callTool("learn", args)) as Promise<string>;
@@ -108,12 +108,12 @@ test("an agent's first open of a site carries its notes, its later calls there d
   expect((await second("snapshot", { tab: tab.id })).notes).toBe("site notes for cvs.com: (1) Insurance card: Pharmacy > Insurance > Add card");
 });
 
-// On 10-01 and 10-02 agents ran safari guide before every site, and 39 of
+// On 10-01 and 10-02 agents ran browser guide before every site, and 39 of
 // 77 lookups found none; the first result on a site now names its guide.
 test("an agent's first result on a host with a guide names that guide, and its later ones there do not", async () => {
   const call = agent();
   const tab = await call("open", { url: "https://www.cvs.com/pharmacy" });
-  expect(tab).toHaveProperty("guide", "safari guide cvs");
+  expect(tab).toHaveProperty("guide", "browser guide cvs");
   expect(await call("snapshot", { tab: tab.id })).not.toHaveProperty("guide");
 });
 

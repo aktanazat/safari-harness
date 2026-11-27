@@ -33,7 +33,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { bridge, TimedOut, type RequestOptions } from "./bridge.ts";
-import { LADYBIRD, lastRaised } from "./front.ts";
+import { BROWSER_NAME, LADYBIRD, lastRaised } from "./front.ts";
 import { groupsOff, keeperRunning, readQueue } from "./groups.ts";
 import { note } from "./journal.ts";
 import { alive, currentOwner, currentTask, inTurn, matchesTask, runAs, taskFamily, watchOwner } from "./owner.ts";
@@ -81,7 +81,7 @@ const IDLE_MS = 2 * 60_000;
 // makes it a group (state).
 const GROUP_AT = 3;
 // Its live page (mission.ts), which the daemon serves on this port.
-const PAGE = `http://127.0.0.1:${Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334)}/space`;
+const PAGE = `http://127.0.0.1:${Number(process.env.BROWSER_HARNESS_HTTP_PORT ?? 37334)}/space`;
 
 // Window sizes no other window is likely to have, one per assignment, from
 // a random start so a restarted daemon does not reuse its last run's. The
@@ -361,7 +361,7 @@ function save() {
     renameSync(pending, spacesFile);
     for (const s of [...spaces.values(), ...closing.values(), ...ended]) if (s.used !== undefined) written.set(s, s.used);
   } catch (e) {
-    console.error("[safari-harness] window list not written:", e instanceof Error ? e.message : e);
+    console.error("[browser-harness] window list not written:", e instanceof Error ? e.message : e);
   }
 }
 
@@ -928,7 +928,7 @@ export function unshow(owner: number | undefined, task: string | null | undefine
 }
 
 // When each window's task was first seen ended, for the journal's note of
-// one that holds nothing but its page five minutes on (safari status
+// one that holds nothing but its page five minutes on (browser status
 // --journal): on 10-23 ended agents' windows stayed open through restarts,
 // and nothing said so. Each window is looked at once, at five minutes.
 const STILL_OPEN_MS = 5 * 60_000;
@@ -1057,7 +1057,7 @@ export async function managedWindows(listed?: TabInfo[]): Promise<ManagedWindow[
 }
 
 export async function closeManagedWindow(id: string, why = "from the windows page"): Promise<{ ok: boolean; closed: number; remaining: number }> {
-  if (!bridge.connected) throw new Error("Safari is not connected.");
+  if (!bridge.connected) throw new Error(`${BROWSER_NAME} is not connected.`);
   const s = [...spaces.values(), ...closing.values(), ...ended].find(space => space.id === id);
   if (!s) throw new Error("This window is no longer tracked.");
   const before = await located(s);

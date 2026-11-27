@@ -358,7 +358,7 @@ benchRows("content.js in WebKit", [
     page: "popup.html",
     untouched: true,
     steps: [
-      { pageEval: "window[Symbol.for('safari-harness.page')].net.on", answer: { value: false } },
+      { pageEval: "window[Symbol.for('browser-harness.page')].net.on", answer: { value: false } },
       // window.open, then a click on a link to a new tab
       { pageEval: "document.querySelector('button').click(), true" },
       { pageEval: "document.getElementById('newtab').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })), true" },

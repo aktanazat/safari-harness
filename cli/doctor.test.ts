@@ -5,7 +5,7 @@ import { doctor, type Check, type Probes } from "./doctor.ts";
 // pairing idle as it is between tasks, and Apple's own lane left off.
 function healthy(): Probes {
   return {
-    safariRunning: async () => true,
+    browserRunning: async () => true,
     health: async () => ({ pid: 4242, extension: { connected: true, stuck: false, timeouts: {}, connectedAt: Date.now() } }),
     launchd: async () => true,
     extensionKeys: async () => ({ deployed: "9ed628c258f00030", installed: "9ed628c258f00030" }),
@@ -73,15 +73,15 @@ test("with the daemon down, the fix fits why, and nothing that needs the daemon 
     passwords: async () => { asked.push("passwords"); return { unlocked: true }; },
   };
   const notInstalled = await examine({ ...down, launchd: async () => false }, true);
-  expect(notInstalled.daemon).toMatchObject({ status: "fail", fix: "safari daemon install" });
-  expect(notInstalled.launchd).toMatchObject({ status: "fail", fix: "safari daemon install" });
+  expect(notInstalled.daemon).toMatchObject({ status: "fail", fix: "browser daemon install" });
+  expect(notInstalled.launchd).toMatchObject({ status: "fail", fix: "browser daemon install" });
   expect([notInstalled.extension.status, notInstalled.tabs.status, notInstalled["round trip"].status, notInstalled.passwords.status]).toEqual(["skip", "skip", "skip", "skip"]);
   // launchd has the job, so installing again is not the fix: the log says why it stops
   const crashing = await examine(down, true);
   expect(crashing.daemon.status).toBe("fail");
   expect(crashing.daemon.fix).toContain("daemon.log");
   // a deploy is restarting it: nothing to install or read, only to wait (HD-13)
-  expect((await examine({ ...down, deploying: () => 40 }, true)).daemon).toMatchObject({ status: "warn", detail: "restarting for a deploy", fix: "run safari doctor again in 40 s" });
+  expect((await examine({ ...down, deploying: () => 40 }, true)).daemon).toMatchObject({ status: "warn", detail: "restarting for a deploy", fix: "run browser doctor again in 40 s" });
   expect(asked).toEqual([]);
 });
 
@@ -89,13 +89,13 @@ test("with Safari not running, no tab is listed or opened, since asking for one 
   const asked: string[] = [];
   const checks = await examine({
     ...healthy(),
-    safariRunning: async () => false,
+    browserRunning: async () => false,
     health: async () => ({ pid: 4242, extension: { connected: false, stuck: false, timeouts: {} } }),
     tabs: async () => { asked.push("tabs"); return 0; },
     roundTrip: async () => { asked.push("roundTrip"); return 1; },
   }, true);
   expect(asked).toEqual([]);
-  expect(checks.safari.status).toBe("warn");
+  expect(checks.browser.status).toBe("warn");
   expect([checks.extension.status, checks.tabs.status, checks["round trip"].status]).toEqual(["skip", "skip", "skip"]);
 });
 
@@ -149,7 +149,7 @@ test("doctor answers within 3 s: a probe still running then is reported as not a
   expect(waited).toBeLessThanOrEqual(3100);
   expect(checks.tabs).toMatchObject({ status: "fail", detail: "no answer within 3 s", fix: expect.stringContaining("reloads it by itself") });
   expect(checks.swap).toMatchObject({ status: "skip", detail: "host-headroom failed: no answer within 3 s" });
-  expect(checks["round trip"]).toMatchObject({ status: "skip", detail: expect.stringContaining("safari doctor --deep") });
+  expect(checks["round trip"]).toMatchObject({ status: "skip", detail: expect.stringContaining("browser doctor --deep") });
   expect(asked).toEqual(["tabs"]);
   jest.useRealTimers();
   expect((await examine(healthy(), true))["round trip"].status).toBe("ok");
@@ -164,7 +164,7 @@ test("an extension that is connected but stuck fails with the reload as the fix,
     health: async () => ({ pid: 4242, extension: { connected: true, stuck: true, timeouts: { "tabs.list": 3 }, connectedAt: Date.now() } }),
     tabs: async () => { asked.push("tabs"); return 12; },
   });
-  expect(checks.extension).toMatchObject({ status: "fail", detail: expect.stringMatching(/stuck.*tabs\.list 3/), fix: expect.stringMatching(/^make the call again: a safari call that meets a stuck extension reloads it by itself/) });
+  expect(checks.extension).toMatchObject({ status: "fail", detail: expect.stringMatching(/stuck.*tabs\.list 3/), fix: expect.stringMatching(/^make the call again: a browser call that meets a stuck extension reloads it by itself/) });
   expect(checks.tabs).toMatchObject({ status: "skip", detail: "the extension is stuck" });
   expect(asked).toEqual([]);
 });

@@ -85,7 +85,7 @@ try {
   const http = reserve(), ws = reserve();
   const httpPort = http.port!, wsPort = ws.port!;
   base = `http://127.0.0.1:${httpPort}`;
-  const state = join(home, ".local/share/safari-harness");
+  const state = join(home, ".local/share/browser-harness");
   mkdirSync(state, { recursive: true, mode: 0o700 });
   const historyFile = join(state, `history-${httpPort}.json`), pictureRoot = `${historyFile}.pictures`;
   const mission = randomUUID(), picture = randomUUID(), expiredMission = randomUUID(), expiredPicture = randomUUID();
@@ -114,7 +114,7 @@ try {
   http.stop(true); ws.stop(true);
   const owner = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { env: { ...process.env, HOME: home, TMPDIR: scratch }, stdout: "ignore", stderr: "ignore" });
   children.push(owner);
-  const daemon = Bun.spawn([process.execPath, join(candidate, "daemon/main.ts")], { cwd: candidate, env: { ...process.env, HOME: home, TMPDIR: scratch, SAFARI_HARNESS_WS: String(wsPort), SAFARI_HARNESS_HTTP_PORT: String(httpPort) }, stdout: "pipe", stderr: "pipe" });
+  const daemon = Bun.spawn([process.execPath, join(candidate, "daemon/main.ts")], { cwd: candidate, env: { ...process.env, HOME: home, TMPDIR: scratch, BROWSER_HARNESS_WS: String(wsPort), BROWSER_HARNESS_HTTP_PORT: String(httpPort) }, stdout: "pipe", stderr: "pipe" });
   children.push(daemon);
   const collect = async (stream: ReadableStream<Uint8Array>) => {
     const reader = stream.getReader();

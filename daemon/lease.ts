@@ -4,13 +4,13 @@
 // daemon found the ssh session, which ended with the command, and closed
 // the tab it had opened. From 11-10 to 11-16 that happened 27 times in 16
 // sessions ("closed once its agent exited"), and agents built three runner
-// queues to keep one process alive (LocalMining, 11-17). SAFARI_OWNER=<key>
+// queues to keep one process alive (LocalMining, 11-17). BROWSER_OWNER=<key>
 // (CLI --owner) names a lease instead: a small process of its own, started
 // by the first call that names the key and found again by the next through
 // a unix socket only this user can open. Calls with the key work for it, as
 // a named REPL session's do (ownCalls in rpc.ts), so the daemon's tab limit,
 // idle close, handoffs and kept tabs work as for any agent. The lease ends
-// after IDLE_MS without a call, or on request (safari owner --end), never
+// after IDLE_MS without a call, or on request (browser owner --end), never
 // as a calling process exits; its tabs close then as an exited agent's do.
 //
 // A key is a name, not a secret: any process of this user that names it
@@ -29,7 +29,7 @@ import { HarnessError } from "./failures.ts";
 import { remoteLease } from "./host.ts";
 import { alive } from "./owner.ts";
 
-const LEASE_DIR = join(homedir(), ".local/share/safari-harness/owners");
+const LEASE_DIR = join(homedir(), ".local/share/browser-harness/owners");
 // As long as a named REPL session lasts unused (repl-host.ts).
 const IDLE_MS = 30 * 60_000;
 // A caller asks again after this long, which keeps a lease a long-lived
@@ -39,9 +39,9 @@ const ASK_AGAIN_MS = 60_000;
 // The key this process's calls name, if any. A unix socket path must fit
 // in 104 bytes, so keys stay short and plain, as REPL session names do.
 export function ownerKey(): string | undefined {
-  const key = process.env.SAFARI_OWNER;
+  const key = process.env.BROWSER_OWNER;
   if (!key) return undefined;
-  if (!/^[A-Za-z0-9_-]{1,40}$/.test(key)) throw new HarnessError("invalid_argument", `SAFARI_OWNER (--owner) uses letters, digits, - and _ (at most 40): ${JSON.stringify(key)}`);
+  if (!/^[A-Za-z0-9_-]{1,40}$/.test(key)) throw new HarnessError("invalid_argument", `BROWSER_OWNER (--owner) uses letters, digits, - and _ (at most 40): ${JSON.stringify(key)}`);
   return key;
 }
 
@@ -69,7 +69,7 @@ async function start(key: string): Promise<number> {
     if (child.exitCode !== null && child.exitCode !== 0) break;
     await Bun.sleep(50);
   }
-  throw new HarnessError("unavailable", `the lease for SAFARI_OWNER=${key} did not start`, { effect: "none", retryable: true });
+  throw new HarnessError("unavailable", `the lease for BROWSER_OWNER=${key} did not start`, { effect: "none", retryable: true });
 }
 
 const held = new Map<string, { pid: number; at: number }>();
@@ -80,10 +80,10 @@ const held = new Map<string, { pid: number; at: number }>();
 // not sent as a dead pid until the next ask.
 export async function holdLease(key: string): Promise<number> {
   const known = held.get(key);
-  const remote = process.env.SAFARI_HARNESS_REMOTE;
+  const remote = process.env.BROWSER_HARNESS_REMOTE;
   if (known && Date.now() - known.at < ASK_AGAIN_MS && (remote || alive(known.pid))) return known.pid;
   const pid = remote ? await remoteLease(remote, key) : ((await ask(key, "/hold")) ?? (await start(key)));
-  if (pid === undefined) throw new HarnessError("unavailable", `the lease for SAFARI_OWNER=${key} did not start on ${remote}`, { effect: "none", retryable: true });
+  if (pid === undefined) throw new HarnessError("unavailable", `the lease for BROWSER_OWNER=${key} did not start on ${remote}`, { effect: "none", retryable: true });
   held.set(key, { pid, at: Date.now() });
   return pid;
 }
@@ -92,7 +92,7 @@ export async function holdLease(key: string): Promise<number> {
 // pid it had, or undefined when none ran.
 export async function endLease(key: string): Promise<number | undefined> {
   held.delete(key);
-  const remote = process.env.SAFARI_HARNESS_REMOTE;
+  const remote = process.env.BROWSER_HARNESS_REMOTE;
   return remote ? remoteLease(remote, key, true) : ask(key, "/end");
 }
 

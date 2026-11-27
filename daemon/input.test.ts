@@ -228,19 +228,19 @@ function mac(page: Page = {}): Mac {
 
 // Sites marked for real input live in a notes directory of each test's own
 // (notes.ts).
-const notesBefore = process.env.SAFARI_HARNESS_NOTES;
+const notesBefore = process.env.BROWSER_HARNESS_NOTES;
 let notes = "";
 beforeEach(() => {
   notes = mkdtempSync(join(tmpdir(), "real-input-"));
-  process.env.SAFARI_HARNESS_NOTES = notes;
+  process.env.BROWSER_HARNESS_NOTES = notes;
 });
 afterEach(() => {
   mock.restore();
   rmSync(notes, { recursive: true, force: true });
 });
 afterAll(() => {
-  if (notesBefore === undefined) delete process.env.SAFARI_HARNESS_NOTES;
-  else process.env.SAFARI_HARNESS_NOTES = notesBefore;
+  if (notesBefore === undefined) delete process.env.BROWSER_HARNESS_NOTES;
+  else process.env.BROWSER_HARNESS_NOTES = notesBefore;
 });
 
 // A scripted click's receipt from a page that showed nothing.

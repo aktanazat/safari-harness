@@ -44,7 +44,7 @@ export function covering(guides: Guide[], host: string, path: string): Guide | u
 }
 
 // The name of the bundled guide for the page at url, which the first
-// result on its host carries: 39 of 77 `safari guide <site>` lookups on
+// result on its host carries: 39 of 77 `browser guide <site>` lookups on
 // 10-01 and 10-02 found none, run before every site.
 export function guideFor(url: string): string | undefined {
   if (!URL.canParse(url)) return undefined;

@@ -20,8 +20,8 @@ afterAll(() => server.stop(true));
 const home = mkdtempSync(join(tmpdir(), "flags-cli-"));
 
 async function safari(argv: string[], stdin?: string) {
-  const p = Bun.spawn([process.execPath, join(import.meta.dir, "safari.ts"), ...argv], {
-    env: { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: `http://127.0.0.1:${server.port}` },
+  const p = Bun.spawn([process.execPath, join(import.meta.dir, "browser.ts"), ...argv], {
+    env: { ...process.env, HOME: home, BROWSER_HARNESS_HTTP: `http://127.0.0.1:${server.port}` },
     stdin: stdin === undefined ? "ignore" : new Blob([stdin]),
     stdout: "pipe",
     stderr: "pipe",
@@ -30,7 +30,7 @@ async function safari(argv: string[], stdin?: string) {
   return { err: err.trim(), code };
 }
 
-// On 10-04 `safari eval --page true "const ..."` sent "true const ..." as
+// On 10-04 `browser eval --page true "const ..."` sent "true const ..." as
 // the code, which failed at its second word.
 test("a true or false after a flag that takes no value sets that flag and is not part of the command's words", async () => {
   calls.length = 0;
@@ -57,7 +57,7 @@ test("--snapshot reads the page after an action whole, and --snapshot=<words> on
   ]);
 });
 
-// On 10-07 and 10-08 `safari snapshot --interactive` failed twice: the
+// On 10-07 and 10-08 `browser snapshot --interactive` failed twice: the
 // snapshot took no such flag, though the repl's snapshot does.
 test("--interactive asks the snapshot for only the lines with refs", async () => {
   calls.length = 0;
@@ -65,7 +65,7 @@ test("--interactive asks the snapshot for only the lines with refs", async () =>
   expect(calls).toEqual([{ tool: "snapshot", args: { tab: 7, interactive: true } }]);
 });
 
-// On 09-29 `safari learn geico.com --note "..."` saved nothing and said
+// On 09-29 `browser learn geico.com --note "..."` saved nothing and said
 // nothing: the CLI dropped every flag its tool did not name.
 test("an unsupported flag is rejected before any call", async () => {
   calls.length = 0;
@@ -75,11 +75,11 @@ test("an unsupported flag is rejected before any call", async () => {
   expect(calls).toEqual([]);
 });
 
-// From 11-11 to 11-12 `safari repl --close-all >/dev/null 2>&1` ran 7 times,
+// From 11-11 to 11-12 `browser repl --close-all >/dev/null 2>&1` ran 7 times,
 // and repl dropped the flag it did not know.
 test("repl refuses a flag it does not know, naming the near one and its flags", async () => {
   calls.length = 0;
-  expect(await safari(["repl", "--close-all"])).toEqual({ err: "error: repl takes no --close-all; did you mean --close? (flags: --session --list --close --file --host --json --quiet; safari repl --list lists the sessions running, safari repl --close <name> ends one)", code: 2 });
+  expect(await safari(["repl", "--close-all"])).toEqual({ err: "error: repl takes no --close-all; did you mean --close? (flags: --session --list --close --file --host --json --quiet; browser repl --list lists the sessions running, browser repl --close <name> ends one)", code: 2 });
   expect(calls).toEqual([]);
 });
 
@@ -93,7 +93,7 @@ test("a flag a model's call may use for a parameter is taken as that parameter, 
 });
 
 // On 09-30 an agent passed each call's JSON as the command's word:
-// `safari dialog --tab front '{"do":"read"}'` sent the whole object as do,
+// `browser dialog --tab front '{"do":"read"}'` sent the whole object as do,
 // and open, snapshot, and goto failed with errors that hid the cause.
 test("a JSON object supplied in place of command words is rejected before any call", async () => {
   calls.length = 0;
@@ -124,7 +124,7 @@ test.each([
   expect(calls.filter((c) => c.tool === "info")).toEqual([{ tool: "info", args: { tab: 7 } }]);
 });
 
-// On 10-29 `safari pdf --do read --url` failed "tab is required": the
+// On 10-29 `browser pdf --do read --url` failed "tab is required": the
 // command had sent do save, which prints a tab's page.
 test("pdf read with a url, as a flag or a word, asks for that address's text and no tab", async () => {
   calls.length = 0;
@@ -135,7 +135,7 @@ test("pdf read with a url, as a flag or a word, asks for that address's text and
 });
 
 // From 10-05 to 11-11 open's --new took the word after it as its value:
-// `safari open <url> --bg --new --group trip` opened a tab in no window for
+// `browser open <url> --bg --new --group trip` opened a tab in no window for
 // trip. Other tools' flags that take no value did the same, however they
 // were written: `close --confirm --window 3` closed no window.
 test("a tool's flag that takes no value leaves the flag or word after it to the command", async () => {

@@ -10,7 +10,7 @@ const DEFAULTS: Record<FailureCode, { effect: FailureEffect; retryable: boolean;
   blocked: { effect: "none", retryable: false, next: "report the block or use an authorized source; do not bypass access controls." },
   not_content: { effect: "none", retryable: false, next: "inspect the page state and use a source you are allowed to read." },
   timeout: { effect: "possibly_effected", retryable: true, next: "check whether the page or service is ready before trying again." },
-  unavailable: { effect: "possibly_effected", retryable: true, next: "check the Safari connection and service status before trying again." },
+  unavailable: { effect: "possibly_effected", retryable: true, next: "check the browser connection and service status before trying again." },
   aborted: { effect: "possibly_effected", retryable: false, next: "leave the cancelled operation stopped until a new request is made." },
   invalid_argument: { effect: "none", retryable: true, next: "correct the arguments before making a new call." },
   command_failed: { effect: "possibly_effected", retryable: false, next: "inspect the error and current state before choosing another action." },

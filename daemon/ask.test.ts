@@ -15,7 +15,7 @@ let sent: string[] = [];
 
 const ask = (a: Record<string, unknown>) => ASK_TOOLS.ask.run(a);
 
-const away = process.env.SAFARI_HARNESS_AWAY;
+const away = process.env.BROWSER_HARNESS_AWAY;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "safari-ask-"));
   sent = [];
@@ -27,18 +27,18 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 afterAll(() => {
-  if (away === undefined) delete process.env.SAFARI_HARNESS_AWAY;
-  else process.env.SAFARI_HARNESS_AWAY = away;
+  if (away === undefined) delete process.env.BROWSER_HARNESS_AWAY;
+  else process.env.BROWSER_HARNESS_AWAY = away;
 });
 
 test("at the Mac, ask sends nothing and tells the agent to ask in its own chat", async () => {
-  process.env.SAFARI_HARNESS_AWAY = "0";
+  process.env.BROWSER_HARNESS_AWAY = "0";
   expect(await ask({ question: "which color?" })).toMatchObject({ atMac: true });
   expect(sent).toEqual([]);
 });
 
 test("away, the question goes to his phone once, and the call returns without waiting on a reply", async () => {
-  process.env.SAFARI_HARNESS_AWAY = "1";
+  process.env.BROWSER_HARNESS_AWAY = "1";
   expect(await ask({ question: "which color?" })).toMatchObject({ sent: true });
   expect(sent).toEqual([expect.stringContaining("which color?")]);
 });

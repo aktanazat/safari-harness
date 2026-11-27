@@ -112,7 +112,7 @@ func find(_ el: AXUIElement, depth: Int, _ match: (AXUIElement) -> Bool) -> AXUI
 }
 
 // The browser the harness drives: Safari, or Ladybird Harness (daemon/front.ts).
-let SAFARI = ProcessInfo.processInfo.environment["SAFARI_HARNESS_BUNDLE"] ?? "com.apple.Safari"
+let SAFARI = ProcessInfo.processInfo.environment["BROWSER_HARNESS_BUNDLE"] ?? "com.apple.Safari"
 var safariApp: (pid: pid_t, el: AXUIElement)?
 
 func safari() throws -> (pid: pid_t, el: AXUIElement) {
@@ -280,7 +280,7 @@ func button(_ s: AXUIElement, _ title: String) -> AXUIElement? { findAll(s, dept
 
 // ---------- one helper at a time ----------
 
-let LOCK_PATH = NSHomeDirectory() + "/.local/share/safari-harness/groups.lock"
+let LOCK_PATH = NSHomeDirectory() + "/.local/share/browser-harness/groups.lock"
 var lockFd: Int32 = -1
 
 func lock(_ ms: Int) throws {

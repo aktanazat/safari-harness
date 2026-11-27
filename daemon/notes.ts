@@ -1,13 +1,13 @@
 // Site notes: short facts agents learn about a site (a flow's steps, a
 // control that loads late, which account owns which workspace), kept past
 // the session that learned them, which otherwise loses them at compaction.
-// One file per host in ~/.local/share/safari-harness/notes
-// (SAFARI_HARNESS_NOTES puts them elsewhere, for a test), one fact a line,
+// One file per host in ~/.local/share/browser-harness/notes
+// (BROWSER_HARNESS_NOTES puts them elsewhere, for a test), one fact a line,
 // oldest first: "- <date> [<agent>] <fact>". Beside it, the site's readers:
 // scripts an agent worked out to read the site's data (a page variable, an
 // API the page calls), which the next agent runs by name with eval {reader}
 // instead of working them out again. The daemon writes both (the learn
-// tool) and hands them out (firstNotes, readerFor); `safari guide` reads
+// tool) and hands them out (firstNotes, readerFor); `browser guide` reads
 // them.
 
 import { createHash, randomUUID } from "node:crypto";
@@ -35,7 +35,7 @@ type Note = { date: string; agent: string; fact: string };
 const LINE = /^- (\d{4}-\d{2}-\d{2}) \[([^\]]*)\] (.+)$/;
 
 function notesDir(): string {
-  return process.env.SAFARI_HARNESS_NOTES ?? join(homedir(), ".local/share/safari-harness/notes");
+  return process.env.BROWSER_HARNESS_NOTES ?? join(homedir(), ".local/share/browser-harness/notes");
 }
 
 const fileOf = (host: string) => join(notesDir(), `${host}.md`);
@@ -80,7 +80,7 @@ function notesText(host: string, notes: Note[]): string | null {
 }
 
 // Hosts with notes, readers, a mark for real input, or a learned bot check,
-// for `safari guide`.
+// for `browser guide`.
 export function notedHosts(): string[] {
   const hosts = notesFiles().flatMap((f) => {
     const kind = [READERS, REAL_INPUT, CHECKS, ".md"].find((k) => f.endsWith(k));
@@ -98,7 +98,7 @@ function notesFiles(): string[] {
   }
 }
 
-// A host's notes as `safari guide` prints them, numbered as forget takes
+// A host's notes as `browser guide` prints them, numbered as forget takes
 // them, then its readers, its mark for real input, and its learned bot
 // check; null when it has none.
 export function notesSection(host: string): string | null {
@@ -259,7 +259,7 @@ function unmarkReal(host: string, agent: string, source?: string): string {
     agent,
     source,
     summary: "removed the learned real-input mark",
-    message: guide ? `${host} stays marked for real input: its guide marks it (safari guide ${guide.slug})` : `unmarked ${host}: click and type there go as scripted input again`,
+    message: guide ? `${host} stays marked for real input: its guide marks it (browser guide ${guide.slug})` : `unmarked ${host}: click and type there go as scripted input again`,
   });
 }
 
@@ -767,7 +767,7 @@ export function firstNotes(url: unknown, again = false): { notes?: string; first
     try {
       lines.push(...linesFor(site, notes, check));
     } catch (e) {
-      console.error(`[safari-harness] site notes for ${site} not read:`, e instanceof Error ? e.message : e);
+      console.error(`[browser-harness] site notes for ${site} not read:`, e instanceof Error ? e.message : e);
     }
   }
   return { ...(lines.length ? { notes: lines.join("\n") } : {}), first };

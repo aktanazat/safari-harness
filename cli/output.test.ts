@@ -27,9 +27,9 @@ const home = realpathSync(mkdtempSync(join(tmpdir(), "output-cli-")));
 const daemon = `http://127.0.0.1:${server.port}`;
 
 async function safari(argv: string[], at = daemon, more: Record<string, string> = {}) {
-  const p = Bun.spawn([process.execPath, join(import.meta.dir, "safari.ts"), ...argv], {
+  const p = Bun.spawn([process.execPath, join(import.meta.dir, "browser.ts"), ...argv], {
     cwd: home,
-    env: { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: at, ...more },
+    env: { ...process.env, HOME: home, BROWSER_HARNESS_HTTP: at, ...more },
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
@@ -68,9 +68,9 @@ test("help window prints the window command alone, as window --help does, and sh
   const help = await safari(["help", "window"]);
   expect(help.code).toBe(0);
   expect(await safari(["window", "--help"])).toEqual(help);
-  const usage = help.out.split("\n").filter((l) => l.startsWith("  safari "));
+  const usage = help.out.split("\n").filter((l) => l.startsWith("  browser "));
   expect(usage.length).toBeGreaterThan(0);
-  expect(usage.filter((l) => !l.startsWith("  safari window "))).toEqual([]);
+  expect(usage.filter((l) => !l.startsWith("  browser window "))).toEqual([]);
   expect(usage.some((l) => l.includes("--size"))).toBe(true);
   const shot = await safari(["help", "shot"]);
   expect(shot.out).toContain("--full");
@@ -200,7 +200,7 @@ test("--save accepts both supported relative path forms", async () => {
   expect(calls.map((c) => c.args.save)).toEqual([join(home, "rows.json"), join(home, "out", "page.txt")]);
 }, 30_000);
 
-// safari guide reference two lanes searched for "reference" alone (S99PartC).
+// browser guide reference two lanes searched for "reference" alone (S99PartC).
 test("guide takes every word after it", async () => {
   const [lanes, phrase, broad] = await Promise.all([
     safari(["guide", "reference", "two", "lanes"]),
@@ -219,7 +219,7 @@ test("guide takes every word after it", async () => {
 test("status, doctor, and ask say the phone alerts are off while tell-aktan is missing, and how the last one went once it runs", async () => {
   health = () => Response.json({ pid: 4242, extension: null });
   const tell = join(home, ".local/bin/tell-aktan");
-  const away = { SAFARI_HARNESS_AWAY: "1" };
+  const away = { BROWSER_HARNESS_AWAY: "1" };
   const alertLine = async () => (await safari(["status"])).out.split("\n")[2];
   const alertCheck = async () => JSON.parse((await safari(["doctor", "--json"])).out).checks.find((c: { name: string }) => c.name === "phone alerts")?.status;
   const asked = async () => JSON.parse((await safari(["ask", "which color?", "--json"], daemon, away)).out);
@@ -250,13 +250,13 @@ test("while a deploy restarts the daemon, status says so and when to try again, 
   const stopped = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("") });
   const gone = `http://127.0.0.1:${stopped.port}`;
   await stopped.stop(true);
-  const marker = join(home, ".local/share/safari-harness/deploying");
+  const marker = join(home, ".local/share/browser-harness/deploying");
   mkdirSync(join(marker, ".."), { recursive: true });
   try {
     writeFileSync(marker, `${Math.floor(Date.now() / 1000) + 40}\n`);
-    expect(await safari(["status"], gone)).toMatchObject({ out: "", err: expect.stringMatching(/^error: safari is restarting for a deploy; try again in (39|40|41) s$/), code: 1 });
+    expect(await safari(["status"], gone)).toMatchObject({ out: "", err: expect.stringMatching(/^error: the browser harness is restarting for a deploy; try again in (39|40|41) s$/), code: 1 });
     writeFileSync(marker, `${Math.floor(Date.now() / 1000) - 5}\n`);
-    expect((await safari(["status"], gone)).err).toContain("start it with: safari daemon install");
+    expect((await safari(["status"], gone)).err).toContain("start it with: browser daemon install");
   } finally {
     rmSync(join(home, ".local"), { recursive: true, force: true });
   }

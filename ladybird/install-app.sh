@@ -41,10 +41,10 @@ fi
 helper=""
 if (( ${#bridge_opt} )); then
   port=${bridge_opt[2]}
-  state=${state_opt[2]:-$HOME/.local/share/safari-harness/ladybird}
-  label="dev.aktan.safari-harness.ladybird-bridge-$port"
+  state=${state_opt[2]:-$HOME/.local/share/browser-harness/ladybird}
+  label="dev.aktan.browser-harness.ladybird-bridge-$port"
   job="$HOME/Library/LaunchAgents/$label.plist"
-  helper="$HOME/.local/share/safari-harness/ladybird-attach-$port.sh"
+  helper="$HOME/.local/share/browser-harness/ladybird-attach-$port.sh"
   bun=${commands[bun]:-$HOME/.bun/bin/bun}
   [[ -x $bun ]] || { echo "no bun at $bun: install it, or run this from a shell whose PATH has it" >&2; exit 1; }
   mkdir -p "$state" "${helper:h}" "${job:h}"

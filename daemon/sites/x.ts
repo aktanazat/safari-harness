@@ -1,4 +1,4 @@
-// X (x.com) for safari repl: the web app's own GraphQL and REST endpoints,
+// X (x.com) for browser repl: the web app's own GraphQL and REST endpoints,
 // called from the kit's background x.com tab so the owner's session goes
 // with each request. x.com's security policy refuses page-world eval, so
 // the calls run in the extension's content-script world: it reads the csrf
@@ -57,7 +57,7 @@ const findOp = async (name, hint) => {
     const fetched = await Promise.all(ids.map((id) => text(chunkUrl(id)).catch(() => { refused.push(names[id]); return ""; })));
     for (const t of fetched) { op = opIn(t, name); if (op) break; }
   }
-  if (!op && refused.length) throw new Error("x.com's " + name + " operation was not in the bundles Safari loaded; it refused " + refused.join(", "));
+  if (!op && refused.length) throw new Error("x.com's " + name + " operation was not in the bundles the browser loaded; it refused " + refused.join(", "));
   if (!op) return null;
   const cfg = featureConfig();
   return { queryId: op.queryId, features: Object.fromEntries(op.switches.map((f) => [f, f in cfg && cfg[f].value === true])), toggles: Object.fromEntries(op.toggles.map((f) => [f, false])) };

@@ -64,7 +64,7 @@ const NEW_WITH = /^New Tab Group with (This Tab|\d+ Tabs?)$/;
 
 export const HELPER = join(import.meta.dir, "..", "scripts", "spaces");
 
-const STATE = join(homedir(), ".local", "share", "safari-harness");
+const STATE = join(homedir(), ".local", "share", "browser-harness");
 // The group queue, the off flag, the running keeper's pid, and its log;
 // tests point them elsewhere.
 export const files = {

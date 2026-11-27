@@ -27,10 +27,10 @@ const s = ObjC.castRefToObject($.CGSessionCopyCurrentDictionary());
 const locked = s.objectForKey("CGSSessionScreenIsLocked");
 JSON.stringify({ idle: $.CGEventSourceSecondsSinceLastEventType(0, 0xffffffff), locked: !locked.isNil() && locked.boolValue, console: ObjC.unwrap(s.objectForKey("kCGSSessionOnConsoleKey")) === true, asleep: $.CGDisplayIsAsleep($.CGMainDisplayID()) !== 0 })`;
 
-// SAFARI_HARNESS_AWAY=1 says away (a test: an alert says it is one), 0 says
+// BROWSER_HARNESS_AWAY=1 says away (a test: an alert says it is one), 0 says
 // at the Mac.
 export async function isAway(): Promise<boolean> {
-  const forced = process.env.SAFARI_HARNESS_AWAY;
+  const forced = process.env.BROWSER_HARNESS_AWAY;
   if (forced === "1" || forced === "0") return forced === "1";
   const { stdout } = await execFileAsync("osascript", ["-l", "JavaScript", "-e", AWAY], { timeout: 5000 });
   const s: unknown = JSON.parse(stdout);
@@ -49,7 +49,7 @@ function isSent(v: unknown): v is Sent {
 
 // A file of the harness's own state.
 export function dataFile(name: string): string {
-  return join(homedir(), ".local", "share", "safari-harness", name);
+  return join(homedir(), ".local", "share", "browser-harness", name);
 }
 
 // A file's text, or undefined when there is no such file yet.
@@ -110,7 +110,7 @@ function went(lines: Sent[]): Sent[] {
 }
 
 // Whether an alert can go now, and when the last one was tried and why it
-// failed if it did: for safari status and safari doctor.
+// failed if it did: for browser status and browser doctor.
 export type AlertHealth = { on: false; why: string } | { on: true; lastAt?: number; lastFailed?: string };
 
 export function alertHealth(): AlertHealth {
@@ -159,12 +159,12 @@ export async function alert(line: string, picture?: string, beside?: () => Promi
 // card with the window live, which the user can clear from the phone, and
 // which says when it ended. It is told beside the Telegram alert, never
 // instead of it: Akyl not running, or not answering in AKYL_MS, costs the
-// alert nothing. SAFARI_HARNESS_AKYL points at another Akyl, such as a test
+// alert nothing. BROWSER_HARNESS_AKYL points at another Akyl, such as a test
 // one.
 const AKYL_MS = 1500;
 
 export async function akyl(path: "/handoff" | "/handoff/end", body: Record<string, unknown>): Promise<void> {
-  const base = process.env.SAFARI_HARNESS_AKYL ?? "http://127.0.0.1:7745";
+  const base = process.env.BROWSER_HARNESS_AKYL ?? "http://127.0.0.1:7745";
   const r = await fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(AKYL_MS) });
   if (!r.ok) throw new Error(`Akyl answered ${r.status} to ${path}`);
 }

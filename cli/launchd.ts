@@ -1,9 +1,9 @@
 // launchd plumbing: keep the daemon always on, and run saved prompts
-// ("routines") on a schedule through headless omp, which reaches Safari
-// through the safari MCP tools. A watch is a routine with no model: each
-// run reads one value off a page and alerts the user when it changes
+// ("routines") on a schedule through headless omp, which reaches the
+// browser through the browser MCP tools. A watch is a routine with no model:
+// each run reads one value off a page and alerts the user when it changes
 // (daemon/watch.ts). A script routine runs no model either: it runs a saved
-// `safari repl` script and texts the user what it printed.
+// `browser repl` script and texts the user what it printed.
 
 import { appendFile, mkdir, open, readdir, readFile, rename, rm, unlink, writeFile, type FileHandle } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -11,7 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { DEFAULT_PORT } from "../daemon/bridge.ts";
-import { BROWSER, BROWSER_CHOICE } from "../daemon/front.ts";
+import { BROWSER_CHOICE, MODES, readChoice, type Mode } from "../daemon/front.ts";
 import { tryLock } from "../daemon/flock.ts";
 import { connectHost } from "../daemon/host.ts";
 import { heliumProfile, quitHelium } from "../daemon/passwords.ts";
@@ -23,12 +23,12 @@ import { isRunning, loadSession, runSession, type SessionRecord } from "../daemo
 const HOME = homedir();
 // The deployed release (scripts/dev-install.sh points it at the newest), so
 // jobs run what was deployed, never a checkout being edited.
-const CURRENT = join(HOME, ".local", "share", "safari-harness", "current");
+const CURRENT = join(HOME, ".local", "share", "browser-harness", "current");
 const AGENTS = join(HOME, "Library", "LaunchAgents");
-const LOGS = join(HOME, "Library", "Logs", "safari-harness");
-const ROUTINES = join(HOME, ".local", "share", "safari-harness", "routines");
-const DAEMON_LABEL = "at.aktan.safari-harness.daemon";
-const ROUTINE_PREFIX = "at.aktan.safari-harness.routine.";
+const LOGS = join(HOME, "Library", "Logs", "browser-harness");
+const ROUTINES = join(HOME, ".local", "share", "browser-harness", "routines");
+const DAEMON_LABEL = "at.aktan.browser-harness.daemon";
+const ROUTINE_PREFIX = "at.aktan.browser-harness.routine.";
 const OMP = join(HOME, ".bun", "bin", "omp");
 const PATH = [join(HOME, ".bun", "bin"), join(HOME, ".local", "bin"), "/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":");
 // A script routine's run ends here, as a model routine's does at omp's --max-time.
@@ -38,8 +38,8 @@ const SAID_MAX = 1500;
 
 // Preamble written into every routine prompt file, so the file on disk is
 // exactly what omp receives.
-const PREAMBLE = `This is a scheduled Safari routine running unattended.
-Use the safari tools (read skill://safari first). Open your own tab for the
+const PREAMBLE = `This is a scheduled browser routine running unattended.
+Use the browser tools (read skill://browser first). Open your own tab for the
 work and close it when done; never navigate or close tabs you did not open.
 Do not send, post, buy, or delete anything unless the task below says to.
 End with a short plain-language summary of what you found or did.
@@ -114,21 +114,10 @@ async function unload(label: string): Promise<boolean> {
 
 // ---------- daemon ----------
 
-// SAFARI_HARNESS_BUNDLE (and LADYBIRD_PROFILE_PATH) in the install's
-// environment choose the browser for the daemon and every caller from now
-// on (front.ts BROWSER_CHOICE); com.apple.Safari goes back to Safari. An
-// install without it, as a deploy's, keeps the choice there is.
+// The daemon drives the browser of the mode BROWSER_CHOICE keeps (front.ts).
 export async function daemonInstall(): Promise<string> {
   const main = join(CURRENT, "daemon", "main.ts");
   if (!existsSync(main)) throw new Error("no release is deployed; run scripts/dev-install.sh in the checkout");
-  const bundle = process.env.SAFARI_HARNESS_BUNDLE;
-  if (bundle === "com.apple.Safari") {
-    await rm(BROWSER_CHOICE, { force: true });
-  } else if (bundle) {
-    const profilePath = process.env.LADYBIRD_PROFILE_PATH;
-    await mkdir(join(BROWSER_CHOICE, ".."), { recursive: true });
-    await writeFile(BROWSER_CHOICE, `${JSON.stringify({ bundle, ...(profilePath ? { profilePath } : {}) })}\n`);
-  }
   const body = plist(
     DAEMON_LABEL,
     [process.execPath, main],
@@ -136,7 +125,20 @@ export async function daemonInstall(): Promise<string> {
     join(LOGS, "daemon"),
   );
   await load(DAEMON_LABEL, body);
-  return `daemon installed, driving ${BROWSER}; logs: ${join(LOGS, "daemon.log")}`;
+  return `daemon installed, driving ${MODES[readChoice().mode ?? "safari"]}; logs: ${join(LOGS, "daemon.log")}`;
+}
+
+// `browser mode <mode>`: the daemon and every caller drive that browser
+// from now on. The daemon starts again on it; agents' tabs in the other
+// browser are not carried over.
+export async function setMode(mode: Mode): Promise<string> {
+  if (mode === "ladybird" && !existsSync("/Applications/Ladybird Harness.app")) {
+    throw new Error("Ladybird mode needs /Applications/Ladybird Harness.app: build the fork and run ladybird/install-app.sh --bridge 37333 (README, Ladybird)");
+  }
+  const was = readChoice();
+  await mkdir(join(BROWSER_CHOICE, ".."), { recursive: true });
+  await writeFile(BROWSER_CHOICE, `${JSON.stringify({ ...was, mode })}\n`);
+  return `${was.mode === mode ? "mode stays" : "mode set to"} ${mode}; ${await daemonInstall()}`;
 }
 
 // The hidden Helium for Apple Passwords outlives a daemon restart on
@@ -148,7 +150,7 @@ export async function daemonUninstall(): Promise<string> {
   return had ? "daemon uninstalled" : "daemon was not installed";
 }
 
-// Whether launchd has the daemon's job, for safari doctor.
+// Whether launchd has the daemon's job, for browser doctor.
 export function daemonLoaded(): boolean {
   return launchctl("print", `gui/${uid()}/${DAEMON_LABEL}`).code === 0;
 }
@@ -260,7 +262,7 @@ function stopAwake(meta: RoutineMeta | undefined): void {
 async function installRoutine(meta: RoutineMeta): Promise<void> {
   const n = meta.name;
   if (!meta.generation) throw new Error(`routine ${n} has no schedule identity`);
-  const args = [process.execPath, join(CURRENT, "cli", "safari.ts"), "routine", "run", n, "--scheduled", "--generation", meta.generation];
+  const args = [process.execPath, join(CURRENT, "cli", "browser.ts"), "routine", "run", n, "--scheduled", "--generation", meta.generation];
   await mkdir(join(LOGS, "routines"), { recursive: true });
   await load(ROUTINE_PREFIX + n, plist(ROUTINE_PREFIX + n, args, scheduleXml(meta.schedule), join(LOGS, "routines", `${n}.launchd`)));
 }
@@ -334,7 +336,7 @@ export async function routineAddScript(name: string | undefined, file: string, s
     await rm(join(ROUTINES, `${n}.md`), { force: true });
     await writeFile(join(ROUTINES, `${n}.js`), code, { mode: 0o600 });
     await saveRoutine({ name: n, schedule, created: new Date().toISOString() });
-    return `script routine ${n} scheduled ${describe(schedule)}; practice run: safari routine run ${n} --dry`;
+    return `script routine ${n} scheduled ${describe(schedule)}; practice run: browser routine run ${n} --dry`;
   });
 }
 
@@ -441,7 +443,7 @@ async function runModel(meta: RoutineMeta, promptPath: string, log: string, lock
       let events = Promise.resolve();
       let continuationStarted = false;
       const done = await runSession(rec, {
-        apiKey: process.env.SAFARI_MODEL_KEY, maxSteps: 30, prompt: await readFile(promptPath, "utf8"),
+        apiKey: process.env.BROWSER_MODEL_KEY, maxSteps: 30, prompt: await readFile(promptPath, "utf8"),
         shouldStop: async () => {
           if (!continuationStarted) {
             continuationStarted = await allowed();
@@ -481,7 +483,7 @@ async function runModel(meta: RoutineMeta, promptPath: string, log: string, lock
       // fd 3 keeps the lease held if this CLI crashes while omp is alive.
       const child = spawn(OMP, args, {
         cwd: HOME, stdio: ["ignore", output.fd, output.fd, lock.fd],
-        env: { ...process.env, PATH, HOME, SAFARI_ROUTINE_LOG: log },
+        env: { ...process.env, PATH, HOME, BROWSER_ROUTINE_LOG: log },
       });
       child.once("error", (e) => resolve({ code: 1, note: e.message }));
       child.once("exit", (code, signal) => resolve({ code: code ?? 1, ...(signal ? { note: `model exited on ${signal}` } : {}) }));
@@ -547,7 +549,7 @@ export async function routineRun(name: string | undefined, opts: { dry?: boolean
   } finally { await lock.close(); }
 }
 
-// One run of a saved script in a session of its own, as `safari repl` runs
+// One run of a saved script in a session of its own, as `browser repl` runs
 // one. What it printed, or why it failed, goes to the log and to the phone.
 async function runScript(n: string, code: string, log: string, dry: boolean): Promise<{ code: number; note: string }> {
   await connectHost();

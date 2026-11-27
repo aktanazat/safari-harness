@@ -265,7 +265,7 @@ async function agentProcess(code: string) {
     out += new TextDecoder().decode(value);
   }
   spyOn(client, "agentOf").mockResolvedValue(Number(out));
-  spyOn(phone, "dataFile").mockImplementation((name) => join(home, ".local", "share", "safari-harness", name));
+  spyOn(phone, "dataFile").mockImplementation((name) => join(home, ".local", "share", "browser-harness", name));
   return child;
 }
 

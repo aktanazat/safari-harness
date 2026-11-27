@@ -129,11 +129,11 @@ function taken(is: (a: Args) => boolean): Promise<void> {
 // a call with this why that waits, rather than starting the handoff or asking to alert
 const waits = (why: string) => (a: Args) => a.why === why && Number(a.ms) > 0 && a.away !== true;
 
-const away = process.env.SAFARI_HARNESS_AWAY;
+const away = process.env.BROWSER_HARNESS_AWAY;
 let dir = "";
 beforeEach(() => {
   jest.useFakeTimers();
-  process.env.SAFARI_HARNESS_AWAY = "0";
+  process.env.BROWSER_HARNESS_AWAY = "0";
   dir = mkdtempSync(join(tmpdir(), "safari-handoff-"));
   spyOn(phone, "dataFile").mockImplementation((name) => join(dir, name));
   // nothing here reaches the Akyl running on this Mac
@@ -150,8 +150,8 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 afterAll(() => {
-  if (away === undefined) delete process.env.SAFARI_HARNESS_AWAY;
-  else process.env.SAFARI_HARNESS_AWAY = away;
+  if (away === undefined) delete process.env.BROWSER_HARNESS_AWAY;
+  else process.env.BROWSER_HARNESS_AWAY = away;
 });
 
 const handoff = (tab: number, why: string, ms = 10000) => HANDOFF_TOOLS.handoff.run({ tab, why, ms });
@@ -352,7 +352,7 @@ test("until text the page shows already is refused, with no tab raised and no no
 });
 
 test("a user away from the Mac gets one alert with a picture of the page, however many calls wait on the handoff", async () => {
-  process.env.SAFARI_HARNESS_AWAY = "1";
+  process.env.BROWSER_HARNESS_AWAY = "1";
   const page: Page = { url: "https://shop.example/login", check: "box" };
   const m = mac(76, page);
   // Two calls wait at once; the first runs out of time, as one does at the
@@ -376,7 +376,7 @@ test("a user away from the Mac gets one alert with a picture of the page, howeve
 // On 10-23 the alert command was missing, and the agent was left to guess
 // that the user, away, never heard (SONA-03).
 test("an alert that cannot go says why and tells the agent to tell the user in its chat", async () => {
-  process.env.SAFARI_HARNESS_AWAY = "1";
+  process.env.BROWSER_HARNESS_AWAY = "1";
   mac(78, { url: "https://shop.example/login", check: "box" });
   spyOn(telegram, "sendTelegram").mockImplementation(async () => {
     throw new Error("the phone alert is off: tell is missing");
@@ -389,7 +389,7 @@ test("an alert that cannot go says why and tells the agent to tell the user in i
 });
 
 test("a user who clears the check while the alert to their phone is on its way ends the handoff: the call that sent it returns done, with no second notice", async () => {
-  process.env.SAFARI_HARNESS_AWAY = "1";
+  process.env.BROWSER_HARNESS_AWAY = "1";
   const page: Page = { url: "https://shop.example/login", check: "box" };
   const m = mac(77, page);
   const sending = Promise.withResolvers<void>();
@@ -439,7 +439,7 @@ test("a call answers within its ms of its start, though finding the user's front
 });
 
 test("a call whose phone alert is still sending answers at its deadline without claiming delivery", async () => {
-  process.env.SAFARI_HARNESS_AWAY = "1";
+  process.env.BROWSER_HARNESS_AWAY = "1";
   const page: Page = { url: "https://shop.example/login", check: "box" };
   mac(80, page);
   const sending = Promise.withResolvers<void>();
@@ -495,7 +495,7 @@ test("a slow daemon slice cannot hold the call past its deadline", async () => {
 });
 
 test("a picture that arrives after the call ends does not start a phone alert", async () => {
-  process.env.SAFARI_HARNESS_AWAY = "1";
+  process.env.BROWSER_HARNESS_AWAY = "1";
   const page: Page = { url: "https://shop.example/login", check: "box" };
   const m = mac(83, page);
   const capturing = Promise.withResolvers<void>();
@@ -527,7 +527,7 @@ test("a picture that arrives after the call ends does not start a phone alert", 
 // Cloudflare's wall often lets Safari through by itself (challenge.ts): the
 // user hears only of one still up PASS_MS after the handoff began.
 test("a Cloudflare wall that lets Safari through while the handoff waits ends it with no tab raised, notice, or alert", async () => {
-  process.env.SAFARI_HARNESS_AWAY = "1";
+  process.env.BROWSER_HARNESS_AWAY = "1";
   const page: Page = { url: "https://shop.example/", check: "wall" };
   const m = mac(84, page);
   let result: unknown;
@@ -575,7 +575,7 @@ test("a background handoff returns at once with the notice up, and its check min
 });
 
 test("a background handoff alerts a user away from the Mac once before it returns", async () => {
-  process.env.SAFARI_HARNESS_AWAY = "1";
+  process.env.BROWSER_HARNESS_AWAY = "1";
   const page: Page = { url: "https://shop.example/login", check: "box" };
   const m = mac(87, page);
   const t = taken((a) => a.alerted !== undefined);
@@ -598,7 +598,7 @@ function toldAkyl(): Told[] {
 }
 
 test("a user away from the Mac finds the handoff in Akyl's app too: one card, kept up while calls wait on it, ended once they are done", async () => {
-  process.env.SAFARI_HARNESS_AWAY = "1";
+  process.env.BROWSER_HARNESS_AWAY = "1";
   const page: Page = { url: "https://shop.example/login", check: "box" };
   const m = mac(88, page);
   const told = toldAkyl();
@@ -625,7 +625,7 @@ test("a user away from the Mac finds the handoff in Akyl's app too: one card, ke
 });
 
 test("Akyl not running costs the phone alert nothing", async () => {
-  process.env.SAFARI_HARNESS_AWAY = "1";
+  process.env.BROWSER_HARNESS_AWAY = "1";
   const page: Page = { url: "https://shop.example/login", check: "box" };
   const m = mac(89, page);
   spyOn(phone, "akyl").mockImplementation(() => Promise.reject(new Error("Unable to connect. Is the computer able to access the url?")));
@@ -639,7 +639,7 @@ test("Akyl not running costs the phone alert nothing", async () => {
 });
 
 test("a site that blocks the browser after the alert ends Akyl's card as no longer needed", async () => {
-  process.env.SAFARI_HARNESS_AWAY = "1";
+  process.env.BROWSER_HARNESS_AWAY = "1";
   const page: Page = { url: "https://shop.example/login", check: "box" };
   mac(90, page);
   const told = toldAkyl();
@@ -664,7 +664,7 @@ test("a background handoff checked by its id alone alerts a user who walked away
   await tick();
   const id = started?.id;
   expect(typeof id).toBe("number");
-  process.env.SAFARI_HARNESS_AWAY = "1";
+  process.env.BROWSER_HARNESS_AWAY = "1";
   const t = taken((a) => a.alerted !== undefined);
   let checked: Background | undefined;
   void HANDOFF_TOOLS.handoff.run({ tab: 91, background: true, id }).then((r) => (checked = r as Background));

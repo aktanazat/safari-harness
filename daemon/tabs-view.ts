@@ -26,7 +26,7 @@ export type TabList = { tabs: TabInfo[]; note?: string };
 // The rows of a tabs answer, for a caller that lists through the daemon's
 // RPC port (input.ts, handoff.ts, fill.ts, the CLI).
 export function rowsOf(listed: unknown): TabInfo[] {
-  if (!listed || typeof listed !== "object" || !("tabs" in listed) || !Array.isArray(listed.tabs)) throw new Error("the daemon answered tabs without a tabs list: it runs an older harness than this caller; run safari daemon install to start the current one");
+  if (!listed || typeof listed !== "object" || !("tabs" in listed) || !Array.isArray(listed.tabs)) throw new Error("the daemon answered tabs without a tabs list: it runs an older harness than this caller; run browser daemon install to start the current one");
   return listed.tabs;
 }
 

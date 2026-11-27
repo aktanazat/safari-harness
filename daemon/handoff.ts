@@ -64,8 +64,8 @@ async function alertUser(tab: number, h: Handed, end: number, shown: Record<stri
   const [what, until] = h.challenge ? ["a check", "clear it"] : ["you", "are done"];
   const viewer = readJson(dataFile("screen-viewer.json"));
   const link = typeof viewer === "string" ? `\n\nopen your mac:\n${viewer}` : "";
-  const line = `${process.env.SAFARI_HARNESS_AWAY === "1" ? "test of the bot-check alert: " : ""}${site} is waiting on ${what} in ${BROWSER_NAME.toLowerCase()} on your mac. the agent carries on by itself once you ${until}.${link}`;
-  const picture = join(tmpdir(), `safari-harness-${tab}-${Date.now()}.png`);
+  const line = `${process.env.BROWSER_HARNESS_AWAY === "1" ? "test of the bot-check alert: " : ""}${site} is waiting on ${what} in ${BROWSER_NAME.toLowerCase()} on your mac. the agent carries on by itself once you ${until}.${link}`;
+  const picture = join(tmpdir(), `browser-harness-${tab}-${Date.now()}.png`);
   try {
     const shot = await rpc("shot", { tab, out: picture }).then(() => undefined, (e: Error) => e.message);
     // The call may have ended while the picture was being taken. Remove

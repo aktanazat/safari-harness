@@ -62,25 +62,25 @@ const SHELL_WALLS: [RegExp, string, boolean][] = [
   [/Access Denied/i, "Access Denied", true],
   [/captcha|verify you are (?:a )?human|Just a moment\.\.\./i, "a bot check", true],
 ];
-// Safari calls that act on the page in a tab, alone or as a step of a run:
+// Browser calls that act on the page in a tab, alone or as a step of a run:
 // a check they still show is theirs to judge, where map would only answer
 // it again from the task's memory of the check (daemon/reads.ts).
 const ATTEMPTS: Record<string, true> = { open: true, goto: true, wait: true, handoff: true, repl: true, real_input: true };
 
-const NEXT_CHECK = "open it in a tab (safari open URL) and wait a few seconds, since many checks clear on their own in a real Safari tab; hand it to the user with handoff only if it still stands and the page matters";
-// A bare `safari wait` throws (it needs what to wait for): on 11-11 the
-// next this gave ran `safari open URL && safari wait && safari extract`.
-const NEXT_THIN = 'open it in a tab with safari open URL --snapshot, which prints its tab id N and the page; if its text has not drawn yet, safari wait --tab N --text "<words the page should show>" --snapshot';
-const NEXT_MAP = "read it in the Safari helper (safari map URL)";
+const NEXT_CHECK = "open it in a tab (browser open URL) and wait a few seconds, since many checks clear on their own in a real browser tab; hand it to the user with handoff only if it still stands and the page matters";
+// A bare `browser wait` throws (it needs what to wait for): on 11-11 the
+// next this gave ran `browser open URL && browser wait && browser extract`.
+const NEXT_THIN = 'open it in a tab with browser open URL --snapshot, which prints its tab id N and the page; if its text has not drawn yet, browser wait --tab N --text "<words the page should show>" --snapshot';
+const NEXT_MAP = "read it in the browser (browser map URL)";
 // Safari's own next, where its answer gave one that a tab and a wait would
 // not change. On 11-14 each of these was told to open the page in a tab
 // and wait: ejcl.org's Cloudflare block, researchgate's DataDome check
 // that Safari met minutes before (reads.ts), an ecfr.gov XML file, and a
 // PDF address that downloaded.
 const NEXT_BLOCK = "use another permitted source, or report that the page is unavailable: the site turns this browser away, and the user cannot clear that either";
-const NEXT_REMEMBERED = "use another permitted source, or report that the page is unavailable: Safari met a check there minutes ago that does not clear by waiting (safari map URL --fresh loads it anyway)";
-const NEXT_DOWNLOAD = "save the file the address downloads (safari download URL)";
-const NEXT_SOURCE = "read its source (safari map URL --what fetch)";
+const NEXT_REMEMBERED = "use another permitted source, or report that the page is unavailable: the browser met a check there minutes ago that does not clear by waiting (browser map URL --fresh loads it anyway)";
+const NEXT_DOWNLOAD = "save the file the address downloads (browser download URL)";
+const NEXT_SOURCE = "read its source (browser map URL --what fetch)";
 const REMEMBERED = /^\S+ showed this browser .*\bthat check does not clear by waiting\b/;
 // Page states whose next is Safari's word on what to do: a tab and a wait
 // would show the same sign-in, paywall, or error page. A consent page's
@@ -92,9 +92,9 @@ const STATE_NEXT: Record<string, true> = { login_wall: true, paywall: true, regi
 // harness's own: it reaches the model as the harness's word, and a page's
 // title, the address it sent a read on to, or a URL in its text can carry
 // instructions (review of 10-24).
-const CHECKED_REASON = "a read did not load a page there, and Safari's quick read met a bot check";
-const THIN_REASON = "a read did not load a page there, and Safari's quick read did not load it either";
-const SAFARI_CHECKED: Hold = { reason: "Safari showed a bot check", next: NEXT_CHECK };
+const CHECKED_REASON = "a read did not load a page there, and the browser's quick read met a bot check";
+const THIN_REASON = "a read did not load a page there, and the browser's quick read did not load it either";
+const BROWSER_CHECKED: Hold = { reason: "the browser showed a bot check", next: NEXT_CHECK };
 
 function appended(content: Block[], addition: string): Block[] {
   const last = content.findLastIndex((b) => b.type === "text");
@@ -281,7 +281,7 @@ function holdOf(page: MapPage | undefined, state: { kind: string; next: string }
   return THIN;
 }
 
-// Safari's copy of url, as `safari map url` prints it, loaded for task by
+// Safari's copy of url, as `browser map url` prints it, loaded for task by
 // this omp process. It waits as wait says (an app's loading line to go); an
 // X post waits for the post itself (docs/sites/x.md). A page loaded when
 // map read it and judged it content, or, with no judgment, read enough.
@@ -312,16 +312,16 @@ async function safariCopy(url: string, task: string | undefined, wait: Record<st
     const kept = cutFenced(formatResult(answer.value, REPLY_CHARS), REPLY_CHARS);
     return { text: `${kept}\n…cut at ${kept.length} of ${whole.length} characters; the whole copy is in ${path}`, hold };
   } catch (e: unknown) {
-    if (e instanceof Error && e.name === "TimeoutError") return { text: `error: Safari gave no answer in ${COPY_MS / 1000} s; it may still be loading the page, and safari map ${url} answers from that read once it is done`, hold: THIN };
-    return { text: `error: the Safari helper did not answer (${e instanceof Error ? e.message : String(e)})`, hold: THIN };
+    if (e instanceof Error && e.name === "TimeoutError") return { text: `error: the browser gave no answer in ${COPY_MS / 1000} s; it may still be loading the page, and browser map ${url} answers from that read once it is done`, hold: THIN };
+    return { text: `error: the browser harness did not answer (${e instanceof Error ? e.message : String(e)})`, hold: THIN };
   }
 }
 
 // The lines a read that did not load gets: why, then Safari's copy, then
 // the next step when Safari did not load the page either.
 function copyLines(url: string, why: string, copy: Copy): string {
-  if (copy.hold === undefined) return `safari: read could not load this page (${why}); the Safari helper loaded it:\n${copy.text}`;
-  return `safari: read could not load this page (${why}), and the Safari helper did not load it either. Safari answered:\n${copy.text}\nsafari: next, ${copy.hold.next.replaceAll("URL", url)}. If it still fails, quote what Safari answered when you report it.`;
+  if (copy.hold === undefined) return `browser: read could not load this page (${why}); the browser loaded it:\n${copy.text}`;
+  return `browser: read could not load this page (${why}), and the browser did not load it either. It answered:\n${copy.text}\nbrowser: next, ${copy.hold.next.replaceAll("URL", url)}. If it still fails, quote what the browser answered when you report it.`;
 }
 
 // ---------- walls a run met ----------
@@ -352,10 +352,10 @@ export function newRun(session: string) {
 
 type SafariCall = { tool: string; input: Record<string, unknown>; text: string };
 
-// A Safari call, as an MCP tool, its xd:// device, or the safari CLI.
+// A Safari call, as an MCP tool, its xd:// device, or the browser CLI.
 function safariCall(toolName: string, input: Record<string, unknown>, text: string): SafariCall | undefined {
-  if (toolName.startsWith("mcp__safari_")) return { tool: toolName.slice("mcp__safari_".length), input, text };
-  if (toolName === "write" && typeof input.path === "string" && input.path.startsWith("xd://mcp__safari_")) {
+  if (toolName.startsWith("mcp__browser_")) return { tool: toolName.slice("mcp__browser_".length), input, text };
+  if (toolName === "write" && typeof input.path === "string" && input.path.startsWith("xd://mcp__browser_")) {
     let args: Record<string, unknown> = {};
     try {
       const parsed: unknown = JSON.parse(typeof input.content === "string" ? input.content : "{}");
@@ -363,10 +363,10 @@ function safariCall(toolName: string, input: Record<string, unknown>, text: stri
     } catch {
       args = {};
     }
-    return { tool: input.path.slice("xd://mcp__safari_".length), input: args, text };
+    return { tool: input.path.slice("xd://mcp__browser_".length), input: args, text };
   }
   const command = typeof input.command === "string" ? input.command : undefined;
-  const tool = command?.match(/(?:^|[\s;&|('"])safari\s+([a-z][a-z_-]*)/)?.[1];
+  const tool = command?.match(/(?:^|[\s;&|('"])browser\s+([a-z][a-z_-]*)/)?.[1];
   return tool === undefined ? undefined : { tool: tool.replaceAll("-", "_"), input, text };
 }
 
@@ -398,7 +398,7 @@ function sawSafari(session: string, call: SafariCall) {
   if (attempts(call)) return;
   for (const m of call.text.matchAll(/"where":\s*"page"/g)) {
     const checked = urlsIn(call.text.slice(0, m.index)).at(-1);
-    if (checked !== undefined && hosts.has(hostOf(checked))) metWall(session, checked, SAFARI_CHECKED);
+    if (checked !== undefined && hosts.has(hostOf(checked))) metWall(session, checked, BROWSER_CHECKED);
   }
 }
 
@@ -409,9 +409,9 @@ export function unanswered(session: string): string | undefined {
   if (open.length === 0 || nudged.has(session)) return undefined;
   nudged.add(session);
   return [
-    "safari: pages on these sites did not load, and no Safari call of yours has tried them since:",
+    "browser: pages on these sites did not load, and no browser call of yours has tried them since:",
     ...open.slice(0, 8).map((w) => `- ${w.host}: ${w.reason}; next, ${w.next}.`),
-    "Call a page blocked only after Safari also failed on it, quoting what Safari answered. If your instructions told you to leave a page, skip it and say so in your reply.",
+    "Call a page blocked only after the browser also failed on it, quoting what it answered. If your instructions told you to leave a page, skip it and say so in your reply.",
   ].join("\n");
 }
 
@@ -424,7 +424,7 @@ export async function webResult(event: ToolResult, session: string | undefined, 
   const text = event.content.flatMap((b) => (b.type === "text" && typeof b.text === "string" ? [b.text] : [])).join("\n");
   const url = event.toolName === "read" ? asked(event.input.path) : undefined;
   if (url !== undefined) {
-    if (copied.has(event.toolCallId) || text.includes("\nsafari: read could not load this page (")) return undefined;
+    if (copied.has(event.toolCallId) || text.includes("\nbrowser: read could not load this page (")) return undefined;
     const missed = await readWall(url, text);
     // the same result seen again while this one was judged
     if (missed === undefined || copied.has(event.toolCallId)) return undefined;
@@ -440,5 +440,5 @@ export async function webResult(event: ToolResult, session: string | undefined, 
   const wall = typeof command === "string" && call === undefined ? shellWall(command, text) : undefined;
   if (wall === undefined) return undefined;
   if (session !== undefined) metWall(session, wall.url, { reason: `a shell fetch met ${wall.why}`, next: NEXT_MAP });
-  return { content: appended(event.content, `safari: ${hostOf(wall.url)} answered this fetch with ${wall.why}; read the page in the Safari helper instead: safari map ${wall.url}`) };
+  return { content: appended(event.content, `browser: ${hostOf(wall.url)} answered this fetch with ${wall.why}; read the page in the browser instead: browser map ${wall.url}`) };
 }

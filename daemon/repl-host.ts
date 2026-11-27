@@ -1,6 +1,6 @@
 // Named REPL sessions. Each runs in a process of its own, started by the
 // first call that names it, so its bindings last from one call to the
-// next, whichever terminal or agent makes it. `safari repl` without a
+// next, whichever terminal or agent makes it. `browser repl` without a
 // name runs in the calling agent's own session, agent-<pid> (owner.ts
 // finds the agent), which also ends when that agent exits. Each call
 // names the process that made it (callFor in rpc.ts), so the tabs its
@@ -26,7 +26,7 @@ import { pageHost } from "./notes.ts";
 import { alive, ownerOf, watchOwner } from "./owner.ts";
 import { callFor, currentTask, ownCalls, withTask } from "./rpc.ts";
 
-export const REPL_DIR = join(homedir(), ".local/share/safari-harness/repl");
+export const REPL_DIR = join(homedir(), ".local/share/browser-harness/repl");
 const IDLE_MS = 30 * 60_000;
 // A gone session's log that says something is kept a week.
 const LOG_KEPT_MS = 7 * 24 * 60 * 60_000;
@@ -80,13 +80,13 @@ async function start(id: string, host: string | undefined, endsWith: number | un
   await unlink(socketOf(id)).catch(() => {});
   const env = { ...process.env };
   delete env.PI_SESSION_ID;
-  const remote = env.SAFARI_HARNESS_REMOTE;
+  const remote = env.BROWSER_HARNESS_REMOTE;
   if (remote) {
-    delete env.SAFARI_HARNESS_HTTP;
-    delete env.SAFARI_HARNESS_REMOTE;
+    delete env.BROWSER_HARNESS_HTTP;
+    delete env.BROWSER_HARNESS_REMOTE;
   }
   const target = host ?? remote;
-  if (target) env.SAFARI_HARNESS_HOST = target;
+  if (target) env.BROWSER_HARNESS_HOST = target;
   const log = openSync(join(REPL_DIR, `${id}.log`), "a");
   const child = spawn(process.execPath, [import.meta.path, id, ...(endsWith === undefined ? [] : [String(endsWith)])], {
     cwd: dir,
@@ -117,9 +117,9 @@ export async function runInSession(id: string, code: string, opts: { host?: stri
     await start(id, opts.host, opts.endsWith);
     started = true;
   } else if (opts.host && opts.host !== running.host) {
-    throw new Error(`session ${id} runs on ${running.host}; end it first (safari repl --close ${id}) or use another name`);
+    throw new Error(`session ${id} runs on ${running.host}; end it first (browser repl --close ${id}) or use another name`);
   } else if (running.root !== ROOT) {
-    throw new Error(`session ${id} runs another release of the harness (${running.root ?? "one from before 11-06"}) than this call (${ROOT}), so it may lack fixes deployed since; its bindings and tabs stay until it ends: end it (safari repl --close ${id}) and run again, or use another name`);
+    throw new Error(`session ${id} runs another release of the harness (${running.root ?? "one from before 11-06"}) than this call (${ROOT}), so it may lack fixes deployed since; its bindings and tabs stay until it ends: end it (browser repl --close ${id}) and run again, or use another name`);
   }
   const res = await ask(id, "/run", { code, timeoutMs: opts.timeoutMs ?? REPL_TIMEOUT_MS, caller: process.pid, ...(task === undefined ? {} : { task }) });
   const result = { ...((await res.json()) as ReplResult), started };
@@ -194,7 +194,7 @@ export async function closeSession(id: string): Promise<string> {
 
 async function serve(id: string, endsWith: number | undefined): Promise<void> {
   ownCalls();
-  const host = await connectHost(process.env.SAFARI_HARNESS_HOST);
+  const host = await connectHost(process.env.BROWSER_HARNESS_HOST);
   const session = new ReplSession(id, { cwd: process.cwd() });
   const started = new Date().toISOString();
   let lastUsed = started;

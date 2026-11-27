@@ -65,7 +65,7 @@ export default function safariTurnEnd(pi: ExtensionApi) {
     if (refused !== undefined) return { block: true, reason: refused };
     const task = taskOf(ctx);
     if (task === undefined) return;
-    if (event.toolName.startsWith("mcp__safari_")) {
+    if (event.toolName.startsWith("mcp__browser_")) {
       // Nested write xd:// dispatches emit this same canonical tool event.
       // omp's eval bridge names its calls js-<tool>-<uuid>, and their answers
       // reach the cell's code. The model's own calls, whose answers reach it
@@ -73,7 +73,7 @@ export default function safariTurnEnd(pi: ExtensionApi) {
       // (mcp-tools.ts). A session keeps this extension across deploys, so
       // each call asks whether the release current names takes the mark.
       const own = event.toolCallId !== undefined && !event.toolCallId.startsWith("js-")
-        && takesMarks(join(homedir(), ".local", "share", "safari-harness", "current")) ? { __safariVerbatim: true } : {};
+        && takesMarks(join(homedir(), ".local", "share", "browser-harness", "current")) ? { __safariVerbatim: true } : {};
       return { input: { ...event.input, __safariTask: task, ...own } };
     }
     // Every shell command's calls carry the task, not only safari's:
@@ -84,7 +84,7 @@ export default function safariTurnEnd(pi: ExtensionApi) {
         setSessionTask(session, task);
       } catch (e: unknown) {
         // omp blocks a command whose tool_call handler throws
-        pi.logger?.warn(`safari-harness: shell commands go without their task: ${e instanceof Error ? e.message : String(e)}`);
+        pi.logger?.warn(`browser-harness: shell commands go without their task: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
   });
@@ -105,7 +105,7 @@ export default function safariTurnEnd(pi: ExtensionApi) {
       return;
     }
     if (task === undefined) {
-      pi.logger?.warn("safari-harness turn end: helper task identity is unavailable; leaving its pages protected");
+      pi.logger?.warn("browser-harness turn end: helper task identity is unavailable; leaving its pages protected");
       return;
     }
     return release(pi, task);
@@ -129,7 +129,7 @@ export default function safariTurnEnd(pi: ExtensionApi) {
       try {
         weeklySweep();
       } catch (e: unknown) {
-        pi.logger?.warn(`safari-harness: agents' website data not swept: ${e instanceof Error ? e.message : String(e)}`);
+        pi.logger?.warn(`browser-harness: agents' website data not swept: ${e instanceof Error ? e.message : String(e)}`);
       }
     }, 0).unref();
   });
@@ -138,7 +138,7 @@ export default function safariTurnEnd(pi: ExtensionApi) {
 // ---------- safari output a shell command hides ----------
 
 // From 11-06 to 11-16, 383 of 492 distinct shell commands that ran the
-// safari CLI piped its output into head, tail, grep, sed or cut, or sent it
+// browser CLI piped its output into head, tail, grep, sed or cut, or sent it
 // to /dev/null, against the card; on 11-11 and 11-16 a failed call went
 // with it (LOCK#691-692, BERK#168). Shell loops of goto, eval and window
 // ran a page at a time where one map or shots call reads them all.
@@ -153,7 +153,7 @@ const DEV_NULL = /^(?:\d|&)?>>?\/dev\/null$|^>&\/dev\/null$/;
 const QUOTED = "\u0000";
 const CARD_PIPE = "\"Read the whole output. Narrow with `query` or `root`, never `| head`, `| grep`, `sed`, or `>/dev/null`, which hide a failed call.\"";
 const CARD_QUIET = "\"A CLI step whose answer you do not need takes `-q`: silent when it works, one line and exit 1 when it misses.\"";
-const CARD_LOOP = "\"More than three pages of one kind: one `map` call (up to 20 addresses), ... never a loop of `goto` or a bash loop of `map` or `eval`.\" and \"Screenshots of several pages: one `shots` call (`safari shots --widths 1440 --out DIR URL...`), not a loop of `window` and `shot`.\"";
+const CARD_LOOP = "\"More than three pages of one kind: one `map` call (up to 20 addresses), ... never a loop of `goto` or a bash loop of `map` or `eval`.\" and \"Screenshots of several pages: one `shots` call (`browser shots --widths 1440 --out DIR URL...`), not a loop of `window` and `shot`.\"";
 
 type Command = string[];
 
@@ -267,11 +267,11 @@ function pipelinesOf(command: string): Command[][] {
   return out;
 }
 
-// Why a shell command is refused before it runs: it cuts or hides a safari
+// Why a shell command is refused before it runs: it cuts or hides a browser
 // command's output, or runs a page at a time in a shell loop what one call
 // does. Each kind is named once, with the card's line and the right form.
 function shellMisuse(command: string): string | undefined {
-  if (!/(?:^|[\s;&|('"`])safari\s/.test(command)) return undefined;
+  if (!/(?:^|[\s;&|('"`])browser\s/.test(command)) return undefined;
   const found = new Map<string, string>();
   let depth = 0;
   for (const pipeline of pipelinesOf(command)) {
@@ -284,21 +284,21 @@ function shellMisuse(command: string): string | undefined {
       } else if (own[0] === "done") depth = Math.max(0, depth - 1);
       const name = own[0] ?? "";
       if (ran !== undefined && Object.hasOwn(CUTS, name) && !found.has("pipe")) {
-        found.set("pipe", `\`safari ${ran}\` pipes its output into ${name}, which can hide a failed call. The card (safari guide) says: ${CARD_PIPE} Run it without the pipe: narrow a read with --query or --root, take a tab's id alone with safari open --id URL, or keep a long output whole with --save and read that file. A pipe into jq is fine.`);
+        found.set("pipe", `\`browser ${ran}\` pipes its output into ${name}, which can hide a failed call. The card (browser guide) says: ${CARD_PIPE} Run it without the pipe: narrow a read with --query or --root, take a tab's id alone with browser open --id URL, or keep a long output whole with --save and read that file. A pipe into jq is fine.`);
       }
-      if (name !== "safari" || !/^[a-z][a-z_-]*$/.test(own[1] ?? "")) continue;
+      if (name !== "browser" || !/^[a-z][a-z_-]*$/.test(own[1] ?? "")) continue;
       const sub = own[1];
       ran ??= sub;
       if (!found.has("quiet") && own.some((w, i) => DEV_NULL.test(w) || (/^(?:\d|&)?>>?$/.test(w) && own[i + 1] === "/dev/null"))) {
-        found.set("quiet", `\`safari ${sub}\` sends its output to /dev/null, which hides a failed call. The card says: ${CARD_QUIET} Give it -q instead.`);
+        found.set("quiet", `\`browser ${sub}\` sends its output to /dev/null, which hides a failed call. The card says: ${CARD_QUIET} Give it -q instead.`);
       }
       if (depth > 0 && Object.hasOwn(LOOPED, sub) && !found.has("loop")) {
-        found.set("loop", `a shell loop runs \`safari ${sub}\` a page at a time. The card says: ${CARD_LOOP} Read every address in one safari map call (--what eval --expression for a script on each page), take widths with one safari shots call, or put steps that must go page by page in one safari repl script.`);
+        found.set("loop", `a shell loop runs \`browser ${sub}\` a page at a time. The card says: ${CARD_LOOP} Read every address in one browser map call (--what eval --expression for a script on each page), take widths with one browser shots call, or put steps that must go page by page in one browser repl script.`);
       }
     }
   }
   if (found.size === 0) return undefined;
-  return `safari: refused before it ran. ${[...found.values()].join("\n")}`;
+  return `browser: refused before it ran. ${[...found.values()].join("\n")}`;
 }
 
 // How long one release waits on the daemon. It first drains the task's
@@ -318,7 +318,7 @@ async function release(pi: ExtensionApi, task?: string): Promise<void> {
   const base = daemonHttp();
   const warn = (e: unknown) => {
     const timedOut = e instanceof Error && e.name === "TimeoutError";
-    pi.logger?.warn(`safari-harness turn end: ${timedOut ? `no answer within ${RELEASE_MS / 1000} s; its pages close when unused for 2 minutes or when this process exits` : e instanceof Error ? e.message : String(e)}`);
+    pi.logger?.warn(`browser-harness turn end: ${timedOut ? `no answer within ${RELEASE_MS / 1000} s; its pages close when unused for 2 minutes or when this process exits` : e instanceof Error ? e.message : String(e)}`);
   };
   try {
     let answer = await releaseOnce(base, admission);

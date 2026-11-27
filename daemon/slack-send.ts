@@ -22,7 +22,7 @@ import { HarnessError } from "./failures.ts";
 const SLACK = /(?:^|\.)slack\.com$/;
 const ENTER = /^(?:(?:cmd|meta|command|ctrl|control)\+)?(?:enter|return)$/i;
 
-const REFUSED = "a message sent from Slack's own page skips the draft the owner approves; send it with the slack global in safari repl (client.postMessage, upload or update), whose draft he sees first";
+const REFUSED = "a message sent from Slack's own page skips the draft the owner approves; send it with the slack global in browser repl (client.postMessage, upload or update), whose draft he sees first";
 
 export type SlackAct =
   | { tool: "click" }

@@ -40,7 +40,7 @@ await Promise.all(probes.map((s) => s.stop(true)));
 const home = mkdtempSync(join(tmpdir(), "renumber-caller-"));
 const daemon = Bun.spawn([process.execPath, join(import.meta.dir, "main.ts")], {
   // its journal and its lists of tabs and windows go in the scratch HOME
-  env: { ...process.env, HOME: home, SAFARI_HARNESS_WS: String(wsPort), SAFARI_HARNESS_HTTP_PORT: String(httpPort) },
+  env: { ...process.env, HOME: home, BROWSER_HARNESS_WS: String(wsPort), BROWSER_HARNESS_HTTP_PORT: String(httpPort) },
   stdout: "pipe",
   stderr: "inherit",
 });
@@ -67,7 +67,7 @@ void (async () => {
 function logs(what: string, count = 1): Promise<void> {
   const { promise, resolve, reject } = Promise.withResolvers<void>();
   heard = () => {
-    if (logged.filter((l) => l.split("[safari-harness] ")[1]?.startsWith(what)).length >= count) resolve();
+    if (logged.filter((l) => l.split("[browser-harness] ")[1]?.startsWith(what)).length >= count) resolve();
     else if (ended) reject(new Error(`the daemon exited before it logged ${what}`));
   };
   heard();
@@ -108,7 +108,7 @@ const first = await extension(1);
 
 afterAll(async () => {
   mock.restore();
-  delete process.env.SAFARI_HARNESS_HTTP;
+  delete process.env.BROWSER_HARNESS_HTTP;
   daemon.kill();
   await daemon.exited;
   rmSync(home, { recursive: true, force: true });
@@ -119,7 +119,7 @@ afterAll(async () => {
 test("real input from an agent's own process reaches its tab by the id it held before a deploy", async () => {
   const held = tabs[0].id;
   await deploy(first);
-  process.env.SAFARI_HARNESS_HTTP = `http://127.0.0.1:${httpPort}`;
+  process.env.BROWSER_HARNESS_HTTP = `http://127.0.0.1:${httpPort}`;
   spyOn(front, "input").mockImplementation(async (args) => (args[0] === "front" ? { bundleId: "com.mitchellh.ghostty" } : args[0] === "press" ? { pressed: true } : {}));
   expect(await INPUT_TOOLS.real_input.run({ tab: held, do: "click", ref: "#go" })).toEqual({ ok: true, background: true, replaced: { from: held, to: tabNow[held] } });
   expect(pressed).toEqual([tabNow[held]]);

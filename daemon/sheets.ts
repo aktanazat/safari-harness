@@ -30,7 +30,7 @@ export async function cancelSheets(daemon: Daemon, start: () => { helper: Helper
 // Another Mac's Safari is that Mac's to look at. The daemon's answers here
 // leave the agent's news (continuity.ts) to its own next call.
 export function cancelLeftSheets(): Promise<void> {
-  if (process.env.SAFARI_HARNESS_REMOTE) return Promise.resolve();
+  if (process.env.BROWSER_HARNESS_REMOTE) return Promise.resolve();
   return cancelSheets((op, args) => quietly(() => rpc("space", { ...args, op })), startHelper);
 }
 
@@ -43,7 +43,7 @@ export function cancelLeftSheets(): Promise<void> {
 // stuck or missing extension cancels such a prompt on the agents' windows
 // (call.ts); one on a window of his stays his to answer.
 export async function cancelCertificatePrompts(): Promise<string[]> {
-  if (process.env.SAFARI_HARNESS_REMOTE) return [];
+  if (process.env.BROWSER_HARNESS_REMOTE) return [];
   const { windows } = (await quietly(() => rpc("space", { op: "windows" }))) as { windows: { width: number; height: number }[] };
   if (windows.length === 0) return [];
   const { helper, stop } = startHelper();

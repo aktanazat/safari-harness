@@ -1,8 +1,8 @@
-// Agent loop: the "safari do <task>" brain. Model-agnostic over an
+// Agent loop: the "browser do <task>" brain. Model-agnostic over an
 // OpenAI-compatible /chat/completions endpoint with tool calling
 // (Ollama locally by default; any frontier API works via env). The whole
 // conversation is the caller's: it can save it after every step and hand it
-// back later to go on (safari session resume), and messages that arrive
+// back later to go on (browser session resume), and messages that arrive
 // while the loop runs (steer, queue, stop) are taken in between steps.
 
 import { readFile } from "node:fs/promises";
@@ -54,7 +54,7 @@ export type AgentConfig = {
   inbox?: () => Promise<Control[]>;
   // The conversation after each step, to keep.
   save?: (messages: ChatMsg[]) => Promise<void>;
-  // A scoped task can narrow the callable tools without changing safari do.
+  // A scoped task can narrow the callable tools without changing browser do.
   tools?: Record<string, Tool>;
   recall?: boolean;
 };

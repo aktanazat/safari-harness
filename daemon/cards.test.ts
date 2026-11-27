@@ -15,8 +15,8 @@ import { callTool } from "./tools.ts";
 // name, a Stripe frame the rest, and a frame from evil.example card fields
 // too; the page records which card each frame's fillCard got, and names the
 // fields as content.js does.
-const away = process.env.SAFARI_HARNESS_AWAY;
-process.env.SAFARI_HARNESS_AWAY = "0";
+const away = process.env.BROWSER_HARNESS_AWAY;
+process.env.BROWSER_HARNESS_AWAY = "0";
 
 const TAB = 7001;
 const NUMBER = "4242424242424242";
@@ -79,11 +79,11 @@ afterEach(() => {
   frames = FRAMES;
   fillCalls.length = 0;
   tabSecrets.clear();
-  process.env.SAFARI_HARNESS_AWAY = "0";
+  process.env.BROWSER_HARNESS_AWAY = "0";
 });
 afterAll(() => {
-  if (away === undefined) delete process.env.SAFARI_HARNESS_AWAY;
-  else process.env.SAFARI_HARNESS_AWAY = away;
+  if (away === undefined) delete process.env.BROWSER_HARNESS_AWAY;
+  else process.env.BROWSER_HARNESS_AWAY = away;
 });
 
 test("a card given in the chat is saved, listed by its label and last 4, filled, and removed by its last 4", async () => {
@@ -124,7 +124,7 @@ test("a card goes to the page's own frames and a card processor's, each only wha
 // away from it, where it once asked his iPhone's Face ID.
 test("away from the Mac, a card fill fills the card and sends his phone nothing", async () => {
   kept = [VISA];
-  process.env.SAFARI_HARNESS_AWAY = "1";
+  process.env.BROWSER_HARNESS_AWAY = "1";
   const alerts = spyOn(telegram, "sendTelegram").mockResolvedValue(undefined);
   expect(await fillVisa()).toMatchObject({ card: "Visa", filled: ["name", "number", "security code", "expiry", "zip"] });
   expect(alerts).not.toHaveBeenCalled();

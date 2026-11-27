@@ -1,4 +1,4 @@
-// safari host: drive another Mac's Safari from this one. That Mac's daemon
+// browser host: drive another Mac's Safari from this one. That Mac's daemon
 // listens only on its own 127.0.0.1, so the way in is an ssh tunnel: a
 // free port here forwards to the other Mac's 127.0.0.1:37334, and every
 // tool call goes through it as if the daemon were local. Nothing new
@@ -11,7 +11,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { HarnessError, readFailure, type Failure } from "./failures.ts";
 
-export const HOST_FILE = join(homedir(), ".local/share/safari-harness/host.json");
+export const HOST_FILE = join(homedir(), ".local/share/browser-harness/host.json");
 const DAEMON_PORT = 37334;
 // How the other Mac runs its CLI when its shell has not set PATH (ssh runs
 // commands without a login shell).
@@ -69,19 +69,19 @@ export async function openTunnel(host: string): Promise<Tunnel> {
     await Bun.sleep(250);
   }
   close();
-  throw new Error(`no safari daemon answered on ${host}'s 127.0.0.1:${DAEMON_PORT}; on that Mac run: safari daemon install`);
+  throw new Error(`no browser daemon answered on ${host}'s 127.0.0.1:${DAEMON_PORT}; on that Mac run: browser daemon install`);
 }
 
 // Points this process at a host: the --host flag, else an address already
-// in SAFARI_HARNESS_HTTP, else the saved default, else this Mac. For
+// in BROWSER_HARNESS_HTTP, else the saved default, else this Mac. For
 // another Mac, tool calls go through a tunnel to its daemon, and the tools
 // that run in the caller run there over ssh. Returns the host's name.
 export async function connectHost(flag?: string): Promise<string> {
-  const host = flag ?? (process.env.SAFARI_HARNESS_HTTP ? "local" : (await readHostConfig()).default ?? "local");
+  const host = flag ?? (process.env.BROWSER_HARNESS_HTTP ? "local" : (await readHostConfig()).default ?? "local");
   if (host === "local") return host;
   const tunnel = await openTunnel(host);
-  process.env.SAFARI_HARNESS_HTTP = tunnel.url;
-  process.env.SAFARI_HARNESS_REMOTE = host;
+  process.env.BROWSER_HARNESS_HTTP = tunnel.url;
+  process.env.BROWSER_HARNESS_REMOTE = host;
   return host;
 }
 
@@ -95,7 +95,7 @@ function shellQuote(s: string): string {
 export async function remoteCall(host: string, tool: string, args: Record<string, unknown>): Promise<unknown> {
   if (!/^[a-z_]+$/.test(tool)) throw new Error(`unknown tool ${tool}`);
   const safari = (await readHostConfig()).hosts?.[host]?.safari ?? REMOTE_SAFARI;
-  const owner = process.env.SAFARI_OWNER ? ` --owner ${shellQuote(process.env.SAFARI_OWNER)}` : "";
+  const owner = process.env.BROWSER_OWNER ? ` --owner ${shellQuote(process.env.BROWSER_OWNER)}` : "";
   const proc = Bun.spawn(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, `${safari} call ${tool} ${shellQuote(JSON.stringify(args))} --json --host local${owner}`], { stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   if (code !== 0) {

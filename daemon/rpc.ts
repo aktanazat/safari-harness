@@ -1,13 +1,13 @@
 // Client for the daemon's HTTP RPC port, for code that runs outside the
 // daemon: the MCP server, the REPL, and the tools that run in the calling
 // process. The address is read on each call, so a process that opens a
-// tunnel to another Mac (safari host) can point here after it starts.
+// tunnel to another Mac (browser host) can point here after it starts.
 //
 // Every call carries this process's pid, from which the daemon finds the
 // agent it works for (owner.ts), except one bound for another Mac, whose
 // daemon cannot see this Mac's processes. A process that works for itself
 // says so (ownCalls), as does one that works for an agent another process
-// found (the pairing's, pair.ts), and one whose SAFARI_OWNER names a lease
+// found (the pairing's, pair.ts), and one whose BROWSER_OWNER names a lease
 // works for that lease (lease.ts), on this Mac or another. A call the
 // daemon never took, refused while it restarts or answered 503 while it
 // finishes its calls in flight first, is made again, once, as soon as a
@@ -24,7 +24,7 @@ import { sessionTask } from "./session-task.ts";
 import { holdLease, ownerKey } from "./lease.ts";
 
 export function daemonHttp(): string {
-  return process.env.SAFARI_HARNESS_HTTP ?? "http://127.0.0.1:37334";
+  return process.env.BROWSER_HARNESS_HTTP ?? "http://127.0.0.1:37334";
 }
 
 // Whether a fetch failed because nothing listens at its address. Older Bun
@@ -37,12 +37,12 @@ export function connectionRefused(e: unknown): boolean {
 // While scripts/dev-install.sh deploys, this file holds the second it
 // expects to be done by. A daemon that does not answer then is restarting,
 // not missing: on 10-23 a call in a deploy said to install it (HD-13).
-const DEPLOYING = join(homedir(), ".local", "share", "safari-harness", "deploying");
+const DEPLOYING = join(homedir(), ".local", "share", "browser-harness", "deploying");
 
 // Seconds until the deploy on this Mac expects to be done, or undefined
 // when none runs.
 export function deployingFor(): number | undefined {
-  if (process.env.SAFARI_HARNESS_REMOTE) return undefined;
+  if (process.env.BROWSER_HARNESS_REMOTE) return undefined;
   let until: number;
   try {
     until = Number(readFileSync(DEPLOYING, "utf8").trim());
@@ -77,7 +77,7 @@ export async function agentOf(): Promise<number | undefined> {
   return (asked === undefined ? await leaseOf() : undefined) ?? ownerOf(asked ?? process.pid);
 }
 
-// The lease this process's calls work for, if SAFARI_OWNER names one.
+// The lease this process's calls work for, if BROWSER_OWNER names one.
 function leaseOf(): Promise<number | undefined> {
   const key = ownerKey();
   return key === undefined ? Promise.resolve(undefined) : holdLease(key);
@@ -118,8 +118,8 @@ async function attempt(base: string, body: string, effectful: boolean): Promise<
     // The daemon took the call and ended before it answered: the call may
     // have acted (a click, a submit), so it is not made again.
     const effect = effectful ? "possibly_effected" : "none";
-    if (code === "ECONNRESET") throw new HarnessError(effectful ? "effect_unknown" : "unavailable", "the safari daemon stopped before it answered (it crashed or was killed), so the call may have run; check the page before trying it again", { effect, next: "read the page before repeating the call" });
-    throw new HarnessError("unavailable", `safari daemon not reachable at ${base} (${e instanceof Error ? e.message : String(e)}); check it with: safari status`, { effect, next: effectful ? "check safari status, then read the page before repeating the action" : "check safari status" });
+    if (code === "ECONNRESET") throw new HarnessError(effectful ? "effect_unknown" : "unavailable", "the browser daemon stopped before it answered (it crashed or was killed), so the call may have run; check the page before trying it again", { effect, next: "read the page before repeating the call" });
+    throw new HarnessError("unavailable", `browser daemon not reachable at ${base} (${e instanceof Error ? e.message : String(e)}); check it with: browser status`, { effect, next: effectful ? "check browser status, then read the page before repeating the action" : "check browser status" });
   }
 }
 
@@ -176,7 +176,7 @@ export async function rpc(tool: string, args: Record<string, unknown> = {}, mode
   const task = currentTask();
   const lease = asked === undefined && ownsCalls === undefined ? await leaseOf() : undefined;
   const own = lease !== undefined || (ownsCalls !== undefined && asked === undefined);
-  const caller = lease ?? (process.env.SAFARI_HARNESS_REMOTE ? undefined : (asked ?? ownsCalls ?? process.pid));
+  const caller = lease ?? (process.env.BROWSER_HARNESS_REMOTE ? undefined : (asked ?? ownsCalls ?? process.pid));
   const body = JSON.stringify({ tool, args, caller, ...(task === undefined ? {} : { task }), ...(own ? { own: true } : {}), ...(model ? { model } : {}), ...(takesNews() ? {} : { news: false }), ...(verbatimCalls.getStore() ? { verbatim: true } : {}) });
   const effectful = affectsPage(tool, args);
   const sent = Date.now();
@@ -193,8 +193,8 @@ export async function rpc(tool: string, args: Record<string, unknown> = {}, mode
     const left = deployingFor();
     if (left !== undefined) throw new HarnessError("unavailable", `safari is restarting for a deploy; try again in ${left} s`, { effect: "none", retryable: true, next: `wait ${left} s, then make the call again` });
   }
-  if (res === "refused") throw new HarnessError("unavailable", `safari daemon not reachable at ${base}; check it with: safari status (install it with: safari daemon install)`, { effect: "none", retryable: true, next: "check safari status and start the daemon if needed" });
-  if (res === "restarting") throw new HarnessError("unavailable", `the safari daemon at ${base} is restarting and did not answer again within ${BACK_MS.restarting / 1000} s; check it with: safari status`, { effect: "none", retryable: true, next: "wait for the daemon to finish restarting" });
+  if (res === "refused") throw new HarnessError("unavailable", `browser daemon not reachable at ${base}; check it with: browser status (install it with: browser daemon install)`, { effect: "none", retryable: true, next: "check browser status and start the daemon if needed" });
+  if (res === "restarting") throw new HarnessError("unavailable", `the browser daemon at ${base} is restarting and did not answer again within ${BACK_MS.restarting / 1000} s; check it with: browser status`, { effect: "none", retryable: true, next: "wait for the daemon to finish restarting" });
   const out = (await res.json()) as { ok: boolean; value?: unknown; error?: string; failure?: unknown };
   if (!out.ok) {
     const failure = readFailure(out.failure);

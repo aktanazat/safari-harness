@@ -74,7 +74,7 @@ export function matchOf(query: string): string | undefined {
 export class PageStore {
   private readonly db: Database;
 
-  constructor(directory = join(homedir(), ".local/share/safari-harness/page-store")) {
+  constructor(directory = join(homedir(), ".local/share/browser-harness/page-store")) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     const folder = lstatSync(directory);
     if (!folder.isDirectory() || folder.isSymbolicLink()) throw new Error("the page store needs a private regular directory");

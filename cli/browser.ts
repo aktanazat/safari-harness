@@ -1,17 +1,17 @@
 #!/usr/bin/env bun
-// safari — drive Safari from the terminal, aside-cli style.
+// browser — drive the browser (Safari or Ladybird) from the terminal, aside-cli style.
 //
-//   safari tabs
-//   safari open https://example.com --bg      # prints the tab's id, say 7
-//   safari snapshot --tab 7
-//   safari click 12 --tab 7
-//   safari type 14 "hello" --tab 7
-//   safari eval "document.title" --tab 7
-//   safari extract --tab 7
-//   safari shot --tab 7
-//   safari repl "const p = await openTab('https://example.com'); console.log(await p.title())"
-//   safari do "find the price of X on example.com"
-//   safari serve            # start the daemon (the extension connects to it)
+//   browser tabs
+//   browser open https://example.com --bg      # prints the tab's id, say 7
+//   browser snapshot --tab 7
+//   browser click 12 --tab 7
+//   browser type 14 "hello" --tab 7
+//   browser eval "document.title" --tab 7
+//   browser extract --tab 7
+//   browser shot --tab 7
+//   browser repl "const p = await openTab('https://example.com'); console.log(await p.title())"
+//   browser do "find the price of X on example.com"
+//   browser serve            # start the daemon (the extension connects to it)
 //
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -32,158 +32,161 @@ import type { JournalEvent } from "../daemon/journal.ts";
 import type { Overview } from "../daemon/mission.ts";
 import { failureOf } from "../daemon/failures.ts";
 import { redactedLine } from "../daemon/redact.ts";
+import { BROWSER_NAME, LADYBIRD } from "../daemon/front.ts";
 import type { ReplResult } from "../daemon/repl.ts";
 
 // Commands beyond the tools (guide, repl, session, do, daemon, routine, doctor)
 // import their own modules when they run: imported here, those modules
 // would add 5 ms to the start of every command.
 
-const USAGE = `safari — drive Safari from the terminal
+const USAGE = `browser — drive the browser from the terminal: Safari or Ladybird, by mode
 
-  safari guide                               the short card of rules for browsing
-  safari guide reference                     every tool in full
-  safari help <command>                      one command's usage and flags
-  safari serve [--ws 37333] [--http 37334]   start the daemon in the foreground
-  safari daemon install|uninstall            keep the daemon always on (launchd)
-  safari status                              daemon + extension health
-  safari extension reload                    reload the extension by hand (calls reload
+  browser guide                              the short card of rules for browsing
+  browser guide reference                    every tool in full
+  browser help <command>                     one command's usage and flags
+  browser serve [--ws 37333] [--http 37334]  start the daemon in the foreground
+  browser daemon install|uninstall           keep the daemon always on (launchd)
+  browser mode [safari|ladybird]             the browser the harness drives; with one,
+                                             switch to it (the daemon starts again on it)
+  browser status                             daemon + extension health
+  browser extension reload                   reload the extension by hand (calls reload
                                              a stuck one themselves); asks no password
-  safari agents                              agents using Safari now, and the page
+  browser agents                             agents using the browser now, and the page
                                              that pauses or stops them
-  safari doctor                              check every part the harness needs on this
+  browser doctor                             check every part the harness needs on this
                                              Mac, with the fix for each that fails
-  safari memory status                       inspect collection and saved pages
-  safari memory search <words>               find remembered page text and summaries
-  safari memory search --session ID          research saved in one omp session or by its helpers
-  safari memory show --id ID                 inspect a saved page
-  safari memory configure --config '<json>'  set research saving, browsing sites, or retention
-  safari memory edit --id ID --note <text>    correct a summary or add a note
-  safari memory forget --id ID --approved    delete a page and its summary
-  safari save_source --receipt ID --reason <text>
+  browser memory status                      inspect collection and saved pages
+  browser memory search <words>              find remembered page text and summaries
+  browser memory search --session ID         research saved in one omp session or by its helpers
+  browser memory show --id ID                inspect a saved page
+  browser memory configure --config '<json>' set research saving, browsing sites, or retention
+  browser memory edit --id ID --note <text>   correct a summary or add a note
+  browser memory forget --id ID --approved   delete a page and its summary
+  browser save_source --receipt ID --reason <text>
                                              remember a useful public source already read
-  safari tabs [--site host] [--all]          your tabs, his front one, a count of his;
+  browser tabs [--site host] [--all]         your tabs, his front one, a count of his;
                                              --site lists his on one site, --all every tab
-  safari open <url> [--bg] [--keep] [--new] [--id]
+  browser open <url> [--bg] [--keep] [--new] [--id]
                                              open a tab, or load in yours on that site
                                              (--new: a second one); prints its id
-                                             (--id: the id alone, for T=$(safari open ...))
-  safari goto <url> --tab N                  navigate
-  safari back|forward|reload --tab N         history
-  safari close <tab>                         close a tab
-  safari keep <tab>                          leave a tab open for the user when your
+                                             (--id: the id alone, for T=$(browser open ...))
+  browser goto <url> --tab N                 navigate
+  browser back|forward|reload --tab N        history
+  browser close <tab>                        close a tab
+  browser keep <tab>                         leave a tab open for the user when your
                                              turn ends
-  safari focus <tab>                         activate a tab
-  safari snapshot --tab N [--query text] [--root sel] [--diff | --updates [--since revision]]
+  browser focus <tab>                        activate a tab
+  browser snapshot --tab N [--query text] [--root sel] [--diff | --updates [--since revision]]
                                              page outline with [ref]s; recoverable updates
-  safari click <ref|text|sel> --tab N        click a snapshot ref, the control's visible
+  browser click <ref|text|sel> --tab N       click a snapshot ref, the control's visible
                                              text ("Continue"), or a CSS selector: no
                                              need to grep a ref out of a snapshot
-  safari clickat <x> <y> --tab N             click by coordinates
-  safari type <ref|text|sel> <text> --tab N  type into a field; '{{code}}' in text types the
+  browser clickat <x> <y> --tab N            click by coordinates
+  browser type <ref|text|sel> <text> --tab N type into a field; '{{code}}' in text types the
                                              code texted or mailed to him (--secret mail: Gmail only;
                                              --secret passwords: his saved one;
                                              --secret env --env VAR: this call's variable VAR)
-  safari press <key> [--ref R] --tab N       press a key (R: ref, text, or selector)
-  safari select <ref|text|sel> [option] --tab N
+  browser press <key> [--ref R] --tab N      press a key (R: ref, text, or selector)
+  browser select <ref|text|sel> [option] --tab N
                                              choose a dropdown option; none lists them
-  safari refill --tab N                      put back the form fields a click sent on
+  browser refill --tab N                     put back the form fields a click sent on
                                              before the page emptied them (an error, a sign-in)
-  safari hover <ref|text|sel> --tab N        hover an element
-  safari upload <file>... [--ref R] --tab N
+  browser hover <ref|text|sel> --tab N       hover an element
+  browser upload <file>... [--ref R] --tab N
                                              attach files to a file input
-  safari upload --find <words> --tab N       list the user's files that match, to pick
+  browser upload --find <words> --tab N      list the user's files that match, to pick
                                              one (iCloud Drive, Documents, Desktop,
                                              Downloads); attaches nothing
-  safari scroll <dy> --tab N [--to top|bottom]
+  browser scroll <dy> --tab N [--to top|bottom]
                                              scroll by dy, or all the way to the page's top or bottom
 
   Page commands need --tab N, the id open printed, --tab latest for your
   tab opened or named last, or --tab front for the tab the user has in
   front. Tabs a command opens close when omp's turn ends, once the
-  program that ran safari exits, after 2 minutes unused, or past 4 open
-  tabs per agent session; --keep on open, or safari keep <tab>, leaves
+  program that ran browser exits, after 2 minutes unused, or past 4 open
+  tabs per agent session; --keep on open, or browser keep <tab>, leaves
   one open for him. Commands over ssh or from a script outside an agent
-  keep one set of tabs with a unique SAFARI_OWNER=<key> or --owner <key>.
+  keep one set of tabs with a unique BROWSER_OWNER=<key> or --owner <key>.
 
   Actions (open goto back forward reload click clickat type press select
   refill hover upload) and wait take --snapshot to print the page after them too,
   or --snapshot=<words> for only its lines that have those words. That read
   waits for requests the action started (3 s at most); never sleep between an
-  action and a read: use --snapshot, or safari wait --text "<words>" --tab N.
+  action and a read: use --snapshot, or browser wait --text "<words>" --tab N.
 
   Reads (snapshot eval extract fetch read) take --save to write the whole output
-  to a new file in ~/.local/share/safari-harness/saved, or --save=<file>
+  to a new file in ~/.local/share/browser-harness/saved, or --save=<file>
   (or --save <file>, for a path starting with / ./ or ../), and print only
   its path, size, and first 500 characters.
   extract and each map page print 20,000 characters (--max-bytes N for
   more); a longer text is saved whole there too, and the read says where.
 
-  safari eval <js> --tab N [--page] [--raw]  run JS, print the last value as JSON
+  browser eval <js> --tab N [--page] [--raw] run JS, print the last value as JSON
                                              (--raw: the value alone, a string unquoted;
                                              code from --expression js, --file path, or
                                              stdin when omitted; --timeout secs lets it
                                              run up to 300 s, 30 when omitted;
                                              --reader name runs a script saved with learn)
-  safari extract --tab N [--selector s]      readable text
-  safari extract --tab N --expand|--scroll   all of a thread or feed: clicks its Load
+  browser extract --tab N [--selector s]     readable text
+  browser extract --tab N --expand|--scroll  all of a thread or feed: clicks its Load
                                              more, or scrolls and gathers its items
-  safari extract --as table --tab N          tables and card lists as JSON rows
-  safari extract --fields price,date --tab N the rows of the best-fitting table or card list
+  browser extract --as table --tab N         tables and card lists as JSON rows
+  browser extract --fields price,date --tab N the rows of the best-fitting table or card list
                                              as objects with those keys, and the column each
                                              came from ('{"price":"span.price"}' names one)
-  safari extract --as chat --tab N           a chat's messages, each with who wrote it
-  safari data --tab N [--pick path] [--max bytes]
+  browser extract --as chat --tab N          a chat's messages, each with who wrote it
+  browser data --tab N [--pick path] [--max bytes]
                                              the page's own data as JSON (JSON-LD, Next.js, ...)
-  safari info --tab N                        url/title/scroll
-  safari wait [ms] --tab N                   until the page goes quiet, ms (10000) at most
-  safari wait [--selector s] [--text t] [--ms timeout | --timeout secs] --tab N [--front]
+  browser info --tab N                       url/title/scroll
+  browser wait [ms] --tab N                  until the page goes quiet, ms (10000) at most
+  browser wait [--selector s] [--text t] [--ms timeout | --timeout secs] --tab N [--front]
                                              wait until it is on the page; --front
                                              holds the tab on screen meanwhile
-  safari wait --any '["a","b"]' | --gone t | --url part|/re/ | --quiet --tab N
+  browser wait --any '["a","b"]' | --gone t | --url part|/re/ | --quiet --tab N
                                              the first text shown (named in the
                                              answer), text gone, an address, or
                                              0.5 s without a change
-  safari wait --changed [--ms 25000] --tab N new lines since the last look (added):
+  browser wait --changed [--ms 25000] --tab N new lines since the last look (added):
                                              a chat's reply; call again until found
-  safari net read|start|stop --tab N         fetch/XHR since the page loaded
-  safari net read --body I|URL-PART --tab N  one request's whole body: its index, or
+  browser net read|start|stop --tab N        fetch/XHR since the page loaded
+  browser net read --body I|URL-PART --tab N one request's whole body: its index, or
                                              part of its url (the latest with it)
-  safari net pages N --tab N [--body URL-PART] the page's JSON list, its next N pages as
+  browser net pages N --tab N [--body URL-PART] the page's JSON list, its next N pages as
                                              rows (max 20); --continue H reads on
-  safari console start|read --tab N          console capture
-  safari cookies --tab N                     cookies for the page
-  safari cookies clear --tab N|--url U       forget the site (cookies, storage);
+  browser console start|read --tab N         console capture
+  browser cookies --tab N                    cookies for the page
+  browser cookies clear --tab N|--url U      forget the site (cookies, storage);
                                              closes your tabs on it
-  safari shot --tab N [--out file.png | file.png] [--ref R] [--annotate] [--full] [--live] [--tiles] [--ifChanged]
+  browser shot --tab N [--out file.png | file.png] [--ref R] [--annotate] [--full] [--live] [--tiles] [--ifChanged]
                                              protected screenshot and source receipt;
                                              unchanged pixels can return the prior receipt
-  safari shots <url>... --widths 1440 --out folder [--full] [--tiles]
+  browser shots <url>... --widths 1440 --out folder [--full] [--tiles]
                                              capture each page and width with its receipt
 
-  safari report --out folder --answer text --findings '[{"claim":"…","evidence":"/absolute/receipt.json"}]'
+  browser report --out folder --answer text --findings '[{"claim":"…","evidence":"/absolute/receipt.json"}]'
                                              write an evidence-backed report with local images
-  safari download <ref|url> [--out file] [--tab N]
+  browser download <ref|url> [--out file] [--tab N]
                                              save a file into ~/Downloads; a url needs
                                              no tab, a tab alone saves the file it shows
-  safari download <url> <url>... [--out dir] save each as 01-name, 02-name... in dir
-  safari dialog [read|accept|dismiss] [text] --tab N
+  browser download <url> <url>... [--out dir] save each as 01-name, 02-name... in dir
+  browser dialog [read|accept|dismiss] [text] --tab N
                                              how the tab answers alerts and confirms
-  safari fetch <url> --tab N                 request a URL with the page's cookies
-  safari read <url> [--tab N] [--expect text]
+  browser fetch <url> --tab N                request a URL with the page's cookies
+  browser read <url> [--tab N] [--expect text]
                                              readable text without navigating to the URL;
                                              --expect checks content, not account identity;
                                              --format raw keeps HTML or JSON unchanged;
                                              --format json asks for JSON and refuses anything else
-  safari request_catalog list                list privately saved JSON reads
-  safari request_catalog save --tab N --name NAME --request I --observed-at T --field F --type array
+  browser request_catalog list               list privately saved JSON reads
+  browser request_catalog save --tab N --name NAME --request I --observed-at T --field F --type array
                                              check and save an observed GET
-  safari request_catalog try --tab N --request I --observed-at T --field F --type array
+  browser request_catalog try --tab N --request I --observed-at T --field F --type array
                                              check an observed GET once, save nothing;
                                              answers the call that saves it
-  safari request_catalog run --tab N --name NAME
+  browser request_catalog run --tab N --name NAME
                                              rerun its unchanged result check
-  safari request_catalog forget --name NAME  delete its private record
-  safari map <url>... [--what extract|snapshot|eval|fetch] [--save[=dir]]
+  browser request_catalog forget --name NAME delete its private record
+  browser map <url>... [--what extract|snapshot|eval|fetch] [--save[=dir]]
                                              read up to 20 pages at once, each in a
                                              background tab that closes after
                                              (--expression js or --file path, --read for a
@@ -195,62 +198,62 @@ const USAGE = `safari — drive Safari from the terminal
                                              pages a listing links to, --pages 5 to read a
                                              listing and its next pages, --fresh to read
                                              pages this task read in the last 10 min again)
-  safari pdf [save|read] [file.pdf|url] [--out file.pdf] [--tab N]
+  browser pdf [save|read] [file.pdf|url] [--out file.pdf] [--tab N]
                                              print the page to PDF, or read a PDF
                                              (a file.pdf or url needs no tab)
-  safari window <width> <height> --tab N     resize the tab's window to that size
-  safari window --size 390x844 --tab N       the same, as WIDTHxHEIGHT
-  safari history-search [text] [--any a b c] search Safari browsing history; --any: any of several texts
-  safari fill address [--label home] --tab N
+  browser window <width> <height> --tab N    resize the tab's window to that size
+  browser window --size 390x844 --tab N      the same, as WIDTHxHEIGHT
+  browser history-search [text] [--any a b c] search Safari browsing history; --any: any of several texts
+  browser fill address [--label home] --tab N
                                              your address, name, email, phone from your Contacts card
-  safari fill login [--bitwarden] [--user name] --tab N
+  browser fill login [--bitwarden] [--user name] --tab N
                                              a saved login (Apple Passwords, or Bitwarden); you never see it
-  safari call <tool> '<json args>'           any tool by name, as MCP calls it
-  safari <tool> [--<param> value ...]        the same, with each parameter as a flag
-                                             (safari passwords logins --tab N: a first word is do)
-  safari real_input --do drag --ref R --target R --tab N
+  browser call <tool> '<json args>'          any tool by name, as MCP calls it
+  browser <tool> [--<param> value ...]       the same, with each parameter as a flag
+                                             (browser passwords logins --tab N: a first word is do)
+  browser real_input --do drag --ref R --target R --tab N
                                              guarded native drag; no implicit scroll
-  safari real_input --do paste --text text [--html html] [--tsv text] --tab N
+  browser real_input --do paste --text text [--html html] [--tsv text] --tab N
                                              formatted paste; restores an unchanged clipboard
-  safari guide audit|react|site_actions|video
+  browser guide audit|react|site_actions|video
                                              on-demand accessibility, app and video inspection
-  safari run --steps '<json>' | --steps-file <path> | --steps -
+  browser run --steps '<json>' | --steps-file <path> | --steps -
                                              several tools in one call; steps from a
                                              file, or stdin for -, need no shell quoting
 
-  safari repl [--session name] [code]        Playwright-style JavaScript with site globals
+  browser repl [--session name] [code]       Playwright-style JavaScript with site globals
                                              (code from stdin when omitted, or --file path); without
-                                             --session, in this agent's own session; see: safari guide repl
-  safari repl --list | --close <name>        sessions still running; end one
+                                             --session, in this agent's own session; see: browser guide repl
+  browser repl --list | --close <name>       sessions still running; end one
 
-  safari do "<task>" [--tab N] [--steps 30] [--model m]
+  browser do "<task>" [--tab N] [--steps 30] [--model m]
                                              run the agent loop (local model); prints its session
-  safari mint "<task>" --url <url> --example '{"query":"sample"}'
+  browser mint "<task>" --url <url> --example '{"query":"sample"}'
                       [--from <name>] [--steps 30] [--model m]
                                              learn one live read-only example; return its
                                              saved verified name and checked result
-  safari mint start "<task>" --url <url> --example '<json>'
+  browser mint start "<task>" --url <url> --example '<json>'
                                              start the same work in a durable session
-  safari mint get|cancel <id>                read or stop that authoring session
-  safari session list | show <id>            agent sessions, newest first; one's transcript
-  safari session resume <id> ["<prompt>"]    go on with a session
-  safari session steer <id> "<text>"         tell a running session now (cuts in)
-  safari session queue <id> "<text>"         give a running session its next task
-  safari session stop|delete <id>
+  browser mint get|cancel <id>               read or stop that authoring session
+  browser session list | show <id>           agent sessions, newest first; one's transcript
+  browser session resume <id> ["<prompt>"]   go on with a session
+  browser session steer <id> "<text>"        tell a running session now (cuts in)
+  browser session queue <id> "<text>"        give a running session its next task
+  browser session stop|delete <id>
 
-  safari host [list] | use <ssh-host|local> | status [host]
-                                             drive another Mac's Safari through ssh
-  safari owner [--end]                       with SAFARI_OWNER=<key> (or --owner <key> on
+  browser host [list] | use <ssh-host|local> | status [host]
+                                             drive another Mac's browser through ssh
+  browser owner [--end]                      with BROWSER_OWNER=<key> (or --owner <key> on
                                              any command), calls in separate processes or
                                              over ssh share tabs that outlive each one;
                                              they close after 30 min without a call, or
                                              at --end; prints the lease's pid
-  safari mcp                                 run the MCP stdio server (thin client)
-  safari routine add <name> --at HH:MM|--every MIN [--on YYYY-MM-DD] [--model m | --session id] "<task>"
-  safari routine list | history <name> | run <name> [--dry] | pause|resume|remove <name>
+  browser mcp                                run the MCP stdio server (thin client)
+  browser routine add <name> --at HH:MM|--every MIN [--on YYYY-MM-DD] [--model m | --session id] "<task>"
+  browser routine list | history <name> | run <name> [--dry] | pause|resume|remove <name>
                                              new tasks run through omp; --session continues
-                                             saved Safari work; --on runs once on that day
-  safari routine add <name> --at HH:MM|--every MIN --watch <url>
+                                             saved browser work; --on runs once on that day
+  browser routine add <name> --at HH:MM|--every MIN --watch <url>
                       --selector CSS | --text REGEX | --eval JS | --replay <recording>
                       [--kind price|availability]
                                              a watch: no model; texts your phone when the
@@ -258,81 +261,81 @@ const USAGE = `safari — drive Safari from the terminal
                                              watch when it falls below its recent lowest,
                                              an availability watch when one opens; history
                                              prints its recent readings
-  safari routine add <name> --at HH:MM [--on YYYY-MM-DD] --script <file.js>
+  browser routine add <name> --at HH:MM [--on YYYY-MM-DD] --script <file.js>
                                              a script: no model; runs a repl script and
                                              texts your phone what it printed; run --dry
                                              gives it DRY = true and texts no one
-  safari record list | show <name> | rm <name>
+  browser record list | show <name> | rm <name>
                                              tasks recorded with the toolbar button
                                              (teach mode), newest first
-  safari replay <name> [--tab N] [--vars '{"field":"text"}'] [--json]
+  browser replay <name> [--tab N] [--vars '{"field":"text"}'] [--json]
                                              do a recording again in a background tab;
                                              exits 1 when a step fails
-  safari playbooks preview --tab N --output '{"rows":"tr.item","fields":{"title":".title"}}'
+  browser playbooks preview --tab N --output '{"rows":"tr.item","fields":{"title":".title"}}'
                                              check rows on the current page without replaying actions
-  safari playbooks learn --tab N --goal "Search the catalog"
+  browser playbooks learn --tab N --goal "Search the catalog"
                       --params '["q"]' --before '{"selector":"#search"}'
                       [--output '{"rows":"tr.item","fields":{"title":".title"}}']
                                              opt in; capture starting rows for searches
-  safari playbooks save --tab N --selector '#results[data-ready="yes"]'
+  browser playbooks save --tab N --selector '#results[data-ready="yes"]'
                       [--output '{"rows":"tr.item","fields":{"title":".title"}}']
                       [--applied '{"param":"q","in":"hash","prefix":"search/"}']
                       [--applied '{"param":"q","in":"query","key":"q"}']
                       [--result-selector '#results']
                                              verify new results; optionally return rows
-  safari playbooks list | cancel --tab N
-  safari playbooks run --url https://example.com/ --goal "Search the catalog"
+  browser playbooks list | cancel --tab N
+  browser playbooks run --url https://example.com/ --goal "Search the catalog"
                       --vars '{"q":"shoes"}'
                                              Jev chooses or abstains; replay checks
                                              live targets and stops at owner gates
 
-  safari guide sites                         sites with a usage guide
-  safari guide <site|host>                   one site's guide and learned notes (e.g. slack, x.com)
-  safari guide <name> --query "a|b"          only the parts that hold the words
-  safari guide repl                          the REPL's API and recipes
-  safari learn <site> "<fact>"               save a fact about a site for later agents
+  browser guide sites                        sites with a usage guide
+  browser guide <site|host>                  one site's guide and learned notes (e.g. slack, x.com)
+  browser guide <name> --query "a|b"         only the parts that hold the words
+  browser guide repl                         the REPL's API and recipes
+  browser learn <site> "<fact>"              save a fact about a site for later agents
                                              (at most 300 characters; never a secret)
-  safari learn <site> [--forget <n>]         list a site's notes; remove note n
-  safari learn <site> --real true|false      a model's click and type there go as real input
+  browser learn <site> [--forget <n>]        list a site's notes; remove note n
+  browser learn <site> --real true|false     a model's click and type there go as real input
 
-  safari imessage chats [--limit N]          recent conversations
-  safari imessage history <chat> [--limit N] [--since rowid]
+  browser imessage chats [--limit N]         recent conversations
+  browser imessage history <chat> [--limit N] [--since rowid]
                                              one conversation (id, phone, email, or name)
-  safari imessage search [text] [--from who] [--chat who] [--days 90]
+  browser imessage search [text] [--from who] [--chat who] [--days 90]
                                              search messages, or one conversation's
-  safari imessage files <id>... [--out /absolute/folder] [--clipboard]
+  browser imessage files <id>... [--out /absolute/folder] [--clipboard]
                                              ids from history/search files; fetch originals,
                                              save copies or copy verified file URLs
                                              (downloads may mark the conversation read)
-  safari imessage code [--seconds 30] [--since rowid]
+  browser imessage code [--seconds 30] [--since rowid]
                                              wait for a sign-in code by text
-  safari imessage send <to> [text] [--file path]... [--approve <draftId>]
+  browser imessage send <to> [text] [--file path]... [--approve <draftId>]
                                              draft a text and/or files; sends only with --approve and
                                              the draftId of the draft the user approved
-  safari contacts <name>                     phones and emails for a contact
-  safari ask "<question>"                    away from the Mac, send the question to your phone
+  browser contacts <name>                    phones and emails for a contact
+  browser ask "<question>"                   away from the Mac, send the question to your phone
                                              (answer it back here); at the Mac, send nothing
 
-  Every command takes --host <ssh-host> to use another Mac's Safari,
+  Every command takes --host <ssh-host> to use another Mac's browser,
   --json to print JSON, and -q (or --quiet) to print nothing when it works
   and one line on stderr when it misses or fails. A miss (ok, found, or
   kept false) exits 1, as a failure does, with or without -q; on wait,
   --quiet also waits for the page to go quiet. Messages, Contacts, history,
   and fill commands run in this terminal (they need its Full Disk Access),
   not in the daemon. A command's parameters also work as flags (click
-  --ref 3 is click 3), and safari help <command> lists them.
+  --ref 3 is click 3), and browser help <command> lists them.
 `;
 
 const json = process.argv.includes("--json");
 
 // --owner <key> names the lease this command's calls work for, as
-// SAFARI_OWNER does (lease.ts).
+// BROWSER_OWNER does (lease.ts).
 const ownerFlag = flag("owner", process.argv);
-if (ownerFlag !== undefined) process.env.SAFARI_OWNER = ownerFlag;
+if (ownerFlag !== undefined) process.env.BROWSER_OWNER = ownerFlag;
 
 // -q, or --quiet, on any command: nothing printed when it works, and one
 // line on stderr when it misses or fails. From 10-01 to 10-04 a 99point
-// agent sent 450 of its 933 safari commands to /dev/null, and the misses
+// agent sent 450 of its 933 browser commands to /dev/null, and the misses
 // went with them: a type whose text never landed, a wait that found
 // nothing (S99PartA). say writes that line, and show what a flag asks to
 // print alone (eval --raw, open --id), quiet or not.
@@ -377,7 +380,7 @@ function answer(result: unknown): void {
   exitOnMiss(result);
 }
 
-// eval --raw: the value alone, for n=$(safari eval --raw ...): a string as
+// eval --raw: the value alone, for n=$(browser eval --raw ...): a string as
 // it is, anything else as JSON on one line, nothing for undefined. Agents
 // cut it out with grep -o '"result".*' 47 times (S99PartA). The answer's
 // other words (note, hint) go to stderr.
@@ -388,7 +391,7 @@ function printRaw(result: unknown): void {
   exitOnMiss(result);
 }
 
-// open --id: the tab's id alone, for T=$(safari open <url> --id). Agents
+// open --id: the tab's id alone, for T=$(browser open <url> --id). Agents
 // scraped it with grep -oE '[0-9]+' | head -1 48 times (S99PartA), which
 // takes the first number an error names too. Its note and hint go to
 // stderr: on 11-16 a script opened two Proton pages, got one tab's id
@@ -512,7 +515,7 @@ function flagArgs(cmd: string, tool: string, argv: string[]): Record<string, unk
       if (miss) fail(miss, 2);
       const listed = [...Object.keys(tools[tool].params), ...own];
       const near = closestParam(given, listed);
-      fail(`${cmd} takes no --${given}${near ? `; did you mean --${near}?` : ""} (flags: ${listed.map((f) => `--${f}`).join(" ")}; safari ${cmd} --help says what each does)`, 2);
+      fail(`${cmd} takes no --${given}${near ? `; did you mean --${near}?` : ""} (flags: ${listed.map((f) => `--${f}`).join(" ")}; browser ${cmd} --help says what each does)`, 2);
     }
     const [name, p] = found;
     if (Object.hasOwn(args, name)) continue;
@@ -533,7 +536,7 @@ function commandHelp(cmd: string): string | null {
   const lines = USAGE.split("\n");
   const usage: string[] = [];
   lines.forEach((line, i) => {
-    if (!new RegExp(`^  safari ${cmd.replace(/[^\w-]/g, "")}\\b`).test(line)) return;
+    if (!new RegExp(`^  browser ${cmd.replace(/[^\w-]/g, "")}\\b`).test(line)) return;
     usage.push(line);
     for (let j = i + 1; j < lines.length && /^ {20,}\S/.test(lines[j]); j++) usage.push(lines[j]);
   });
@@ -554,13 +557,13 @@ function commandHelp(cmd: string): string | null {
   return [...usage, ...(usage.length ? [""] : []), def.desc, "", ...params].join("\n");
 }
 
-// A command that is none names the nearest one: `safari windows` printed
+// A command that is none names the nearest one: `browser windows` printed
 // all of USAGE (S99PartC).
 function unknownCommand(cmd: string): never {
-  const commands = [...USAGE.matchAll(/^ {2}safari ([\w|-]+)/gm)].flatMap((m) => m[1].split("|"));
+  const commands = [...USAGE.matchAll(/^ {2}browser ([\w|-]+)/gm)].flatMap((m) => m[1].split("|"));
   const tools = [...Object.entries(TOOLS), ...Object.entries(CALLER_TOOLS)].filter(([, t]) => !t.hidden).map(([n]) => n);
   const near = nearest(cmd, [...commands, ...tools, ...Object.keys(ALIAS)]);
-  return fail(`unknown command: ${cmd}${near ? `; did you mean ${near}?` : ""} (safari --help lists every command)`, 2);
+  return fail(`unknown command: ${cmd}${near ? `; did you mean ${near}?` : ""} (browser --help lists every command)`, 2);
 }
 
 async function readStdin(): Promise<string> {
@@ -583,14 +586,14 @@ async function runAndReport(rec: SessionRecord, argv: string[]) {
   const steps = Number(flag("steps", argv) ?? 30);
   if (rec.mint && (!Number.isInteger(steps) || steps < 1)) fail("steps must be a positive whole number", 2);
   const done = await runSession(rec, {
-    apiKey: process.env.SAFARI_MODEL_KEY, maxSteps: steps,
+    apiKey: process.env.BROWSER_MODEL_KEY, maxSteps: steps,
     onEvent: rec.mint ? () => {} : showEvent,
   });
   if (rec.mint) {
     if (done.status === "done" && done.mint?.result) return answer({ ...done.mint.result, session: done.id });
     return answer({ ok: false, session: done.id, status: done.status, error: done.mint?.failure ?? done.answer ?? "no verified tool was saved" });
   }
-  if (done.status !== "done") console.error(`session ${done.id} ${done.status}; go on with: safari session resume ${done.id} "<prompt>"`);
+  if (done.status !== "done") console.error(`session ${done.id} ${done.status}; go on with: browser session resume ${done.id} "<prompt>"`);
   console.log(done.answer ?? "");
   if (done.status !== "done") process.exit(1);
 }
@@ -598,12 +601,12 @@ async function runAndReport(rec: SessionRecord, argv: string[]) {
 async function mintCommand(argv: string[], host: string) {
   const flags = ["url", "example", "from", "steps", "model", "host", "json", "quiet"];
   for (const [i, arg] of argv.entries()) {
-    if (arg.startsWith("--") && !isFlagValue(i, argv) && !flags.includes(arg.slice(2).split("=")[0])) fail(`mint takes no ${arg.split("=")[0]}; see: safari mint --help`, 2);
+    if (arg.startsWith("--") && !isFlagValue(i, argv) && !flags.includes(arg.slice(2).split("=")[0])) fail(`mint takes no ${arg.split("=")[0]}; see: browser mint --help`, 2);
   }
-  if (host !== "local") fail("mint needs the owner's Safari on this Mac; use --host local", 2);
+  if (host !== "local") fail("mint needs the owner's browser on this Mac; use --host local", 2);
   const pos = argv.filter((arg, i) => !arg.startsWith("--") && !isFlagValue(i, argv));
   if (pos[0] === "get" || pos[0] === "cancel") {
-    if (pos.length !== 2) fail("usage: safari mint get|cancel <id>", 2);
+    if (pos.length !== 2) fail("usage: browser mint get|cancel <id>", 2);
     const { MINT_TOOLS } = await import("../daemon/mint.ts");
     return answer(await MINT_TOOLS.mint.run({ do: pos[0], id: pos[1] }));
   }
@@ -616,7 +619,7 @@ async function mintCommand(argv: string[], host: string) {
   }
   const task = pos.join(" ").trim();
   const sample = flag("example", argv);
-  if (!task || !url || sample === undefined) fail("usage: safari mint <task> --url <url> --example '<json>' [--from <name>]", 2);
+  if (!task || !url || sample === undefined) fail("usage: browser mint <task> --url <url> --example '<json>' [--from <name>]", 2);
   let example: unknown;
   try { example = JSON.parse(sample); }
   catch { fail("example must be a JSON object mapping public parameter names to text", 2); }
@@ -629,7 +632,7 @@ async function mintCommand(argv: string[], host: string) {
   const rec = await newSession(task, {
     host, ...mintProvider(flag("model", argv)), mint: request,
   });
-  console.error(`session ${rec.id}; stop it with: safari session stop ${rec.id}`);
+  console.error(`session ${rec.id}; stop it with: browser session stop ${rec.id}`);
   return runAndReport(rec, argv);
 }
 
@@ -645,7 +648,7 @@ async function sessionCommand(argv: string[]) {
         ...r, ...(mint ? { answer: undefined, kind: "mint", ...(mint.result ? { saved: mint.result.name, revision: mint.result.revision } : {}) } : {}),
         status: statusOf({ ...r, messages }), steps: messages.filter((m) => m.role === "assistant").length,
       })));
-      if (!recs.length) return console.log("no sessions yet; start one with: safari do \"<task>\"");
+      if (!recs.length) return console.log("no sessions yet; start one with: browser do \"<task>\"");
       for (const r of recs) console.log(`${r.id}  ${statusOf(r).padEnd(12)} ${r.updated.slice(0, 16).replace("T", " ")}  ${r.task.replace(/\s+/g, " ").slice(0, 70)}`);
       return;
     }
@@ -653,19 +656,19 @@ async function sessionCommand(argv: string[]) {
       return console.log(json ? JSON.stringify(await loadSession(id ?? "")) : transcript(await loadSession(id ?? "")));
     case "resume": {
       const rec = await loadSession(id ?? "");
-      if (isRunning(rec)) fail(`session ${rec.id} is running; talk to it with: safari session steer ${rec.id} "<text>"`);
-      if (rec.mint && (rec.mint.result || rec.mint.failure || rec.mint.pendingAction)) fail(`this authoring session cannot be replayed or repaired; review its result and start a new safari mint request${rec.mint.result ? ` with --from ${rec.mint.result.name}` : ""}`, 2);
+      if (isRunning(rec)) fail(`session ${rec.id} is running; talk to it with: browser session steer ${rec.id} "<text>"`);
+      if (rec.mint && (rec.mint.result || rec.mint.failure || rec.mint.pendingAction)) fail(`this authoring session cannot be replayed or repaired; review its result and start a new browser mint request${rec.mint.result ? ` with --from ${rec.mint.result.name}` : ""}`, 2);
       const last = rec.messages.at(-1);
       if (text) rec.messages.push({ role: "user", content: text });
-      else if (last?.role === "assistant" && !last.tool_calls?.length) fail(`session ${rec.id} has answered; give it a prompt: safari session resume ${rec.id} "<prompt>"`, 2);
+      else if (last?.role === "assistant" && !last.tool_calls?.length) fail(`session ${rec.id} has answered; give it a prompt: browser session resume ${rec.id} "<prompt>"`, 2);
       await connectHost(flag("host", argv) ?? (rec.host === "local" ? undefined : rec.host));
-      if (process.env.SAFARI_MODEL) rec.model = process.env.SAFARI_MODEL;
-      if (process.env.SAFARI_MODEL_BASE) rec.baseUrl = process.env.SAFARI_MODEL_BASE;
+      if (process.env.BROWSER_MODEL) rec.model = process.env.BROWSER_MODEL;
+      if (process.env.BROWSER_MODEL_BASE) rec.baseUrl = process.env.BROWSER_MODEL_BASE;
       return runAndReport(rec, argv);
     }
     case "steer":
     case "queue":
-      if (!text) fail(`usage: safari session ${sub} <id> "<text>"`, 2);
+      if (!text) fail(`usage: browser session ${sub} <id> "<text>"`, 2);
       await sendControl(id ?? "", { kind: sub, text });
       return console.log(sub === "steer" ? `sent; session ${id} takes it before its next step` : `queued; session ${id} starts on it once it answers`);
     case "stop": {
@@ -681,7 +684,7 @@ async function sessionCommand(argv: string[]) {
       await deleteSession(id ?? "");
       return console.log(`deleted session ${id}`);
     default:
-      fail("usage: safari session list|show|resume|steer|queue|stop|delete", 2);
+      fail("usage: browser session list|show|resume|steer|queue|stop|delete", 2);
   }
 }
 
@@ -694,14 +697,14 @@ async function hostCommand(argv: string[]) {
     return;
   }
   if (sub === "use") {
-    if (!name) fail("usage: safari host use <ssh-host|local>", 2);
+    if (!name) fail("usage: browser host use <ssh-host|local>", 2);
     return print(await setDefaultHost(name));
   }
   if (sub === "status") return print(await hostHealth(name ?? (await readHostConfig()).default ?? "local"));
-  fail("usage: safari host [list] | use <ssh-host|local> | status [host]", 2);
+  fail("usage: browser host [list] | use <ssh-host|local> | status [host]", 2);
 }
 
-// The flags repl reads. From 11-11 to 11-12 `safari repl --close-all` ran 7
+// The flags repl reads. From 11-11 to 11-12 `browser repl --close-all` ran 7
 // times and did nothing it said: repl dropped a flag it did not know.
 const REPL_FLAGS = ["session", "list", "close", "file", "host", "json", "quiet"];
 
@@ -710,7 +713,7 @@ async function replCommand(argv: string[]) {
     const given = arg.slice(2).split("=")[0];
     if (!arg.startsWith("--") || isFlagValue(i, argv) || REPL_FLAGS.includes(given)) continue;
     const near = closestParam(given, REPL_FLAGS);
-    fail(`repl takes no --${given}${near ? `; did you mean --${near}?` : ""} (flags: ${REPL_FLAGS.map((f) => `--${f}`).join(" ")}; safari repl --list lists the sessions running, safari repl --close <name> ends one)`, 2);
+    fail(`repl takes no --${given}${near ? `; did you mean --${near}?` : ""} (flags: ${REPL_FLAGS.map((f) => `--${f}`).join(" ")}; browser repl --list lists the sessions running, browser repl --close <name> ends one)`, 2);
   }
   const { closeSession, listSessions, runInSession } = await import("../daemon/repl-host.ts");
   const { ReplSession } = await import("../daemon/repl.ts");
@@ -727,7 +730,7 @@ async function replCommand(argv: string[]) {
   // --file runs a script saved to disk: agents reached for it (01a0e50b).
   const file = flag("file", argv);
   const code = file !== undefined ? await Bun.file(resolve(file)).text() : argv.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, argv)).join(" ") || (await readStdin());
-  if (!code.trim()) fail('usage: safari repl [--session name] "<code>" | --file path (or pipe the code in)', 2);
+  if (!code.trim()) fail('usage: browser repl [--session name] "<code>" | --file path (or pipe the code in)', 2);
   let result: ReplResult;
   // Without --session, a call runs in its agent's own session (the agent
   // above this process: owner.ts), so what one call binds the next reads:
@@ -737,7 +740,7 @@ async function replCommand(argv: string[]) {
   const name = session ?? (agent === undefined ? undefined : `agent-${agent}`);
   if (name !== undefined) {
     const r = await runInSession(name, code, { host: flag("host", argv), endsWith: agent });
-    if (r.started) console.error(`\x1b[2m(session ${name} started; it ends ${agent === undefined ? "" : "when this agent exits or "}after 30 min unused, or: safari repl --close ${name})\x1b[0m`);
+    if (r.started) console.error(`\x1b[2m(session ${name} started; it ends ${agent === undefined ? "" : "when this agent exits or "}after 30 min unused, or: browser repl --close ${name})\x1b[0m`);
     if (r.hint !== undefined) console.error(`hint: ${r.hint}`);
     result = r;
   } else {
@@ -767,7 +770,7 @@ async function fillCommand(argv: string[]) {
     const username = flag("user", argv);
     return answer(hasFlag("bitwarden", argv) ? await invoke("bitwarden", { do: "fill", tab, username }) : await invoke("passwords", { do: "fill", tab, username }));
   }
-  fail("usage: safari fill address [--label home] | login [--bitwarden] [--user name]", 2);
+  fail("usage: browser fill address [--label home] | login [--bitwarden] [--user name]", 2);
 }
 
 // The daemon's answer at path, as JSON. Only a refused connection means
@@ -779,7 +782,7 @@ async function daemonJson<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${base}${path}`, init).catch((e: unknown) => {
     const deploy = deployingFor();
     return fail(connectionRefused(e)
-      ? deploy !== undefined ? `safari is restarting for a deploy; try again in ${deploy} s` : `daemon not reachable at ${base}: nothing listens there; start it with: safari daemon install`
+      ? deploy !== undefined ? `the browser harness is restarting for a deploy; try again in ${deploy} s` : `daemon not reachable at ${base}: nothing listens there; start it with: browser daemon install`
       : `the daemon at ${base} did not answer ${path}: ${e instanceof Error ? e.message : String(e)}`);
   });
   const text = await res.text();
@@ -811,8 +814,8 @@ async function main() {
     const ws = flag("ws", rest);
     const http = flag("http", rest);
     const env: Record<string, string> = { ...process.env as Record<string, string> };
-    if (ws) env.SAFARI_HARNESS_WS = ws;
-    if (http) env.SAFARI_HARNESS_HTTP_PORT = http;
+    if (ws) env.BROWSER_HARNESS_WS = ws;
+    if (http) env.BROWSER_HARNESS_HTTP_PORT = http;
     const child = spawn(process.execPath, [new URL("../daemon/main.ts", import.meta.url).pathname], {
       stdio: "inherit",
       env,
@@ -842,7 +845,17 @@ async function main() {
     const { daemonInstall, daemonUninstall } = await import("./launchd.ts");
     if (sub === "install") console.log(await daemonInstall());
     else if (sub === "uninstall") console.log(await daemonUninstall());
-    else fail("usage: safari daemon install|uninstall", 2);
+    else fail("usage: browser daemon install|uninstall", 2);
+    return;
+  }
+
+  if (cmd === "mode") {
+    const { MODE, MODES } = await import("../daemon/front.ts");
+    const want = rest[0];
+    if (want === undefined) return console.log(`${MODE} (${MODES[MODE]})`);
+    if (!(want in MODES)) fail(`usage: browser mode [${Object.keys(MODES).join("|")}]`, 2);
+    const { setMode } = await import("./launchd.ts");
+    console.log(await setMode(want as keyof typeof MODES));
     return;
   }
 
@@ -881,7 +894,7 @@ async function main() {
       console.log(await routineResume(pos[0]));
     } else if (sub === "remove") {
       console.log(await routineRemove(pos[0]));
-    } else fail("usage: safari routine add|list|history|run|pause|resume|remove", 2);
+    } else fail("usage: browser routine add|list|history|run|pause|resume|remove", 2);
     return;
   }
 
@@ -894,7 +907,7 @@ async function main() {
     const host = flag("host", rest);
     const child = spawn(process.execPath, [new URL("../daemon/mcp.ts", import.meta.url).pathname], {
       stdio: "inherit",
-      env: { ...process.env as Record<string, string>, ...(host ? { SAFARI_HARNESS_HOST: host } : {}) },
+      env: { ...process.env as Record<string, string>, ...(host ? { BROWSER_HARNESS_HOST: host } : {}) },
     });
     child.on("exit", (code) => process.exit(code ?? 0));
     return;
@@ -918,7 +931,7 @@ async function main() {
 
   if (cmd === "owner") {
     const key = ownerKey();
-    if (key === undefined) fail("usage: SAFARI_OWNER=<key> safari owner [--end], or safari owner --owner <key> [--end]", 2);
+    if (key === undefined) fail("usage: BROWSER_OWNER=<key> browser owner [--end], or browser owner --owner <key> [--end]", 2);
     if (hasFlag("end", rest)) return print({ owner: key, pid: (await endLease(key)) ?? null });
     return print({ owner: key, pid: await holdLease(key) });
   }
@@ -964,8 +977,8 @@ async function main() {
     const e = h.extension;
     const missed = Object.entries(e?.timeouts ?? {}).filter(([, n]) => n > 0).map(([op, n]) => `${op} ${n} in a row`).join(", ");
     const answered = typeof e?.sinceAnswerMs === "number" ? `, last answered ${Math.round(e.sinceAnswerMs / 1000)} s ago` : "";
-    console.log(!e || e.connected === false ? "extension disconnected: Safari is closed, or Safari Harness is off in Safari Settings > Extensions"
-      : e.stuck ? `extension stuck: connected, but its calls time out (${missed})${answered}; ${e.reloadIgnored ? "Safari ignored its reload: quit Safari and open it again, or turn Safari Harness Bridge off and on in Safari Settings > Extensions" : "the next call that needs it reloads it by itself; if that call fails too, quit Safari and open it again"}`
+    console.log(!e || e.connected === false ? (LADYBIRD ? "extension disconnected: Ladybird Harness is closed, or its bridge has not started (quit it and open it again)" : "extension disconnected: Safari is closed, or Safari Harness is off in Safari Settings > Extensions")
+      : e.stuck ? `extension stuck: connected, but its calls time out (${missed})${answered}; ${e.reloadIgnored ? `${BROWSER_NAME} ignored its reload: quit ${BROWSER_NAME} and open it again${LADYBIRD ? "" : ", or turn Safari Harness Bridge off and on in Safari Settings > Extensions"}` : `the next call that needs it reloads it by itself; if that call fails too, quit ${BROWSER_NAME} and open it again`}`
       : `extension connected${e.connectedAt ? ` since ${at(e.connectedAt)}` : ""}${answered}${missed ? `; timed out: ${missed}` : ""}`);
     console.log(!alerts.on ? `${alerts.why}: handoff, ask, and watch routines cannot reach the user's phone; tell him in your chat`
       : alerts.lastFailed !== undefined && alerts.lastAt !== undefined ? `phone alerts on, but the last one, at ${at(alerts.lastAt)}, failed: ${alerts.lastFailed}`
@@ -984,18 +997,18 @@ async function main() {
     return;
   }
 
-  // extension reload: Safari reloads the extension, as the daemon has it do
+  // extension reload: the browser reloads the extension, as the daemon has it do
   // by itself once it is stuck (bridge.ts), and no password is asked for.
   if (cmd === "extension") {
     const [sub] = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest));
-    if (sub !== "reload") fail("usage: safari extension reload", 2);
+    if (sub !== "reload") fail("usage: browser extension reload", 2);
     const r = await daemonJson<{ ok: boolean; value?: { ms: number }; error?: string }>("/extension/reload", { method: "POST" });
     if (!r.ok || !r.value) fail(r.error ?? "the daemon gave no answer");
     if (json) return print(r.value);
     return console.log(`the extension reloaded, and connected again in ${(r.value.ms / 1000).toFixed(1)} s`);
   }
 
-  // agents: every agent that used Safari in the last hour, its last call,
+  // agents: every agent that used the browser in the last hour, its last call,
   // and the pages that show it and let the user pause or stop it (--json:
   // the whole answer).
   if (cmd === "agents") {
@@ -1003,13 +1016,13 @@ async function main() {
     if (json) return print(o);
     for (const a of o.agents) {
       const tabs = a.tabs === null ? "" : `, ${a.tabs} tab${a.tabs === 1 ? "" : "s"}`;
-      const raised = a.raised === 0 ? "" : `, brought Safari to the front ${a.raised} time${a.raised === 1 ? "" : "s"}`;
+      const raised = a.raised === 0 ? "" : `, brought ${BROWSER_NAME} to the front ${a.raised} time${a.raised === 1 ? "" : "s"}`;
       console.log(`${a.owner === null ? "no agent" : `agent ${a.owner}${a.process ? ` (${a.process})` : ""}`}: ${a.status}${tabs}${raised}`);
       for (const t of a.tasks) console.log(`  ${t.name}  ${daemonHttp()}/space?id=${t.id}&name=${encodeURIComponent(t.name)}`);
       const c = a.last;
       if (c) console.log(`  last: ${new Date(c.t).toLocaleTimeString("sv")} ${c.tool} ${c.args}  ${c.error ?? c.outcome ?? (c.held ? "held" : "running")}`);
     }
-    if (o.agents.length === 0) console.log("no agent has used Safari in the last hour");
+    if (o.agents.length === 0) console.log(`no agent has used ${BROWSER_NAME} in the last hour`);
     console.log(`watch, pause, or stop them: ${daemonHttp()}/agents`);
     return;
   }
@@ -1018,16 +1031,16 @@ async function main() {
 
   if (cmd === "do") {
     const task = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest)).join(" ");
-    if (!task) fail("usage: safari do \"<task>\" [--tab N] [--steps N] [--model m]", 2);
+    if (!task) fail("usage: browser do \"<task>\" [--tab N] [--steps N] [--model m]", 2);
     const { newSession } = await import("../daemon/sessions.ts");
     const tab = flag("tab", rest);
     const rec = await newSession(task, {
       tab: tab === undefined ? undefined : await resolveTab(tab, async () => rowsOf(await invoke("tabs", {}))),
       host,
-      model: flag("model", rest) ?? process.env.SAFARI_MODEL ?? "gemma4:12b-mlx",
-      baseUrl: process.env.SAFARI_MODEL_BASE ?? "http://127.0.0.1:11434/v1",
+      model: flag("model", rest) ?? process.env.BROWSER_MODEL ?? "gemma4:12b-mlx",
+      baseUrl: process.env.BROWSER_MODEL_BASE ?? "http://127.0.0.1:11434/v1",
     });
-    console.error(`\x1b[2msession ${rec.id} · steer it: safari session steer ${rec.id} "<text>"\x1b[0m`);
+    console.error(`\x1b[2msession ${rec.id} · steer it: browser session steer ${rec.id} "<text>"\x1b[0m`);
     return runAndReport(rec, rest);
   }
 
@@ -1045,7 +1058,7 @@ async function main() {
       send: ["imessage_send", { to: pos[0], text: pos.slice(1).join(" "), files: fileFlags(rest), approved: flag("approve", rest) }],
     };
     const call = sub ? calls[sub] : undefined;
-    if (!call) fail("usage: safari imessage chats|history|search|files|code|send …, or safari contacts <name>", 2);
+    if (!call) fail("usage: browser imessage chats|history|search|files|code|send …, or browser contacts <name>", 2);
     answer(await invoke(...call, true));
     return;
   }
@@ -1053,11 +1066,11 @@ async function main() {
   const named = toolName(cmd === "call" ? (rest.find((a, i) => !a.startsWith("--") && !isFlagValue(i, rest)) ?? "") : cmd);
   const positional = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest, named));
   // A command's words are words, not its call's JSON: on 09-30 an agent
-  // wrote `safari dialog --tab front '{"do":"read"}'`, which sent the whole
+  // wrote `browser dialog --tab front '{"do":"read"}'`, which sent the whole
   // object as do, and open, snapshot, and goto failed on theirs with errors
   // that hid why.
   if (cmd !== "call" && jsonObject(positional[0])) {
-    fail(`${cmd} takes words and flags, not a JSON object: safari call ${toolName(cmd) ?? cmd} '${positional[0]}' (flags such as --tab still apply), or its flags (safari ${cmd} --help)`, 2);
+    fail(`${cmd} takes words and flags, not a JSON object: browser call ${toolName(cmd) ?? cmd} '${positional[0]}' (flags such as --tab still apply), or its flags (browser ${cmd} --help)`, 2);
   }
   let tool = ALIAS[cmd] ?? cmd;
   let args: Record<string, unknown> = { ...tabArg(rest), ...saveArg(rest), ...snapshotArg(rest) };
@@ -1072,7 +1085,7 @@ async function main() {
     case "open": {
       // open opens a tab of its own: `open <url> --tab 12153` opened tab
       // 13608 and left 12153 on its old page (S99PartC).
-      if (args.tab !== undefined) fail(`open takes no --tab: it opens a tab of its own. To load the page in tab ${String(args.tab)}, run: safari goto ${positional[0] ?? "<url>"} --tab ${String(args.tab)}`, 2);
+      if (args.tab !== undefined) fail(`open takes no --tab: it opens a tab of its own. To load the page in tab ${String(args.tab)}, run: browser goto ${positional[0] ?? "<url>"} --tab ${String(args.tab)}`, 2);
       args.url = positional[0];
       args.background = hasFlag("bg", rest);
       break;
@@ -1266,14 +1279,14 @@ async function main() {
       try {
         args = { ...args, ...(body ? JSON.parse(body) as Record<string, unknown> : {}) };
       } catch {
-        fail("usage: safari call <tool> '<json args>'", 2);
+        fail("usage: browser call <tool> '<json args>'", 2);
       }
       break;
     }
     default: {
       // Any tool by name, however it is written (login-form for login_form).
       tool = toolName(cmd) ?? unknownCommand(cmd);
-      // safari passwords status: the word after a tool that takes do is its do.
+      // browser passwords status: the word after a tool that takes do is its do.
       if (positional[0] !== undefined && toolDef(tool)?.params.do) args.do = positional[0];
     }
   }
@@ -1294,7 +1307,7 @@ async function main() {
   // eval's code from stdin, when no word, --expression, --file, or --reader gave it
   if (cmd === "eval" && args.reader === undefined) {
     if (args.expression === undefined || args.expression === "") args.expression = await readStdin();
-    if (!String(args.expression).trim()) fail('usage: safari eval "<js>" --tab N [--page] | --expression js | --file path (or pipe the code in)', 2);
+    if (!String(args.expression).trim()) fail('usage: browser eval "<js>" --tab N [--page] | --expression js | --file path (or pipe the code in)', 2);
   }
   const raw = cmd === "eval" && hasFlag("raw", rest);
   if (raw && args.save !== undefined) fail("eval --raw prints the value, and --save writes it to a file: give one of them", 2);

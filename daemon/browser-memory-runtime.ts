@@ -75,13 +75,13 @@ async function synchronize(captureCurrent = true): Promise<void> {
 export async function researchRead<T extends object>(tab: number, read: () => Promise<T>, partial = false): Promise<Omit<T, "memorySource"> & { memoryReceipt?: ResearchReceipt; memoryWarning?: string }> {
   let generation: number | undefined;
   try { generation = browserMemory.researchGeneration(); }
-  catch { captureError = "research memory is unavailable; check safari memory status."; }
+  catch { captureError = "research memory is unavailable; check browser memory status."; }
   const owner = currentOwner();
   const readAt = Date.now();
   const value = await read();
   const { memorySource, ...result } = value as T & { memorySource?: unknown };
   if (generation === undefined) {
-    const memoryWarning = captureError ?? (memorySource === undefined ? undefined : "research memory is unavailable; check safari memory status.");
+    const memoryWarning = captureError ?? (memorySource === undefined ? undefined : "research memory is unavailable; check browser memory status.");
     return memoryWarning === undefined ? result : { ...result, memoryWarning };
   }
   if (owner === undefined || !memorySource || typeof memorySource !== "object" || Array.isArray(memorySource)) return result;
@@ -98,7 +98,7 @@ export async function researchRead<T extends object>(tab: number, read: () => Pr
     const receipt = browserMemory.holdResearch({ url: source.url, title: source.title, body: source.body, partial: partial || source.partial, readAt }, owner, generation);
     return { ...result, ...(receipt ? { memoryReceipt: receipt } : {}) };
   } catch {
-    captureError = "research memory is unavailable; check safari memory status.";
+    captureError = "research memory is unavailable; check browser memory status.";
     return { ...result, memoryWarning: captureError };
   }
 }

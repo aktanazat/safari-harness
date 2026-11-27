@@ -7,18 +7,18 @@ import { listTools } from "./mcp-tools.ts";
 import { runAs } from "./owner.ts";
 import { callTool } from "./tools.ts";
 
-// safari guide finds a site's guide and learned notes by its name, host,
+// browser guide finds a site's guide and learned notes by its name, host,
 // or address (guides.ts). Each test gets its own notes directory.
-const before = process.env.SAFARI_HARNESS_NOTES;
+const before = process.env.BROWSER_HARNESS_NOTES;
 let dir = "";
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "site-guides-"));
-  process.env.SAFARI_HARNESS_NOTES = dir;
+  process.env.BROWSER_HARNESS_NOTES = dir;
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 afterAll(() => {
-  if (before === undefined) delete process.env.SAFARI_HARNESS_NOTES;
-  else process.env.SAFARI_HARNESS_NOTES = before;
+  if (before === undefined) delete process.env.BROWSER_HARNESS_NOTES;
+  else process.env.BROWSER_HARNESS_NOTES = before;
 });
 
 const learn = (site: string, fact: string) => runAs(process.pid, () => callTool("learn", { site, fact }));
@@ -48,7 +48,7 @@ test("the nearest noted site shares a name with the one asked for, not a word li
   expect(noGuide("apply.knight-hennessy.stanford.edu")).toMatch(/nearest with notes: applygrad\.stanford\.edu;/);
 });
 
-// safari guide uscis.gov found nothing though notes were saved for
+// browser guide uscis.gov found nothing though notes were saved for
 // my.uscis.gov and egov.uscis.gov (09-30).
 test("a host finds the notes learned on its subdomains", async () => {
   await learn("my.uscis.gov", "The case status page needs a fresh sign-in");
@@ -58,10 +58,10 @@ test("a host finds the notes learned on its subdomains", async () => {
 });
 
 // On 10-16 agents printed all 113 KB of the reference to find one tool, or
-// paged it with sed and grep: safari guide <tool> prints that tool's section.
+// paged it with sed and grep: browser guide <tool> prints that tool's section.
 const headings = (text: string | null) => (text ?? "").split("\n").filter((l) => /^#{1,2} /.test(l));
 
-test("safari guide <tool> prints that tool's reference section and no other, for every tool the MCP server lists", async () => {
+test("browser guide <tool> prints that tool's reference section and no other, for every tool the MCP server lists", async () => {
   // repl's name prints the script API (docs/REPL.md); its section is reference repl
   const names = (listTools() as { name: string }[]).map((t) => t.name).filter((n) => n !== "repl");
   const printed = await Promise.all(names.map(async (n) => headings(await guide(n))));
@@ -81,7 +81,7 @@ test("a tool named with a hyphen, as the CLI spells it, finds its section", asyn
   expect(headings(await guide("real-input"))).toEqual(["## real_input"]);
 });
 
-test("safari guide reference lists the sections instead of printing the reference", async () => {
+test("browser guide reference lists the sections instead of printing the reference", async () => {
   const index = await guide("reference");
   expect(headings(index)).toEqual([]);
   expect(index).toContain("real_input");
@@ -89,7 +89,7 @@ test("safari guide reference lists the sections instead of printing the referenc
   expect(await guide("reference no such section")).toBeNull();
 });
 
-// On 10-22 `safari guide repl x linkedin` missed whole, and its agent asked
+// On 10-22 `browser guide repl x linkedin` missed whole, and its agent asked
 // for each again; another chained lookups with &&.
 test("several topics in one call print each, a miss named in its place", async () => {
   const text = await guide("click type zzqq");
@@ -98,8 +98,8 @@ test("several topics in one call print each, a miss named in its place", async (
   expect(await guide("zzqq zzqx")).toBeNull();
 });
 
-// On 10-22 six agents asked for google-search after `safari guide google`
-// listed google's guides, and `safari guide search` missed.
+// On 10-22 six agents asked for google-search after `browser guide google`
+// listed google's guides, and `browser guide search` missed.
 test("google and search print the google search guide", async () => {
   const search = await guide("google-search");
   expect(await guide("search")).toBe(search);

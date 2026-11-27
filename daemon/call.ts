@@ -15,7 +15,7 @@ import { TOOLS, pageRead, runSteps, type PageRead } from "./tools.ts";
 import { learnAgentAction, notePlaybookTab } from "./playbooks.ts";
 import { HarnessError } from "./failures.ts";
 import { cancelCertificatePrompts, cancelLeftSheets } from "./sheets.ts";
-import { BROWSER } from "./front.ts";
+import { BROWSER, BROWSER_NAME } from "./front.ts";
 
 // A call that never reached Safari's extension (bridge.ts): its kind is
 // stuck, none is connected, or its reload did not connect again. Nothing
@@ -67,7 +67,7 @@ async function asReal(tool: string, args: Record<string, unknown>, real: boolean
 // model: the call is one a model wrote. The daemon checks the calls it
 // runs (guard.ts), and this process the ones that run here. real: the call
 // is a step of a run with real: true (asReal). caller: the environment of
-// whoever ran this process, which only the safari CLI gives (secret.ts).
+// whoever ran this process, which only the browser CLI gives (secret.ts).
 export async function invoke(tool: string, args: Record<string, unknown>, model = false, real = false, caller?: CallerEnv): Promise<unknown> {
   const name = nameIn([...DAEMON_NAMES, ...CALLER_NAMES], tool) ?? tool;
   const normalized = model ? checkCall(STEP_TOOLS, tool, args, true).args : args;
@@ -115,7 +115,7 @@ async function invokeInner(tool: string, args: Record<string, unknown>, model: b
 // click opened was never reported. A failed call leaves it for the next.
 async function withNews(tab: unknown, run: () => Promise<unknown>): Promise<unknown> {
   const result = await quietly(run);
-  if (!takesNews() || process.env.SAFARI_HARNESS_REMOTE || result === null || typeof result !== "object" || Array.isArray(result)) return result;
+  if (!takesNews() || process.env.BROWSER_HARNESS_REMOTE || result === null || typeof result !== "object" || Array.isArray(result)) return result;
   const news = await rpc("news", tab === undefined ? {} : { tab }).catch(() => ({}));
   return { ...result, ...(news as object) };
 }
@@ -141,8 +141,8 @@ async function runHere(tool: string, args: Record<string, unknown>, model: boole
     throw new Error("paste cannot fill secrets or codes; use the existing secret type tools");
   }
   const { secret: _secret, from: _from, from_selector: _fromSelector, env: _env, sender: _sender, account: _account, ...rest } = call.args;
-  const remote = process.env.SAFARI_HARNESS_REMOTE;
-  if (remote && call.tool === "request_catalog") throw new Error("request catalog requires local Safari and its owned tab");
+  const remote = process.env.BROWSER_HARNESS_REMOTE;
+  if (remote && call.tool === "request_catalog") throw new Error(`request catalog requires local ${BROWSER_NAME} and its owned tab`);
   const run = (a: Record<string, unknown>) => (remote ? remoteCall(remote, call.tool, a) : CALLER_TOOLS[call.tool].run(a));
   const result = await (coded ? typeSecret(call.args, model, (text) => run({ ...rest, text }), caller) : run(call.args));
   return call.notes.length ? beside(result, "note", call.notes.join("; ")) : result;
@@ -164,7 +164,7 @@ function spacesIn(tool: string, result: unknown): unknown[] {
 // Mac's Safari needs a keeper on that Mac, so none starts here then. Only
 // Safari has tab groups.
 function claimSpaces(tool: string, result: unknown) {
-  if (process.env.SAFARI_HARNESS_REMOTE || BROWSER !== "com.apple.Safari") return;
+  if (process.env.BROWSER_HARNESS_REMOTE || BROWSER !== "com.apple.Safari") return;
   const opened = spacesIn(tool, result);
   if (opened.length === 0) return;
   if (!opened.some((s) => !!s && typeof s === "object" && "group" in s && s.group !== "plain") && Object.keys(readQueue()).length === 0) return;

@@ -1,6 +1,6 @@
 // The call log: a line for each call the daemon ran (/rpc in main.ts) and
 // for each drop of the extension's link (bridge.ts), kept KEPT_MS, so
-// safari status can say how the last day went. On 10-29 nothing kept which
+// browser status can say how the last day went. On 10-29 nothing kept which
 // calls failed or why the link dropped: counting the 533 drops of a day
 // and a half took reading the daemon's log (StormRootCause). A line holds
 // no argument, text, or address, only the host of a call's page.
@@ -66,7 +66,7 @@ function append(line: Line) {
     appendFileSync(file, `${JSON.stringify(line)}\n`);
     if (++appended >= TRIM_EVERY) trim();
   } catch (err) {
-    console.error("[safari-harness] call log not written:", err instanceof Error ? err.message : err);
+    console.error("[browser-harness] call log not written:", err instanceof Error ? err.message : err);
   }
 }
 
@@ -102,7 +102,7 @@ export function logDrop(drop: { cause: string; code?: number; lost: number }): v
   append({ t: new Date().toISOString(), drop: drop.cause, ...(drop.code === undefined ? {} : { code: drop.code }), lost: drop.lost });
 }
 
-// The last day (GET /calls, safari status): how many calls, those that
+// The last day (GET /calls, browser status): how many calls, those that
 // failed by code, and the link's drops by why.
 export function lastDay(): { since: string; calls: number; failures: Record<string, number>; drops: Record<string, number> } {
   const since = new Date(Date.now() - DAY_MS).toISOString();

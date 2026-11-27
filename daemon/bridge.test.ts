@@ -493,7 +493,7 @@ test("a Safari call the page gave up on counts as unanswered, not as an answer",
 
 // 10-05 to 10-19: in 17 stuck spells agents' calls failed at once 44
 // times, each telling the agent to reload the extension, and agents ran
-// safari extension reload 27 times.
+// browser extension reload 27 times.
 test("a model's calls that meet a stuck kind share one reload of the extension, go out once it is back, and learn how long they waited", async () => {
   jest.useFakeTimers();
   const bridge = new Bridge();
@@ -579,7 +579,7 @@ test("a tabs.list asked after the extension answered something else shares none 
   expect([await before, await after]).toEqual([["tab 7", "tab 8"], ["tab 8"]]);
 });
 
-// safari extension reload: the reload a stuck extension gets, asked for.
+// browser extension reload: the reload a stuck extension gets, asked for.
 test("a reload asked for is done once the extension connects again, and fails at once when none is connected", async () => {
   const bridge = new Bridge();
   await expect(bridge.reload()).rejects.toThrow("not connected");

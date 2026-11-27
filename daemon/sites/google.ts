@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseCsv } from "../csv.ts";
 import { draftOrSend, NotSignedIn, type SiteKit } from "./kit.ts";
+import { BROWSER_NAME } from "../front.ts";
 
 const OGS = "https://ogs.google.com";
 const MAIL = "https://mail.google.com";
@@ -312,7 +313,7 @@ export function gmail(kit: SiteKit) {
       }
       const resting = Date.now() - changed > 4_000;
       if (url.startsWith(MAIL) && (resting || (t.title ?? "").startsWith("Inbox"))) return url;
-      if (!url.startsWith(MAIL) && resting) throw new NotSignedIn("Gmail", `Safari shows ${new URL(url).hostname} instead`);
+      if (!url.startsWith(MAIL) && resting) throw new NotSignedIn("Gmail", `${BROWSER_NAME} shows ${new URL(url).hostname} instead`);
       await Bun.sleep(500);
     }
     throw new Error("Gmail did not finish loading in time");
@@ -330,7 +331,7 @@ export function gmail(kit: SiteKit) {
     const at = /\/mail\/u\/(\d+)\//.exec(await settled(tab))?.[1];
     // Gmail lands on another account when this one is not signed in.
     shown = { tab, account: Number(at) };
-    if (at !== String(account)) throw new Error(`no Google account at index ${account} in Safari (Gmail opened /u/${at ?? "?"}/ instead)`);
+    if (at !== String(account)) throw new Error(`no Google account at index ${account} in ${BROWSER_NAME} (Gmail opened /u/${at ?? "?"}/ instead)`);
     return tab;
   }
 

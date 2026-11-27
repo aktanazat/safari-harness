@@ -1,5 +1,5 @@
-// Putting a tab on screen: its window shows the tab, Safari comes to the
-// front, and afterwards the user gets back the tab and the app they had in
+// Putting a tab on screen: its window shows the tab, the browser comes to
+// the front, and afterwards the user gets back the tab and the app they had in
 // front. Real input needs it for the length of one action because events
 // land on whatever is on screen; `wait` with front needs it because some
 // pages stall until they are visible; handoff needs it until the user has
@@ -18,20 +18,27 @@ import type { TabInfo } from "./tools.ts";
 
 const execFileAsync = promisify(execFile);
 const INPUT = join(import.meta.dir, "..", "scripts", "input");
-// The browser the extension runs in: Safari, or the Ladybird the bridge
-// drives (ladybird/bridge.ts). safari daemon install keeps the choice in
-// BROWSER_CHOICE, which the daemon and every caller (the MCP server, the
-// CLI, routines) read; SAFARI_HARNESS_BUNDLE and LADYBIRD_PROFILE_PATH
-// override it (a scratch daemon). The native helpers (scripts/*.swift) get
-// it from input's environment.
-export const BROWSER_CHOICE = join(homedir(), ".local", "share", "safari-harness", "browser.json");
-type Choice = { bundle?: string; profilePath?: string };
-const chosen: Choice = existsSync(BROWSER_CHOICE) ? JSON.parse(readFileSync(BROWSER_CHOICE, "utf8")) as Choice : {};
-export const BROWSER = process.env.SAFARI_HARNESS_BUNDLE ?? chosen.bundle ?? "com.apple.Safari";
+// The browser the harness drives, its mode: Safari, through the Safari
+// Harness extension, or Ladybird, through the bridge (ladybird/bridge.ts).
+// `browser mode` keeps the choice in BROWSER_CHOICE, which the daemon and
+// every caller (the MCP server, the CLI, routines) read. A scratch daemon
+// on a test copy names its bundle in BROWSER_HARNESS_BUNDLE, and Ladybird's
+// profile in LADYBIRD_PROFILE_PATH. The native helpers (scripts/*.swift)
+// get the bundle from input's environment.
+export const BROWSER_CHOICE = join(homedir(), ".local", "share", "browser-harness", "browser.json");
+export const MODES = { safari: "com.apple.Safari", ladybird: "org.ladybird.Ladybird.Harness" } as const;
+export type Mode = keyof typeof MODES;
+export type Choice = { mode?: Mode; profilePath?: string };
+export function readChoice(): Choice {
+  return existsSync(BROWSER_CHOICE) ? JSON.parse(readFileSync(BROWSER_CHOICE, "utf8")) as Choice : {};
+}
+const chosen = readChoice();
+export const MODE: Mode = chosen.mode ?? "safari";
+export const BROWSER = process.env.BROWSER_HARNESS_BUNDLE ?? MODES[MODE];
 // Ladybird's --profile-path, when it is not its default profile.
 export const LADYBIRD_PROFILE_PATH = process.env.LADYBIRD_PROFILE_PATH ?? chosen.profilePath;
 export const LADYBIRD = BROWSER.startsWith("org.ladybird.");
-// The browser as the user and agents know it: tool labels, phone cards.
+// The browser as the user and agents know it: tool labels, phone cards, errors.
 export const BROWSER_NAME = LADYBIRD ? "Ladybird" : "Safari";
 
 // Whether the browser runs, by its bundle id (lsappinfo).
@@ -45,7 +52,7 @@ export async function browserRunning(): Promise<boolean> {
 // use this path too, and process arguments expose their digits (09-30).
 export async function input(args: string[], timeout = 10000, stdin?: string, completion?: () => Promise<boolean>): Promise<unknown> {
   try {
-    const running = execFileAsync(INPUT, args, { timeout, env: { ...process.env, SAFARI_HARNESS_BUNDLE: BROWSER } });
+    const running = execFileAsync(INPUT, args, { timeout, env: { ...process.env, BROWSER_HARNESS_BUNDLE: BROWSER } });
     let handshake = false;
     let pipeError: Error | undefined;
     if (completion) {

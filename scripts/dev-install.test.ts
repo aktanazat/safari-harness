@@ -62,7 +62,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "safari-deploy-ancestry-"));
   checkout = join(root, "checkout");
   home = join(root, "home");
-  data = join(home, ".local/share/safari-harness");
+  data = join(home, ".local/share/browser-harness");
   releases = join(data, "releases");
   current = join(data, "current");
   mkdirSync(join(checkout, "scripts"), { recursive: true });
@@ -76,14 +76,14 @@ beforeEach(() => {
   // install lock, contact its daemon, or continue into native app installation.
   writeFileSync(boundaries, `
 mkdir() {
-  if [ "$#" = 1 ] && [ "$1" = /private/var/tmp/safari-harness-install.lock ]; then
+  if [ "$#" = 1 ] && [ "$1" = /private/var/tmp/browser-harness-install.lock ]; then
     command mkdir "$HOME/install.lock"
   else
     command mkdir "$@"
   fi
 }
 rmdir() {
-  if [ "$#" = 1 ] && [ "$1" = /private/var/tmp/safari-harness-install.lock ]; then
+  if [ "$#" = 1 ] && [ "$1" = /private/var/tmp/browser-harness-install.lock ]; then
     command rmdir "$HOME/install.lock"
   else
     command rmdir "$@"
@@ -91,7 +91,7 @@ rmdir() {
 }
 curl() {
   case "$*" in */shutdown*) if [ -n "\${DEPLOY_THROUGH:-}" ]; then
-    command cp "$HOME/.local/share/safari-harness/deploying" "$HOME/deploying-seen" 2>/dev/null
+    command cp "$HOME/.local/share/browser-harness/deploying" "$HOME/deploying-seen" 2>/dev/null
     jq '.pid = 2 | .code = "new"' "$HOME/health.json" >"$HOME/health.next" && command mv "$HOME/health.next" "$HOME/health.json"
   fi ;; esac
   command cat "$HOME/health.json"
@@ -124,7 +124,7 @@ ditto() { return 99; }
     HOME: home,
     BASH_ENV: boundaries,
     REAL_BUN: process.execPath,
-    SAFARI_HARNESS_HTTP: "http://127.0.0.1:47334",
+    BROWSER_HARNESS_HTTP: "http://127.0.0.1:47334",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_AUTHOR_NAME: "Installer test",
@@ -324,7 +324,7 @@ function deployThrough(target: string) {
   writeFileSync(join(data, "installed-extension"), "app-key\n");
   mkdirSync(join(home, ".bun/bin"), { recursive: true });
   mkdirSync(join(home, "Library/LaunchAgents"), { recursive: true });
-  writeFileSync(join(home, "Library/LaunchAgents/at.aktan.safari-harness.daemon.plist"), `<?xml version="1.0" encoding="UTF-8"?>
+  writeFileSync(join(home, "Library/LaunchAgents/at.aktan.browser-harness.daemon.plist"), `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict><key>ProgramArguments</key><array><string>bun</string><string>${current}/daemon/main.ts</string></array></dict></plist>
 `);
   const result = Bun.spawnSync(["/bin/bash", join(checkout, "scripts/dev-install.sh"), target], { env: { ...env, DEPLOY_THROUGH: "1" }, stdout: "pipe", stderr: "pipe" });
@@ -350,13 +350,14 @@ test("a deploy of a commit on origin/master logs no warning and records that it 
   expect(JSON.parse(readFileSync(join(releases, short(descendant), ".upstream"), "utf8"))).toMatchObject({ ahead: 0 });
 });
 
-// I-3 (11-06): omp's entry for safari had no timeout, so omp gave up on
-// calls at 30 s while they ran up to 120 s.
+// I-3 (11-06): omp's entry for the harness had no timeout, so omp gave up on
+// calls at 30 s while they ran up to 120 s. Since 11-27 the entry is named
+// browser, and a deploy renames Safari Harness's safari entry to it.
 test.each([
   ["without a timeout", {}, 130000],
   ["with a shorter timeout", { timeout: 30000 }, 130000],
   ["with a longer timeout", { timeout: 200000 }, 200000],
-])("a deploy leaves omp's safari MCP entry %s waiting at least 130000 ms", (_, extra, want) => {
+])("a deploy names omp's safari MCP entry %s browser, waiting at least 130000 ms", (_, extra, want) => {
   git("update-ref", "refs/remotes/origin/master", descendant);
   const mcp = join(home, ".omp/agent/mcp.json");
   mkdirSync(join(home, ".omp/agent"), { recursive: true });
@@ -364,7 +365,7 @@ test.each([
   writeFileSync(mcp, JSON.stringify({ mcpServers: { safari: { command: "bun", args: [`${current}/daemon/mcp.ts`], ...extra }, other } }));
   const deployed = deployThrough(descendant);
   expect(deployed).toMatchObject({ code: 0, err: "" });
-  expect(JSON.parse(readFileSync(mcp, "utf8"))).toEqual({ mcpServers: { safari: { command: "bun", args: [`${current}/daemon/mcp.ts`], timeout: want }, other } });
+  expect(JSON.parse(readFileSync(mcp, "utf8"))).toEqual({ mcpServers: { browser: { command: "bun", args: [`${current}/daemon/mcp.ts`], timeout: want }, other } });
 });
 
 // On 10-23 a call made while a deploy restarted the daemon said to install

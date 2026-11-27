@@ -148,7 +148,7 @@ export async function uncover(tab: number): Promise<(() => Promise<void>) | "sho
 const AGENTS = "Agents";
 
 export async function agentPlacement(size: { width: number; height: number }): Promise<{ bounds: { left: number; top: number; area: Rect } } | undefined> {
-  const required = existsSync(join(homedir(), ".local", "share", "safari-harness", "hidden-windows"));
+  const required = existsSync(join(homedir(), ".local", "share", "browser-harness", "hidden-windows"));
   const layout = await input(["windows"], FRAME_MS).catch((error: unknown) => {
     if (required) throw error;
     return undefined;

@@ -28,7 +28,7 @@ const ORIGIN = `safari-web-extension://${EXTENSION_ID}`;
 // page cannot have it ready.
 const KEY = `__lbh_${crypto.randomUUID().slice(0, 8)}`;
 // The BiDi sandbox realm the extension's isolated world is.
-const SANDBOX = "safari-harness";
+const SANDBOX = "browser-harness";
 
 type Listener = (...args: never[]) => unknown;
 class Ev {
@@ -935,7 +935,7 @@ async function main() {
     options: {
       "profile-path": { type: "string" }, profile: { type: "string" }, browser: { type: "string", default: "launch" },
       "driver-port": { type: "string", default: "4470" }, "daemon-port": { type: "string", default: "37333" },
-      state: { type: "string", default: join(homedir(), ".local/share/safari-harness/ladybird") },
+      state: { type: "string", default: join(homedir(), ".local/share/browser-harness/ladybird") },
     },
   });
   mkdirSync(values.state!, { recursive: true });

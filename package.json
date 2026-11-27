@@ -1,5 +1,5 @@
 {
-  "name": "safari-harness",
+  "name": "browser-harness",
   "version": "0.1.0",
   "private": true,
   "safariHarnessCheckpointFormat": 2,
@@ -7,7 +7,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "safari": "cli/safari.ts"
+    "browser": "cli/browser.ts"
   },
   "scripts": {
     "serve": "bun daemon/main.ts serve",

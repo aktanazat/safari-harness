@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { inFront } from "../daemon/front.ts";
 import { removeCapture, verifyEvidence, type CaptureResult, type ConditionalCaptureResult } from "../daemon/evidence.ts";
 
-const base = process.env.SAFARI_HARNESS_HTTP ?? "http://127.0.0.1:37334";
+const base = process.env.BROWSER_HARNESS_HTTP ?? "http://127.0.0.1:37334";
 const ua = "OpenAI File Downloader, XaiImageApiFetch/1.0";
 async function call<T>(tool: string, args: Record<string, unknown> = {}): Promise<T> {
   const response = await fetch(`${base}/rpc`, { method: "POST", headers: { "content-type": "application/json", "user-agent": ua }, body: JSON.stringify({ tool, args, caller: process.pid, own: true }) });
@@ -123,8 +123,8 @@ try {
   const after = await call<Inspection>("react", { tab, do: "inspect", name: "Counter", includeValues: true });
   assert.equal(after.components[0].hooks.slots[0].value, 2);
   assert.ok(!JSON.stringify(after).includes("private-react-token-never-output"));
-  const selected = Bun.spawn([process.execPath, join(import.meta.dir, "..", "cli", "safari.ts"), "react", "--do=inspect", `--tab=${tab}`, `--id=${after.components[0].id}`, "--includeValues", "--json"], {
-    env: { ...process.env, SAFARI_HARNESS_HTTP: origin }, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+  const selected = Bun.spawn([process.execPath, join(import.meta.dir, "..", "cli", "browser.ts"), "react", "--do=inspect", `--tab=${tab}`, `--id=${after.components[0].id}`, "--includeValues", "--json"], {
+    env: { ...process.env, BROWSER_HARNESS_HTTP: origin }, stdin: "ignore", stdout: "pipe", stderr: "pipe",
   });
   const [selectedOut, selectedError, selectedCode] = await Promise.all([new Response(selected.stdout).text(), new Response(selected.stderr).text(), selected.exited]);
   assert.equal(selectedCode, 0, selectedError);

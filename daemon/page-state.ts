@@ -1,4 +1,5 @@
 import type { Challenge } from "./challenge.ts";
+import { BROWSER_NAME } from "./front.ts";
 
 export type PageKind = "content" | "login_wall" | "paywall" | "region_block" | "consent" | "loading" | "error" | "empty" | "unjudged";
 export type PageState = { kind: PageKind; next: string };
@@ -246,7 +247,7 @@ export function classifyPage(facts: PageFacts): PageState {
     return reject ? { kind, next: `${NEXT.consent.slice(0, -1)}; the reject choice is [${reject.ref}] ${reject.role} "${reject.label}".` } : state(kind);
   };
   if (facts.challenge?.where === "block") return { kind: "error", next: "the site blocks this browser; report the block and do not bypass it." };
-  if (facts.challenge?.where === "page") return { kind: "unjudged", next: "the page shows a bot check; wait for it to clear in Safari, then use another permitted source if it persists." };
+  if (facts.challenge?.where === "page") return { kind: "unjudged", next: `the page shows a bot check; wait for it to clear in ${BROWSER_NAME}, then use another permitted source if it persists.` };
   if (/^safari-resource:.*errorpage/i.test(facts.url) || /^safari-resource:/i.test(facts.title) || facts.title === "Failed to open page") return state("error");
   const status = facts.status;
   if (status !== undefined && Number.isInteger(status)) {

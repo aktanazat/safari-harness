@@ -7,6 +7,7 @@
 // database rows through queryCollection.
 
 import { NotSignedIn, type SiteKit } from "./kit.ts";
+import { BROWSER_NAME } from "../front.ts";
 
 const SITE = "Notion";
 const ORIGIN = "https://app.notion.com";
@@ -480,7 +481,7 @@ export function notion(kit: SiteKit) {
     async getClient(userId?: string) {
       const all = await accounts(kit);
       const account = userId ? all.find((a) => a.userId === userId || a.email === userId) : all[0];
-      if (!account) throw new Error(`no Notion account "${userId}" in Safari; listAccounts() has ${all.map((a) => `${a.email} (${a.userId})`).join(", ")}`);
+      if (!account) throw new Error(`no Notion account "${userId}" in ${BROWSER_NAME}; listAccounts() has ${all.map((a) => `${a.email} (${a.userId})`).join(", ")}`);
       return client(kit, account);
     },
   };

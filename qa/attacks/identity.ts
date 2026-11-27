@@ -137,7 +137,7 @@ async function startDaemon(): Promise<Child> {
   assert.ok(home, "scratch HOME must exist before daemon startup");
   const child = Bun.spawn([process.execPath, join(candidate, "daemon/main.ts")], {
     cwd: candidate,
-    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, TMPDIR: join(home, "tmp"), XDG_DATA_HOME: join(home, ".local/share"), XDG_CONFIG_HOME: join(home, ".config"), SAFARI_HARNESS_WS: String(wsPort), SAFARI_HARNESS_HTTP_PORT: String(httpPort) },
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, TMPDIR: join(home, "tmp"), XDG_DATA_HOME: join(home, ".local/share"), XDG_CONFIG_HOME: join(home, ".config"), BROWSER_HARNESS_WS: String(wsPort), BROWSER_HARNESS_HTTP_PORT: String(httpPort) },
     stdin: "ignore", stdout: "pipe", stderr: "pipe",
   });
   children.push(child);
