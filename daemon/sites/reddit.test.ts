@@ -45,6 +45,16 @@ test("getThread with a limit reads the next top-level comments before folded rep
   expect(asked.map((j) => j.url ?? j.kind)).toEqual(["page", "/top"]);
 });
 
+// A fragment can draw the very pager it was asked with; asking it again
+// would post to Reddit from the owner's tab once a second, forever.
+test("getThread asks each more-comments pager once, even when a fragment draws it again", async () => {
+  const asked: Job[] = [];
+  const again = { src: "/folded", cursor: "f", top: false };
+  const thread = await site((job) => (job.kind === "page" ? { post: post("abc12"), comments: [comment("c1")], more: [again] } : { comments: [], more: [again] }), asked).getThread("abc12");
+  expect(thread.comments.map((c) => c.id)).toEqual(["c1"]);
+  expect(asked.map((j) => j.url ?? j.kind)).toEqual(["page", "/folded"]);
+});
+
 // A removed post can redirect to another; its comments must not come back
 // as the asked post's.
 test("getThread fails when the page shows a different post than the one asked for", async () => {

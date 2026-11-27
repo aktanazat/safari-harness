@@ -21,7 +21,9 @@ const GAP_MS = 1000;
 // Runs in the tab. Plain script: no template literals.
 const PAGE = String.raw`
 const BLOCKS = "p,li,pre,blockquote,h1,h2,h3,h4,h5,h6,tr";
-const BLOCKED = /blocked by network security|whoa there, pardner/i;
+// Reddit's refusals: its block page, and its rate-limit page.
+const BLOCKED = /blocked by network security/i;
+const LIMITED = /whoa there, pardner|too many requests/i;
 const text = (el) => {
   if (!el) return "";
   const c = el.cloneNode(true);
@@ -34,7 +36,12 @@ const iso = (v) => (v && !Number.isNaN(Date.parse(v)) ? new Date(v).toISOString(
 const abs = (path) => (path ? new URL(path, location.origin).href : "");
 // The slot of node's own, not one of a reply nested in it.
 const own = (node, slot, tag) => [...node.querySelectorAll("[slot=" + slot + "]")].find((s) => s.closest(tag) === node);
-const blocked = (doc) => BLOCKED.test(doc.title + " " + (doc.body ? doc.body.textContent.slice(0, 2000) : ""));
+// What a refusal page says, asked only of a page that holds nothing a
+// read looks for: a post or comment may quote either refusal.
+const refusal = (doc) => {
+  const t = doc.title + " " + (doc.body ? doc.body.textContent.slice(0, 2000) : "");
+  return LIMITED.test(t) ? 429 : BLOCKED.test(t) ? 403 : 0;
+};
 const post = (doc) => {
   const p = doc.querySelector("shreddit-post");
   if (!p) return null;
@@ -69,6 +76,8 @@ const comments = (doc) => [...doc.querySelectorAll("shreddit-comment")].map((c) 
 });
 // The "more replies" fragments, and the one that loads the next top-level comments.
 const more = (doc) => [...doc.querySelectorAll("faceplate-partial[src*='/more-comments/']")].map((p) => ({ src: p.getAttribute("src"), cursor: (p.querySelector("input[name=cursor]") || {}).value || "", top: /[?&]top-level=1/.test(p.getAttribute("src")) }));
+// Reply chains Reddit moves to a page of their own ("97 more replies" links), which no fragment loads.
+const held = (doc) => !!doc.querySelector("[slot=more-comments-permalink]");
 // One search result per post: the first element whose tracking context names it holds the rest.
 const results = (doc) => {
   const roots = new Map();
@@ -103,8 +112,13 @@ const results = (doc) => {
 };
 const run = async (job) => {
   if (job.kind === "page") {
-    if (blocked(document)) return { status: 200, blocked: true };
-    return { status: 200, url: location.href, post: post(document), comments: comments(document), more: more(document) };
+    // goto can answer while a long thread's HTML still streams in (11-27:
+    // a 3,474-comment thread had no post element yet).
+    if (document.readyState === "loading") await new Promise((done) => document.addEventListener("DOMContentLoaded", done, { once: true }));
+    const p = post(document);
+    const refused = p ? 0 : refusal(document);
+    if (refused) return { status: refused, blocked: refused === 403 };
+    return { status: 200, url: location.href, post: p, comments: comments(document), more: more(document), held: held(document) };
   }
   const init = job.cursor === undefined ? { credentials: "include" } : { method: "POST", credentials: "include", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "cursor=" + encodeURIComponent(job.cursor) };
   const r = await fetch(job.url, init);
@@ -113,10 +127,16 @@ const run = async (job) => {
   if (r.status !== 200) return Object.assign(out, { blocked: BLOCKED.test(html) });
   if (job.kind === "resolve") return out;
   const doc = new DOMParser().parseFromString(html, "text/html");
-  if (blocked(doc)) return Object.assign(out, { blocked: true });
-  if (job.kind === "more") return Object.assign(out, { comments: comments(doc), more: more(doc) });
+  if (job.kind === "more") {
+    const found = { comments: comments(doc), more: more(doc), held: held(doc) };
+    const refused = found.comments.length || found.more.length ? 0 : refusal(doc);
+    return refused ? Object.assign(out, { status: refused, blocked: refused === 403 }) : Object.assign(out, found);
+  }
+  const found = results(doc);
+  const refused = found.length ? 0 : refusal(doc);
+  if (refused) return Object.assign(out, { status: refused, blocked: refused === 403 });
   const next = doc.querySelector("faceplate-partial[src*='cursor=']");
-  return Object.assign(out, { results: results(doc), next: next ? next.getAttribute("src") : null });
+  return Object.assign(out, { results: found, next: next ? next.getAttribute("src") : null });
 };
 `;
 
@@ -129,7 +149,8 @@ export type SearchResult = { id: string; url: string; subreddit: string; title: 
 
 type Pager = { src: string; cursor: string; top: boolean };
 type Job = { kind: "page" } | { kind: "resolve" | "search"; url: string } | { kind: "more"; url: string; cursor: string };
-type Reply = { status: number; url?: string; retryAfter?: string | null; blocked?: boolean; post?: Post | null; comments?: Comment[]; more?: Pager[]; results?: SearchResult[]; next?: string | null };
+type Reply = { status: number; url?: string; retryAfter?: string | null; blocked?: boolean; post?: Post | null; comments?: Comment[]; more?: Pager[]; held?: boolean; results?: SearchResult[]; next?: string | null };
+type SearchOptions = { subreddit?: string; sort?: "relevance" | "hot" | "top" | "new" | "comments"; time?: "hour" | "day" | "week" | "month" | "year" | "all"; limit?: number; cursor?: string };
 
 const SORTS = { best: "confidence", top: "top", new: "new", controversial: "controversial", old: "old", qa: "qa" } as const;
 export type CommentSort = keyof typeof SORTS;
@@ -161,57 +182,83 @@ export function reddit(kit: SiteKit) {
     return id;
   }
 
+  // One read at a time: getThread moves the tab to its thread, which pulls
+  // the page out from under any other read in flight (11-27: three
+  // getThread calls at once each read another's page, or none).
+  let lane: Promise<unknown> = Promise.resolve();
+  function inLane<T>(read: () => Promise<T>): Promise<T> {
+    const run = lane.then(read);
+    lane = run.catch(() => undefined);
+    return run;
+  }
+
+  async function thread(postUrlOrId: string, opts: { sort?: CommentSort; limit?: number }): Promise<Thread> {
+    const id = await resolve(postUrlOrId);
+    const limit = opts.limit ?? 50;
+    const tab = await kit.tab(ORIGIN, PARK_URL);
+    await kit.turn(SITE, GAP_MS);
+    await kit.invoke("goto", { tab, url: `${ORIGIN}/comments/${id}/?sort=${SORTS[opts.sort ?? "top"]}` });
+    const first = await call({ kind: "page" });
+    if (!first.post) throw new Error(`no Reddit post ${id}: the tab, at ${first.url}, shows none (deleted, private, or the id is wrong)`);
+    if (first.post.id !== id) throw new Error(`Reddit showed post ${first.post.id} for ${id}, at ${first.url}`);
+    const seen = new Set<string>();
+    const comments: Comment[] = [];
+    const add = (list: Comment[] = []) => { for (const c of list) if (!seen.has(c.id)) { seen.add(c.id); comments.push(c); } };
+    add(first.comments);
+    let held = first.held === true;
+    // The next top-level page goes before folded replies. A fragment can
+    // draw a pager already asked; asked again, it would be asked forever.
+    const queue: Pager[] = [];
+    const asked = new Set<string>();
+    const enqueue = (list: Pager[] = []) => {
+      for (const p of list) {
+        const key = `${p.src}\n${p.cursor}`;
+        if (asked.has(key)) continue;
+        asked.add(key);
+        if (p.top) queue.unshift(p);
+        else queue.push(p);
+      }
+    };
+    enqueue(first.more);
+    while (comments.length < limit) {
+      const p = queue.shift();
+      if (!p) break;
+      const page = await call({ kind: "more", url: p.src, cursor: p.cursor });
+      add(page.comments);
+      enqueue(page.more);
+      held ||= page.held === true;
+    }
+    return { post: first.post, comments: comments.slice(0, limit), more: queue.length > 0 || comments.length > limit || held };
+  }
+
+  async function search(query: string, opts: SearchOptions): Promise<{ results: SearchResult[]; nextCursor?: string }> {
+    const limit = opts.limit ?? 25;
+    const sub = opts.subreddit?.trim().replace(/^\/?r\//i, "").replace(/\/$/, "");
+    if (sub !== undefined && !/^\w{2,21}$/.test(sub)) throw new Error(`not a subreddit name: ${opts.subreddit}`);
+    // The path as fetch will resolve it, so ../ cannot leave the fragments.
+    if (opts.cursor !== undefined && !new URL(opts.cursor, ORIGIN).pathname.startsWith("/svc/shreddit/")) throw new Error(`not a cursor from reddit.search: ${opts.cursor}`);
+    const q = new URLSearchParams({ q: query, type: "posts", sort: opts.sort ?? "relevance", t: opts.time ?? "all", ...(sub ? { restrict_sr: "1" } : {}) });
+    let url: string | undefined = opts.cursor ?? `/svc/shreddit/${sub ? `r/${sub}/` : ""}search/?${q}`;
+    const results: SearchResult[] = [];
+    const seen = new Set<string>();
+    while (url && results.length < limit) {
+      const page = await call({ kind: "search", url });
+      const fresh = (page.results ?? []).filter((r) => !seen.has(r.id));
+      for (const r of fresh) { seen.add(r.id); results.push(r); }
+      // A page that adds nothing new would be asked for again forever.
+      url = fresh.length && page.next ? page.next : undefined;
+    }
+    return { results: results.slice(0, limit), ...(url ? { nextCursor: url } : {}) };
+  }
+
   return {
     // The post and its comments in Reddit's order for sort, up to limit:
     // the page's own first comments, then the next top-level ones, then
     // the replies Reddit folds behind "more replies". A reply loaded later
     // comes after the comment it answers; parentId and depth place it.
-    async getThread(postUrlOrId: string, opts: { sort?: CommentSort; limit?: number } = {}): Promise<Thread> {
-      const id = await resolve(postUrlOrId);
-      const limit = opts.limit ?? 50;
-      const tab = await kit.tab(ORIGIN, PARK_URL);
-      await kit.turn(SITE, GAP_MS);
-      await kit.invoke("goto", { tab, url: `${ORIGIN}/comments/${id}/?sort=${SORTS[opts.sort ?? "top"]}` });
-      const first = await call({ kind: "page" });
-      if (!first.post) throw new Error(`no Reddit post ${id}: the page has none (deleted, private, or the id is wrong)`);
-      if (first.post.id !== id) throw new Error(`Reddit showed post ${first.post.id} for ${id}`);
-      const seen = new Set<string>();
-      const comments: Comment[] = [];
-      const add = (list: Comment[] = []) => { for (const c of list) if (!seen.has(c.id)) { seen.add(c.id); comments.push(c); } };
-      add(first.comments);
-      // The next top-level page goes before folded replies.
-      const queue: Pager[] = [];
-      const enqueue = (list: Pager[] = []) => { for (const p of list) if (p.top) queue.unshift(p); else queue.push(p); };
-      enqueue(first.more);
-      while (comments.length < limit) {
-        const p = queue.shift();
-        if (!p) break;
-        const page = await call({ kind: "more", url: p.src, cursor: p.cursor });
-        add(page.comments);
-        enqueue(page.more);
-      }
-      return { post: first.post, comments: comments.slice(0, limit), more: queue.length > 0 || comments.length > limit };
-    },
-
+    getThread: (postUrlOrId: string, opts: { sort?: CommentSort; limit?: number } = {}): Promise<Thread> => inLane(() => thread(postUrlOrId, opts)),
     // Posts for query in Reddit's order, up to limit; cursor (an answer's
     // nextCursor) reads on from where that answer stopped.
-    async search(query: string, opts: { subreddit?: string; sort?: "relevance" | "hot" | "top" | "new" | "comments"; time?: "hour" | "day" | "week" | "month" | "year" | "all"; limit?: number; cursor?: string } = {}): Promise<{ results: SearchResult[]; nextCursor?: string }> {
-      const limit = opts.limit ?? 25;
-      const sub = opts.subreddit?.trim().replace(/^\/?r\//i, "").replace(/\/$/, "");
-      if (sub !== undefined && !/^\w{2,21}$/.test(sub)) throw new Error(`not a subreddit name: ${opts.subreddit}`);
-      if (opts.cursor !== undefined && !opts.cursor.startsWith("/svc/shreddit/")) throw new Error(`not a cursor from reddit.search: ${opts.cursor}`);
-      const q = new URLSearchParams({ q: query, type: "posts", sort: opts.sort ?? "relevance", t: opts.time ?? "all", ...(sub ? { restrict_sr: "1" } : {}) });
-      let url: string | undefined = opts.cursor ?? `/svc/shreddit/${sub ? `r/${sub}/` : ""}search/?${q}`;
-      const results: SearchResult[] = [];
-      const seen = new Set<string>();
-      while (url && results.length < limit) {
-        const page = await call({ kind: "search", url });
-        const fresh = (page.results ?? []).filter((r) => !seen.has(r.id));
-        for (const r of fresh) { seen.add(r.id); results.push(r); }
-        // A page that adds nothing new would be asked for again forever.
-        url = fresh.length && page.next ? page.next : undefined;
-      }
-      return { results: results.slice(0, limit), ...(url ? { nextCursor: url } : {}) };
-    },
+    search: (query: string, opts: SearchOptions = {}): Promise<{ results: SearchResult[]; nextCursor?: string }> => inLane(() => search(query, opts)),
   };
 }
