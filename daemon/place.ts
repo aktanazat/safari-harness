@@ -85,17 +85,29 @@ function showingSpot(here: Here): Rect | undefined {
 // tab's window on screen, with the windows in front of it and behind it.
 // "hidden" when it is minimized, or on another desktop. Undefined when the
 // extension predates windows.frame, the window is in full screen or zoomed
-// (Safari's windows.update moves only a normal one), or another Safari
-// window has its size, so which one is the tab's cannot be told.
+// (Safari's windows.update moves only a normal one), or another window of
+// the browser has its size and place, so which one is the tab's cannot be
+// told. Windows of one size are told apart by where each is (left and top
+// from the display holding it, as the browser counts them); windows that
+// share the place too are one rect, and any of them is where it is: on
+// 11-27 three of the user's Ladybird windows lay one on another on the
+// Agents display, each its full size, and no sweep moved them off.
 async function onScreen(tab: number): Promise<Here | "hidden" | undefined> {
-  const frame = (await bridge.request("windows.frame", [tab], FRAME_MS)) as { width?: unknown; height?: unknown; state?: unknown } | null | undefined;
+  const frame = (await bridge.request("windows.frame", [tab], FRAME_MS)) as { width?: unknown; height?: unknown; left?: unknown; top?: unknown; state?: unknown } | null | undefined;
   if (typeof frame?.width !== "number" || typeof frame.height !== "number") return undefined;
   if (frame.state === "minimized") return "hidden";
   if (frame.state !== "normal") return undefined;
-  const { width, height } = frame;
+  const { width, height, left, top } = frame;
   const { windows, screens } = (await input(["windows"], FRAME_MS)) as { windows: (Rect & { safari: boolean })[]; screens: Screen[] };
-  const mine = windows.flatMap((w, i) => (w.safari && Math.abs(w.width - width) < 1 && Math.abs(w.height - height) < 1 ? [i] : []));
-  if (mine.length > 1) return undefined;
+  const sized = windows.flatMap((w, i) => (w.safari && Math.abs(w.width - width) < 1 && Math.abs(w.height - height) < 1 ? [i] : []));
+  const placed = typeof left === "number" && typeof top === "number" && sized.length > 1
+    ? sized.filter((i) => {
+      const on = holding(windows[i], screens)?.frame;
+      return on !== undefined && Math.abs(windows[i].x - on.x - left) < 1 && Math.abs(windows[i].y - on.y - top) < 1;
+    })
+    : sized;
+  const mine = placed.length > 0 ? placed : sized;
+  if (mine.some((i) => windows[i].x !== windows[mine[0]].x || windows[i].y !== windows[mine[0]].y)) return undefined;
   const at = windows[mine[0]];
   const screen = at && holding(at, screens);
   if (!screen) return "hidden";

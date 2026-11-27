@@ -1842,7 +1842,7 @@ async function handle(msg) {
       const [tabId, bounds] = args;
       const { windowId } = await api.tabs.get(tabId);
       const w = bounds ? await api.windows.update(windowId, { left: Math.round(bounds.left), top: Math.round(bounds.top) }) : await api.windows.get(windowId);
-      return { width: w.width, height: w.height, state: w.state };
+      return { width: w.width, height: w.height, left: w.left, top: w.top, state: w.state };
     }
     case "cookies": {
       const [url] = args;
