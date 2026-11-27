@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Safari Harness Bridge",
   "version": "0.1.0",
-  "description": "Local automation bridge: lets the safari CLI and daemon drive Safari with aside-style tools.",
+  "description": "Local automation bridge: lets the browser CLI and daemon drive Safari with aside-style tools.",
   "background": {
     "scripts": ["upgrades.js", "background.js"],
     "persistent": false

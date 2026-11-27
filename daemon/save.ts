@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { withPageState } from "./page-state.ts";
 import { redactSecretText } from "./redact.ts";
 
-export const SAVED_DIR = join(homedir(), ".local/share/safari-harness/saved");
+export const SAVED_DIR = join(homedir(), ".local/share/browser-harness/saved");
 const HEAD_CHARS = 500;
 // Saved reads hold page text, signed-in sites' too: the saved folder keeps
 // a week of them.

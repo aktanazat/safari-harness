@@ -291,7 +291,7 @@ const settled = () => new Promise<void>((r) => setImmediate(r));
 // it waits until the test types it. The pairing's process runs in this
 // one, its state in a scratch folder. The clock is the test's.
 function lockedVault() {
-  process.env.SAFARI_HARNESS_AWAY = "0";
+  process.env.BROWSER_HARNESS_AWAY = "0";
   jest.useFakeTimers();
   const state = mkdtempSync("/private/var/tmp/pairing-test-");
   profiles.push(state);
@@ -319,16 +319,16 @@ function lockedVault() {
 // Before every test the user is at the Mac, so no test reads this Mac's own
 // idle time. After every test: the spies, the clock, and the away flag go
 // back, and the secrets typed into tab 7 are dropped.
-const away = process.env.SAFARI_HARNESS_AWAY;
+const away = process.env.BROWSER_HARNESS_AWAY;
 beforeEach(() => {
-  process.env.SAFARI_HARNESS_AWAY = "0";
+  process.env.BROWSER_HARNESS_AWAY = "0";
 });
 afterEach(() => {
   mock.restore();
   jest.useRealTimers();
   setSystemTime();
-  if (away === undefined) delete process.env.SAFARI_HARNESS_AWAY;
-  else process.env.SAFARI_HARNESS_AWAY = away;
+  if (away === undefined) delete process.env.BROWSER_HARNESS_AWAY;
+  else process.env.BROWSER_HARNESS_AWAY = away;
   tabSecrets.clear();
 });
 

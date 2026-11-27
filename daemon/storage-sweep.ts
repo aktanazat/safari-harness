@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { userHosts } from "./safari-history.ts";
 
 const DATA = join(homedir(), "Library/Containers/com.apple.Safari/Data/Library/WebKit/WebsiteData/Default");
-const STAMP = join(homedir(), ".local/share/safari-harness/storage-sweep");
+const STAMP = join(homedir(), ".local/share/browser-harness/storage-sweep");
 const WEEK_MS = 7 * 86_400_000;
 // An origin used this recently may still have a page open, whose files
 // WebKit holds, or be a site he signed in to in an agent's tab (a

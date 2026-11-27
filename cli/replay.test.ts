@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// watch.ts runs `safari replay <name> --json`, parses its one line, and
+// watch.ts runs `browser replay <name> --json`, parses its one line, and
 // reads exit 2 with "unknown command: replay" as a safari without replay.
 // The daemon here answers replay by the recording's name.
 const GOOD = { ok: true, name: "good", steps: 2, value: "42" };
@@ -22,8 +22,8 @@ afterAll(() => server.stop(true));
 const home = mkdtempSync(join(tmpdir(), "replay-cli-"));
 
 async function safari(...argv: string[]) {
-  const p = Bun.spawn([process.execPath, join(import.meta.dir, "safari.ts"), ...argv], {
-    env: { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: `http://127.0.0.1:${server.port}` },
+  const p = Bun.spawn([process.execPath, join(import.meta.dir, "browser.ts"), ...argv], {
+    env: { ...process.env, HOME: home, BROWSER_HARNESS_HTTP: `http://127.0.0.1:${server.port}` },
     stdout: "pipe",
     stderr: "pipe",
   });

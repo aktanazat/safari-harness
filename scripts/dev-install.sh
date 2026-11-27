@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deploy a commit of this checkout as the Safari Harness in use.
+# Deploy a commit of this checkout as the Browser Harness in use.
 #
 #   scripts/dev-install.sh [COMMIT]    deploy COMMIT (default: HEAD)
 #   scripts/dev-install.sh --same-tree [COMMIT]
@@ -15,9 +15,9 @@
 # deployable only after an "ours" merge; --same-tree takes that case.
 #
 # A deploy takes a commit, never the working tree: it copies the commit into
-# ~/.local/share/safari-harness/releases/<sha>, builds its helpers there,
-# and points ~/.local/share/safari-harness/current at it in one step. The
-# CLI (~/.bun/bin/safari), omp's safari MCP server and extension, and the
+# ~/.local/share/browser-harness/releases/<sha>, builds its helpers there,
+# and points ~/.local/share/browser-harness/current at it in one step. The
+# CLI (~/.bun/bin/browser), omp's browser MCP server and extension, and the
 # launchd jobs (the daemon and routines) all run from current, so edits in
 # a checkout reach no one until they are committed and deployed. Then only
 # what changed restarts:
@@ -27,10 +27,11 @@
 #     wait for the new daemon (rpc.ts). A failed start can return to the
 #     previous release only without losing newer checkpoint metadata.
 #   - The app and extension, when extension/ or "Safari Harness/" differ
-#     from the installed ones, or the extension is not connected. Safari
-#     reloads the extension, which reconnects to the daemon. Safari gives
-#     every tab a new id then; the extension tells the daemon each old id's
-#     new one, so agents keep their tabs and the ids they hold still work.
+#     from the installed ones, or the extension is not connected. In Safari
+#     mode Safari reloads the extension, which reconnects to the daemon;
+#     Safari gives every tab a new id then, and the extension tells the
+#     daemon each old id's new one, so agents keep their tabs. In Ladybird
+#     mode the bridge, which runs the extension, starts again.
 # Agent sessions already running keep their MCP server process; before
 # each call it loads the daemon's release's daemon/mcp-tools.ts if that
 # differs from the code its calls run on, runs the call with it, and asks
@@ -40,22 +41,31 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DATA="$HOME/.local/share/safari-harness"
+DATA="$HOME/.local/share/browser-harness"
 RELEASES="$DATA/releases"
 CURRENT="$DATA/current"
 APP="/Applications/Safari Harness.app"
 APPEX="$APP/Contents/PlugIns/Safari Harness Extension.appex"
-LOCK=/private/var/tmp/safari-harness-install.lock
-BASE="${SAFARI_HARNESS_HTTP:-http://127.0.0.1:37334}"
+LOCK=/private/var/tmp/browser-harness-install.lock
+BASE="${BROWSER_HARNESS_HTTP:-http://127.0.0.1:37334}"
 JOBS="$HOME/Library/LaunchAgents"
-DAEMON=at.aktan.safari-harness.daemon
+DAEMON=at.aktan.browser-harness.daemon
 MCP="$HOME/.omp/agent/mcp.json"
 EXTENSIONS="$HOME/.omp/agent/extensions"
 CHECKPOINTS="$ROOT/scripts/deploy-checkpoints.ts"
 # Xcode's build folder for the app, kept from one build to the next. Until
 # 10-21 each build made a new one in /private/var/tmp and moved it to the
 # Trash: six of 217 MB in 3.5 hours.
-BUILD="$HOME/Library/Caches/safari-harness/DerivedData"
+BUILD="$HOME/Library/Caches/browser-harness/DerivedData"
+# Until 11-27 this was Safari Harness: its data, logs, CLI, skill, MCP
+# server, omp hook and launchd labels went by safari. The first deploy of
+# Browser Harness moves them (migrate below); the old data and log folders
+# and the safari command stay as links to the new ones while a process
+# started before still uses them (retire below).
+OLD="$HOME/.local/share/safari-harness"
+OLD_LOGS="$HOME/Library/Logs/safari-harness"
+OLD_DAEMON=at.aktan.safari-harness.daemon
+LADYBIRD_APP="/Applications/Ladybird Harness.app"
 # releases kept besides the current one, however old
 KEEP=5
 PATH="$PATH:/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support"
@@ -82,7 +92,7 @@ in_use() {
   while read -r up cmd; do
     [[ "$up" =~ ^([0-9]+-)?([0-9]+:)?[0-9]+:[0-9]+$ ]] && [ -n "$cmd" ] || return 1
     case "$cmd" in
-      *"$CURRENT/"* | *"$HOME/.bun/bin/safari"*)
+      *"$CURRENT/"* | *"$OLD/current/"* | *"$HOME/.bun/bin/browser"* | *"$HOME/.bun/bin/safari"*)
         d=0 h=0
         [[ "$up" != *-* ]] || { d="${up%%-*}"; up="${up#*-}"; }
         [[ "$up" != *:*:* ]] || { h="${up%%:*}"; up="${up#*:}"; }
@@ -94,7 +104,7 @@ in_use() {
   for r in "$RELEASES"/*/; do
     r="${r%/}"
     physical="$(cd "$r" && pwd -P)" || return 1
-    if grep -qF "$r" <<<"$processes" || grep -qF "$physical" <<<"$processes" || grep -qxF "n$physical" <<<"$files" || grep -qF "n$physical/" <<<"$files"; then
+    if grep -qF "$r" <<<"$processes" || grep -qF "$OLD/releases/$(basename "$r")" <<<"$processes" || grep -qF "$physical" <<<"$processes" || grep -qxF "n$physical" <<<"$files" || grep -qF "n$physical/" <<<"$files"; then
       basename "$r"
     elif [ -n "$oldest" ]; then
       [ "$(stat -f %m "$r")" -lt "$oldest" ] || basename "$r"
@@ -103,7 +113,7 @@ in_use() {
   return 0
 }
 # trash PATH: moves it to the Trash under a name of its own
-trash() { mv "$1" "$HOME/.Trash/safari-harness-$(basename "$1")-$(date +%s)"; }
+trash() { mv "$1" "$HOME/.Trash/browser-harness-$(basename "$1")-$(date +%s)"; }
 # job LABEL: the program its launchd job runs
 job() { plutil -extract ProgramArguments.1 raw "$JOBS/$1.plist" 2>/dev/null || true; }
 # strays: each registered copy of the app, its extension, or an app inside
@@ -112,6 +122,92 @@ strays() {
   lsregister -dump | sed -n 's/^path: *\(.*Safari Harness[^/]*\.app\(ex\)\{0,1\}\) (0x[0-9a-f]*)$/\1/p' | while IFS= read -r copy; do
     case "$copy" in "$APP" | "$APP"/*) ;; *) echo "$copy" ;; esac
   done
+}
+# mode: the browser the harness drives (daemon/front.ts), safari when unset
+mode() { jq -r '.mode // "safari"' "$DATA/browser.json" 2>/dev/null || echo safari; }
+
+# migrate: once, from Safari Harness, before anything is checked or built.
+# The data and logs move (a rename on one disk, so files the old daemon
+# holds open stay its own), the old paths become links to the new, and the
+# browser choice gains its mode beside the bundle old code reads. A folder
+# under the new name with no install in it (a test's task file, 11-27) goes
+# to the Trash; an install under both names stops the deploy.
+migrate() {
+  local from to
+  for from in "$OLD" "$OLD_LOGS"; do
+    to="${from%/*}/browser-harness"
+    [ -d "$from" ] && [ ! -L "$from" ] || continue
+    if [ -e "$to" ]; then
+      [ ! -e "$to/current" ] && [ ! -e "$to/releases" ] && [ ! -e "$to/daemon.log" ] || { echo "both $from and $to hold an install; move one aside, then deploy again" >&2; exit 1; }
+      trash "$to"
+    fi
+    mv "$from" "$to"
+    ln -s browser-harness "$from"
+    echo "migrate: $from moved to $to"
+  done
+  if [ -f "$DATA/browser.json" ] && ! jq -e 'has("mode")' "$DATA/browser.json" >/dev/null 2>&1; then
+    jq '. + {mode: (if (.bundle // "") | startswith("org.ladybird.") then "ladybird" else "safari" end)}' "$DATA/browser.json" >"$DATA/browser.json.new"
+    mv "$DATA/browser.json.new" "$DATA/browser.json"
+    echo "migrate: browser mode $(mode)"
+  fi
+}
+
+# relabel: once current is the new release, Safari Harness's routine and
+# Ladybird bridge jobs run it under new labels, and saved routine prompts
+# name the browser tools and skill.
+relabel() {
+  local plist label port helper
+  for plist in "$JOBS"/at.aktan.safari-harness.routine.*.plist; do
+    [ -f "$plist" ] || continue
+    label="$(basename "$plist" .plist)"
+    label="${label/safari-harness/browser-harness}"
+    sed -e "s#safari-harness#browser-harness#g" -e "s#cli/safari\.ts#cli/browser.ts#g" "$plist" >"$JOBS/$label.plist"
+    launchctl bootout "gui/$(id -u)/$(basename "$plist" .plist)" 2>/dev/null || true
+    rm -f "$plist"
+    launchctl bootstrap "gui/$(id -u)" "$JOBS/$label.plist"
+    echo "migrate: routine ${label##*.} is $label now"
+  done
+  for plist in "$DATA"/routines/*.md; do
+    [ -f "$plist" ] && grep -qF -e "safari tools" -e "skill://safari" -e "safari guide" "$plist" || continue
+    sed -i '' -e "s#a scheduled Safari routine#a scheduled browser routine#" -e "s#the safari tools (read skill://safari first)#the browser tools (read skill://browser first)#" -e "s#safari guide#browser guide#g" "$plist"
+  done
+  for plist in "$JOBS"/dev.aktan.safari-harness.ladybird-bridge-*.plist; do
+    [ -f "$plist" ] || continue
+    label="$(basename "$plist" .plist)"
+    port="${label##*-}"
+    label="${label/safari-harness/browser-harness}"
+    sed "s#safari-harness#browser-harness#g" "$plist" >"$JOBS/$label.plist"
+    helper="$DATA/ladybird-attach-$port.sh"
+    [ ! -f "$helper" ] || sed -i '' "s#safari-harness#browser-harness#g" "$helper"
+    launchctl bootout "gui/$(id -u)/$(basename "$plist" .plist)" 2>/dev/null || true
+    rm -f "$plist"
+    launchctl bootstrap "gui/$(id -u)" "$JOBS/$label.plist"
+    # The bridge attaches to the Ladybird that runs, as when its app starts.
+    if pgrep -f "^$LADYBIRD_APP/Contents/MacOS/" >/dev/null; then launchctl kickstart "gui/$(id -u)/$label"; fi
+    echo "migrate: the Ladybird bridge for port $port is $label now"
+  done
+}
+
+# retire: the old paths go once no process started under them is left (an
+# agent session's MCP server runs from the data folder it started with,
+# and every agent session has one), and once Ladybird Harness no longer
+# names its bridge's helper there (ladybird/install-app.sh writes the new
+# path; the app is not changed while it runs).
+retire() {
+  local procs link
+  [ -L "$OLD" ] || [ -L "$HOME/.bun/bin/safari" ] || [ -L "$OLD_LOGS" ] || return 0
+  # Read whole before matching, so the match is not of grep's own command.
+  procs="$(ps -axww -o command=)"
+  if grep -qF -e "$OLD/" -e "$HOME/.bun/bin/safari" <<<"$procs"; then
+    echo "note: processes started before the rename still run from $OLD; it stays a link until they end"
+    return 0
+  fi
+  if plutil -extract LSEnvironment.LADYBIRD_ATTACH_HELPER raw "$LADYBIRD_APP/Contents/Info.plist" 2>/dev/null | grep -qF "$OLD/"; then
+    echo "note: Ladybird Harness still starts its bridge through $OLD; it stays a link until ladybird/install-app.sh --bridge runs again"
+    return 0
+  fi
+  for link in "$OLD" "$OLD_LOGS" "$HOME/.bun/bin/safari"; do [ ! -L "$link" ] || rm "$link"; done
+  echo "retired the links from Safari Harness's old paths"
 }
 
 # point RELEASE: current becomes it in one step (a rename over the link);
@@ -157,8 +253,14 @@ restart() {
     [ "${busy:-0}" = 0 ] || echo "daemon: finishing $busy call(s) in flight first"
   else
     # a new launchd job: launchd stops the old daemon with SIGTERM, which
-    # also lets its calls in flight finish (main.ts)
-    bun "$CURRENT/cli/safari.ts" daemon install >/dev/null
+    # also lets its calls in flight finish (main.ts). Safari Harness's
+    # daemon ran under another label, and goes first: two daemons cannot
+    # both take the ports.
+    if [ -f "$JOBS/$OLD_DAEMON.plist" ]; then
+      launchctl bootout "gui/$(id -u)/$OLD_DAEMON" 2>/dev/null || true
+      rm -f "$JOBS/$OLD_DAEMON.plist"
+    fi
+    bun "$CURRENT/cli/browser.ts" daemon install >/dev/null
   fi
   # up to a minute of calls in flight, then the start
   for i in $(seq 1 180); do
@@ -166,12 +268,12 @@ restart() {
     if [ -n "$pid" ] && [ "$pid" != "$old" ] && [ "$(health .code)" = "$want" ]; then
       echo "daemon: restarted ($1)"
       for i in $(seq 1 60); do [ -n "$(health .extension.connectedAt)" ] && return; sleep 0.5; done
-      echo "daemon: its extension has not connected after 30 s (is Safari running?)"
+      echo "daemon: its extension has not connected after 30 s (is $([ "$(mode)" = ladybird ] && echo "Ladybird Harness" || echo Safari) running?)"
       return
     fi
     sleep 0.5
   done
-  echo "daemon: no daemon of release $sha answered within 90 s; see ~/Library/Logs/safari-harness/daemon.log" >&2
+  echo "daemon: no daemon of release $sha answered within 90 s; see ~/Library/Logs/browser-harness/daemon.log" >&2
   if [ -n "$before" ] && [ "$before" != "releases/$sha" ]; then
     local back="${before#releases/}"
     if launchctl bootout "gui/$(id -u)/$DAEMON"; then
@@ -197,6 +299,8 @@ until mkdir "$LOCK" 2>/dev/null; do sleep 1; done
 tmp=""
 checkpoint=""
 trap '[ -z "$tmp" ] || trash "$tmp"; [ -z "$checkpoint" ] || echo "checkpoint rollback backup retained: $checkpoint" >&2; rm -f "$DATA/deploying"; rmdir "$LOCK"' EXIT
+# Before anything makes the new data folder, which would stop the move.
+migrate
 mkdir -p "$RELEASES"
 before="$(readlink "$CURRENT" 2>/dev/null || true)"
 
@@ -205,6 +309,9 @@ before="$(readlink "$CURRENT" 2>/dev/null || true)"
 if [ "$what" = rollback ]; then
   sha="$(tail -n 1 "$DATA/deploys.log" 2>/dev/null | cut -d' ' -f3)"
   [ -n "$sha" ] && [ -f "$RELEASES/$sha/daemon/codehash.ts" ] || { echo "no earlier release deployed by this script is recorded in $DATA/deploys.log" >&2; exit 1; }
+  # Releases before 11-27 are Safari Harness: other paths, labels, command
+  # and MCP name, none of which this deploy can put back.
+  [ -f "$RELEASES/$sha/cli/browser.ts" ] || { echo "$sha is from before Safari Harness became Browser Harness; rolling back across the rename is not supported" >&2; exit 1; }
 else
   full="$(git -C "$ROOT" rev-parse --verify --quiet "${1:-HEAD}^{commit}")" || { echo "not a commit: ${1:-HEAD}" >&2; exit 2; }
   sha="$(git -C "$ROOT" rev-parse --short=7 "$full")"
@@ -222,6 +329,7 @@ else
     case "$release" in
       releases/*) live="${release#releases/}" ;;
       "$RELEASES"/*) live="${release#"$RELEASES/"}" ;;
+      "$OLD/releases"/*) live="${release#"$OLD/releases/"}" ;;
       *) echo "cannot identify the release in use: $release; no release changed" >&2; exit 1 ;;
     esac
     if ! [[ "$live" =~ ^[0-9a-fA-F]{4,64}$ ]] || ! live_full="$(git -C "$ROOT" rev-parse --verify --quiet "$live^{commit}")"; then
@@ -323,40 +431,60 @@ fi
 checkpoint="$(bun "$CHECKPOINTS" snapshot "$DATA" "$BASE" "$previous")"
 point "$sha"
 echo "current: release $sha"
-[ "$(readlink "$HOME/.bun/bin/safari" || true)" = "$CURRENT/cli/safari.ts" ] || ln -sfn "$CURRENT/cli/safari.ts" "$HOME/.bun/bin/safari"
-# The safari skill, which agents read before their first call, is
+relabel
+[ "$(readlink "$HOME/.bun/bin/browser" || true)" = "$CURRENT/cli/browser.ts" ] || ln -sfn "$CURRENT/cli/browser.ts" "$HOME/.bun/bin/browser"
+# Agents started before the rename call safari until they end (retire).
+[ ! -L "$HOME/.bun/bin/safari" ] || [ "$(readlink "$HOME/.bun/bin/safari")" = "$CURRENT/cli/browser.ts" ] || ln -sfn "$CURRENT/cli/browser.ts" "$HOME/.bun/bin/safari"
+# The browser skill, which agents read before their first call, is
 # docs/skill-head.md and then the card (docs/GUIDE.md) word for word: the
-# two never drift, and agents need no `safari guide` call after reading it,
+# two never drift, and agents need no `browser guide` call after reading it,
 # which 215 calls made in the two weeks before 10-19.
-skill="$HOME/.agents/skills/safari/SKILL.md"
+skill="$HOME/.agents/skills/browser/SKILL.md"
 if [ -f "$CURRENT/docs/skill-head.md" ]; then
   mkdir -p "${skill%/*}"
   cat "$CURRENT/docs/skill-head.md" "$CURRENT/docs/GUIDE.md" >"$skill.new"
   mv "$skill.new" "$skill"
 fi
-[ "$(jq -r '.mcpServers.safari.args[0] // empty' "$MCP" 2>/dev/null || true)" = "$CURRENT/daemon/mcp.ts" ] ||
-  echo "note: omp's safari MCP server does not run the deployed release; in $MCP set mcpServers.safari.args to [\"$CURRENT/daemon/mcp.ts\"]"
-# omp waits 30 s for an MCP call unless the server's entry says longer,
-# and safari's calls run up to 120 s: until 11-06 about 60 calls in five
-# sessions came back "outcome unknown" while they still ran, and agents
-# retried them (I-3). So the entry's timeout is raised to 130000 ms.
-if jq -e '.mcpServers.safari' "$MCP" >/dev/null 2>&1 && ! jq -e '(.mcpServers.safari.timeout | numbers) >= 130000' "$MCP" >/dev/null 2>&1; then
+# Safari Harness's skill would list beside it in new sessions.
+[ ! -d "$HOME/.agents/skills/safari" ] || { trash "$HOME/.agents/skills/safari"; echo "the safari skill is now the browser skill"; }
+# omp's MCP server for the harness is named browser, so agents see its tools
+# as mcp__browser_*. Sessions started before keep the safari server they
+# started, which runs from the old data folder until they end.
+if [ -f "$MCP" ] && jq -e '.mcpServers.safari' "$MCP" >/dev/null 2>&1; then
   cfg="$(realpath "$MCP")"
   new="$(mktemp "$cfg.XXXXXX")"
   chmod "$(stat -f %Lp "$cfg")" "$new"
-  jq '.mcpServers.safari.timeout = 130000' "$cfg" >"$new"
+  jq --arg mcp "$CURRENT/daemon/mcp.ts" '.mcpServers.browser = (.mcpServers.safari + {args: [$mcp]}) | del(.mcpServers.safari)' "$cfg" >"$new"
   mv "$new" "$cfg"
-  jq -e '.mcpServers.safari.timeout == 130000' "$MCP" >/dev/null || { echo "could not set mcpServers.safari.timeout to 130000 in $MCP" >&2; exit 1; }
-  echo "omp's safari MCP server: timeout set to 130000 ms in $MCP (new omp sessions)"
+  echo "omp's MCP server: safari is browser now in $MCP (new omp sessions)"
+fi
+[ "$(jq -r '.mcpServers.browser.args[0] // empty' "$MCP" 2>/dev/null || true)" = "$CURRENT/daemon/mcp.ts" ] ||
+  echo "note: omp's browser MCP server does not run the deployed release; in $MCP set mcpServers.browser.args to [\"$CURRENT/daemon/mcp.ts\"]"
+# omp waits 30 s for an MCP call unless the server's entry says longer,
+# and the harness's calls run up to 120 s: until 11-06 about 60 calls in five
+# sessions came back "outcome unknown" while they still ran, and agents
+# retried them (I-3). So the entry's timeout is raised to 130000 ms.
+if jq -e '.mcpServers.browser' "$MCP" >/dev/null 2>&1 && ! jq -e '(.mcpServers.browser.timeout | numbers) >= 130000' "$MCP" >/dev/null 2>&1; then
+  cfg="$(realpath "$MCP")"
+  new="$(mktemp "$cfg.XXXXXX")"
+  chmod "$(stat -f %Lp "$cfg")" "$new"
+  jq '.mcpServers.browser.timeout = 130000' "$cfg" >"$new"
+  mv "$new" "$cfg"
+  jq -e '.mcpServers.browser.timeout == 130000' "$MCP" >/dev/null || { echo "could not set mcpServers.browser.timeout to 130000 in $MCP" >&2; exit 1; }
+  echo "omp's browser MCP server: timeout set to 130000 ms in $MCP (new omp sessions)"
 fi
 # New omp sessions load the runtime-authorized release hook. Existing
 # sessions keep their loaded hook; agent_end alone is not task authority.
-[ ! -d "$EXTENSIONS" ] || [ "$(readlink "$EXTENSIONS/safari-harness" || true)" = "$CURRENT/omp" ] || ln -sfn "$CURRENT/omp" "$EXTENSIONS/safari-harness"
-for plist in "$JOBS"/at.aktan.safari-harness.routine.*.plist; do
+if [ -d "$EXTENSIONS" ]; then
+  [ "$(readlink "$EXTENSIONS/browser-harness" || true)" = "$CURRENT/omp" ] || ln -sfn "$CURRENT/omp" "$EXTENSIONS/browser-harness"
+  # Both hooks would load in new sessions; sessions that loaded it keep it.
+  [ ! -L "$EXTENSIONS/safari-harness" ] || rm "$EXTENSIONS/safari-harness"
+fi
+for plist in "$JOBS"/at.aktan.browser-harness.routine.*.plist; do
   [ -f "$plist" ] || continue
   label="$(basename "$plist" .plist)"
-  [ "$(job "$label")" = "$CURRENT/cli/safari.ts" ] && continue
-  plutil -replace ProgramArguments.1 -string "$CURRENT/cli/safari.ts" "$plist"
+  [ "$(job "$label")" = "$CURRENT/cli/browser.ts" ] && continue
+  plutil -replace ProgramArguments.1 -string "$CURRENT/cli/browser.ts" "$plist"
   launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
   launchctl bootstrap "gui/$(id -u)" "$plist"
   echo "routine ${label##*.}: now runs the deployed release"
@@ -386,22 +514,35 @@ if [ -n "$app" ]; then
   lsregister -f "$APP"
   pluginkit -a "$APPEX"
   echo "$key" >"$DATA/installed-extension"
-  # Safari reloads the extension, which connects again
-  now=""
-  for i in $(seq 1 60); do
-    now="$(health .extension.connectedAt)"
-    if [ -n "$now" ] && [ "$now" != "$was" ]; then echo "extension: installed; it reconnected after $((i / 2)) s"; break; fi
-    [ "$i" = 30 ] && pluginkit -a "$APPEX"
-    sleep 0.5
-  done
-  [ -n "$now" ] && [ "$now" != "$was" ] || { echo "extension: installed, but it has not reconnected after 30 s (is Safari running?)" >&2; exit 1; }
+  # The extension reconnects: Safari reloads it, or in Ladybird mode its
+  # bridge, which loaded the extension's files as it started, starts again.
+  bridges=()
+  if [ "$(mode)" = ladybird ]; then
+    for plist in "$JOBS"/dev.aktan.browser-harness.ladybird-bridge-*.plist; do [ ! -f "$plist" ] || bridges+=("$(basename "$plist" .plist)"); done
+    if [ ${#bridges[@]} -eq 0 ] || ! pgrep -f "^$LADYBIRD_APP/Contents/MacOS/" >/dev/null; then
+      echo "extension: installed; Ladybird Harness is not running, so its bridge loads it when it starts"
+      bridges=(none)
+    else
+      for label in "${bridges[@]}"; do launchctl kickstart -k "gui/$(id -u)/$label"; done
+    fi
+  fi
+  if [ "${bridges[0]:-}" != none ]; then
+    now=""
+    for i in $(seq 1 60); do
+      now="$(health .extension.connectedAt)"
+      if [ -n "$now" ] && [ "$now" != "$was" ]; then echo "extension: installed; it reconnected after $((i / 2)) s"; break; fi
+      [ "$i" = 30 ] && [ ${#bridges[@]} -eq 0 ] && pluginkit -a "$APPEX"
+      sleep 0.5
+    done
+    [ -n "$now" ] && [ "$now" != "$was" ] || { echo "extension: installed, but it has not reconnected after 30 s (is $([ "$(mode)" = ladybird ] && echo "Ladybird Harness" || echo Safari) running?)" >&2; exit 1; }
+  fi
 else
   echo "extension: unchanged"
 fi
 
 # The live release sat off master for a day on 10-23, and work started from
 # master lacked its fixes (HD-1). Its .upstream says how far ahead of
-# origin/master it is, as this checkout knows origin, for safari status.
+# origin/master it is, as this checkout knows origin, for browser status.
 unmerged=""
 master="$(git -C "$ROOT" rev-parse --verify --quiet "origin/master^{commit}" || true)"
 ahead="$([ -z "$master" ] || git -C "$ROOT" rev-list --count "$master..$sha" 2>/dev/null || true)"
@@ -418,6 +559,7 @@ fi
 [ "$before" = "releases/$sha" ] || echo "$(date -u +%FT%TZ) $sha ${before#releases/} $what$unmerged" >>"$DATA/deploys.log"
 bun "$CHECKPOINTS" discard "$DATA" "$BASE" "$checkpoint"
 checkpoint=""
+retire
 
 # Kept: the current release, the newest KEEP others, any current in the
 # last week (an agent session's MCP server may still run it), and the one

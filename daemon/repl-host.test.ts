@@ -3,7 +3,7 @@ import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utim
 import { join } from "node:path";
 import type { Overview } from "./mission.ts";
 
-// A named REPL session is a process of its own that the first `safari repl
+// A named REPL session is a process of its own that the first `browser repl
 // --session` command starts and leaves running (repl-host.ts); each command
 // exits once it has its answer. Here the daemon runs in a process of its
 // own with a stand-in extension on its socket, as in renumber-caller.test.ts,
@@ -51,17 +51,17 @@ const [wsPort, httpPort] = probes.map((s) => s.port);
 await Promise.all(probes.map((s) => s.stop(true)));
 // A unix socket's path must fit in 104 bytes, so the scratch HOME is short.
 const home = mkdtempSync("/tmp/repl-host-");
-const state = join(home, ".local/share/safari-harness");
+const state = join(home, ".local/share/browser-harness");
 mkdirSync(state, { recursive: true });
 // A keeper counts as running, so none starts to group a window in the real
 // Safari (claimSpaces in call.ts).
 writeFileSync(join(state, "keeper.pid"), String(process.pid));
 const daemon = Bun.spawn([process.execPath, join(import.meta.dir, "main.ts")], {
-  env: { ...process.env, HOME: home, SAFARI_HARNESS_WS: String(wsPort), SAFARI_HARNESS_HTTP_PORT: String(httpPort) },
+  env: { ...process.env, HOME: home, BROWSER_HARNESS_WS: String(wsPort), BROWSER_HARNESS_HTTP_PORT: String(httpPort) },
   stdout: "pipe",
   stderr: "inherit",
 });
-const env = { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: `http://127.0.0.1:${httpPort}` };
+const env = { ...process.env, HOME: home, BROWSER_HARNESS_HTTP: `http://127.0.0.1:${httpPort}` };
 
 // bun under the name omp: the daemon takes the nearest agent harness above
 // a call's process for its agent (owner.ts), whatever runs this test.
@@ -113,7 +113,7 @@ void (async () => {
 function logs(what: string): Promise<void> {
   const { promise, resolve, reject } = Promise.withResolvers<void>();
   heard = () => {
-    if (logged.some((l) => l.split("[safari-harness] ")[1]?.startsWith(what))) resolve();
+    if (logged.some((l) => l.split("[browser-harness] ")[1]?.startsWith(what))) resolve();
     else if (ended) reject(new Error(`the daemon exited before it logged ${what}`));
   };
   heard();
@@ -129,7 +129,7 @@ extension.onmessage = (e) => {
 };
 await logs("connect");
 
-// A `safari repl` command: a process of its own that calls repl-host.ts and
+// A `browser repl` command: a process of its own that calls repl-host.ts and
 // exits once it has the answer, as the CLI does. elsewhere runs it for
 // another agent: an agent harness of its own between this test and the
 // command.
@@ -146,7 +146,7 @@ process.exit(0);`;
 
 // Settles once the daemon's owner sweep has run since now: an agent (an
 // agent harness whose child calls) makes a call and is killed, and the
-// agents list (what safari agents prints) says it ended once the first
+// agents list (what browser agents prints) says it ended once the first
 // sweep that finds it gone has run, a sweep that looks at every process
 // watched before it. An exit closes no tab (6fc219a), so the list is what
 // tells. The daemon names the agent as the call arrives, so the child is
@@ -206,7 +206,7 @@ try { await repl.runInSession("stale", "1"); await Bun.write(Bun.stdout, JSON.st
 process.exit(0);`;
     const said = JSON.parse(await run([process.execPath, "-e", script])) as string;
     expect(said).toContain("session stale runs another release of the harness");
-    expect(said).toContain("safari repl --close stale");
+    expect(said).toContain("browser repl --close stale");
     expect(ran).toBe(0);
   } finally {
     stale.stop(true);
@@ -221,7 +221,7 @@ async function sessionTab(url: string): Promise<number> {
 }
 
 test("a named session's tab opens in the window of the agent that ran the code, beside the agent's own tabs", async () => {
-  // a command of the agent's calls, as a shell's safari command does
+  // a command of the agent's calls, as a shell's browser command does
   const opened = await run([process.execPath, "-e", `const res = await fetch("http://127.0.0.1:${httpPort}/rpc", { method: "POST", body: JSON.stringify({ tool: "open", args: { url: "https://own.example/", background: true }, caller: process.pid }) });
 console.log(JSON.stringify(await res.json()));`]);
   const { value: own } = JSON.parse(opened) as { value: { id: number } };
@@ -254,17 +254,17 @@ test("a session an agent starts names the sessions that agent already runs, and 
   expect(theirs.hint).toBeUndefined();
 }, 30_000);
 
-// `safari repl` itself, run as an agent's shell runs it.
-const CLI = join(import.meta.dir, "../cli/safari.ts");
+// `browser repl` itself, run as an agent's shell runs it.
+const CLI = join(import.meta.dir, "../cli/browser.ts");
 
 // On 10-07 Akyl set globalThis.dmid in one plain call and found it gone in
 // the next: each call was then a session of its own.
-test("a value one plain safari repl call sets, the same agent's next plain call reads", async () => {
+test("a value one plain browser repl call sets, the same agent's next plain call reads", async () => {
   await run([process.execPath, CLI, "repl", "globalThis.dmid = 'D0123'"]);
   expect(await run([process.execPath, CLI, "repl", "globalThis.dmid"])).toBe("D0123\n");
 }, 30_000);
 
-test("the session of an agent's plain safari repl calls ends when that agent exits", async () => {
+test("the session of an agent's plain browser repl calls ends when that agent exits", async () => {
   // an agent of its own: it runs one plain call, says so, and stays
   const agent = Bun.spawn([omp, "-e", `await Bun.spawn([process.execPath, ${JSON.stringify(CLI)}, "repl", "1"], { stdout: "ignore", stderr: "inherit" }).exited; console.log("ran"); await Bun.sleep(60_000);`], { env, stdout: "pipe", stderr: "inherit" });
   await agent.stdout.getReader().read();

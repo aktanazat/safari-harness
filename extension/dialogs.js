@@ -13,7 +13,7 @@
 // hears from it, through DOM events.
 
 (() => {
-  const KEY = Symbol.for("safari-harness.page");
+  const KEY = Symbol.for("browser-harness.page");
   // A page keeps the first copy for its life, through extension reloads:
   // the page holds on to the wrappers below (a saved fetch, timers set
   // through them), so a newer copy could not take them back. A newer

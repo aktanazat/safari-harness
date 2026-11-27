@@ -117,7 +117,7 @@ async function compile(inputSchema: Record<string, unknown>): Promise<ValidateFu
   check(inputSchema);
   const dialect = inputSchema.$schema;
   if (dialect !== undefined && dialect !== "https://json-schema.org/draft/2020-12/schema" && dialect !== "http://json-schema.org/draft-07/schema#" && dialect !== "https://json-schema.org/draft-07/schema") throw new Error("unsupported JSON Schema dialect");
-  // Loaded here, not at the top: ajv took 30 ms of each safari command's
+  // Loaded here, not at the top: ajv took 30 ms of each browser command's
   // start, and only this rarely used tool compiles a schema.
   const Validator = dialect === "https://json-schema.org/draft/2020-12/schema" ? (await import("ajv/dist/2020.js")).default : (await import("ajv")).default;
   try {

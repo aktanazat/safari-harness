@@ -28,7 +28,7 @@ import { redactUrl, unsecret } from "./redact.ts";
 import { noteLoad } from "./loads.ts";
 import { answeredError } from "./failures.ts";
 import { currentOwner, currentTask } from "./owner.ts";
-import { BROWSER, browserRunning, LADYBIRD } from "./front.ts";
+import { BROWSER, BROWSER_NAME, browserRunning, LADYBIRD } from "./front.ts";
 
 export const DEFAULT_PORT = 37333;
 
@@ -101,9 +101,9 @@ const RELOADS_MS = 600_000;
 // once, within the same RELOADS in RELOADS_MS, and its request goes out
 // once it connects again (healed). From 10-05 to 10-19 such calls failed
 // at once 44 times in 17 stuck spells, each telling the agent to reload
-// it, and agents ran safari extension reload 27 times.
+// it, and agents ran browser extension reload 27 times.
 
-// How long a reload (safari extension reload, or a model's call that met a
+// How long a reload (browser extension reload, or a model's call that met a
 // stuck kind) waits for the extension to connect again; it takes a second
 // or two (CONNECT_MS).
 const RELOADED_MS = 30000;
@@ -581,7 +581,7 @@ export class Bridge {
   // (connected), and only a caller's own call may start it again.
   private async socket(start: boolean): Promise<ExtSocket> {
     if (this.sock) return this.sock;
-    if (!start) throw new Error("Safari extension not connected");
+    if (!start) throw new Error(`${BROWSER_NAME} extension not connected`);
     const taken = this.taken(CONNECT_MS);
     const running = await browserRunning();
     if (!running && !this.sock) Bun.spawn(["open", "-g", "-j", "-b", BROWSER], { stdout: "ignore", stderr: "ignore" });
@@ -805,7 +805,7 @@ export class Bridge {
     if (this.sock && this.sock !== sock) return this.sock;
     throw new Error(this.sock === sock
       ? `the extension did not reload within ${RELOADED_MS / 1000} s: Safari ignored it; ${IGNORED_FIX}`
-      : `the extension reloaded but did not connect again within ${RELOADED_MS / 1000} s; run safari doctor for the fix`);
+      : `the extension reloaded but did not connect again within ${RELOADED_MS / 1000} s; run browser doctor for the fix`);
   }
 
   // A request of a kind stuck now (ask). In a model's call (healing) the
@@ -845,14 +845,14 @@ export class Bridge {
     return { value, reloadedMs: heal.reloadedMs };
   }
 
-  // safari extension reload (main.ts): the reload a stuck extension gets,
+  // browser extension reload (main.ts): the reload a stuck extension gets,
   // asked for whenever. Done once a new socket connects: how long it took.
   async reload(): Promise<{ ms: number }> {
     const sock = this.sock;
-    if (!sock) throw new Error("Safari extension not connected, so there is nothing to reload; run safari doctor for the fix");
+    if (!sock) throw new Error(`${BROWSER_NAME} extension not connected, so there is nothing to reload; run browser doctor for the fix`);
     if (this.reloadIgnored(Date.now())) throw new Error(`Safari ignored the extension's last reload and still answers none of its calls, so another reload would go unheard too; ${IGNORED_FIX}`);
     const began = Date.now();
-    await this.reconnect(sock, "asked for (safari extension reload)");
+    await this.reconnect(sock, "asked for (browser extension reload)");
     return { ms: Date.now() - began };
   }
 

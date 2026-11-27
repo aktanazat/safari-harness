@@ -1,7 +1,7 @@
 // What a call on a tab answers when the tab is not what the agent expects:
 // closed already, or showing its site's error page.
 //
-// On 10-16 `safari close 5203` failed "that tab is gone" after the repl had
+// On 10-16 `browser close 5203` failed "that tab is gone" after the repl had
 // closed the tab, and a hunt's eBay searches answered "Error Page | eBay",
 // which open returned as a page like any other (HuntsUsage).
 
@@ -65,7 +65,7 @@ test("open answers a page its site's guide names as the error page as not ok, an
   const agent = Bun.spawn(["sleep", "60"]);
   const errored = await runAs(agent.pid, () => callTool("open", { url: "https://www.ebay.com/sch/i.html?_nkw=jacket", background: true }));
   const erroredTab = nextTab;
-  expect(errored).toMatchObject({ ok: false, warning: expect.stringContaining('answered with its error page ("Error Page | eBay"), not the page asked for; safari guide ebay says what to try') });
+  expect(errored).toMatchObject({ ok: false, warning: expect.stringContaining('answered with its error page ("Error Page | eBay"), not the page asked for; browser guide ebay says what to try') });
   const fine = await runAs(agent.pid, () => callTool("open", { url: "https://example.com/", background: true, new: true }));
   expect(fine).not.toMatchObject({ ok: false });
   // the tabs close here, so no later file's cleanup of exited agents meets them

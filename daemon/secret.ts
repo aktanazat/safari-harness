@@ -59,10 +59,10 @@ export async function typeSecret(a: Record<string, unknown>, model: boolean, put
   return { ...answer, typed: `code, ${code.length} chars`, ...(sent ? { source: sent.source } : {}) };
 }
 
-// The environment of whoever ran the safari CLI, which hands it to its
-// tool call (cli/safari.ts), as a vault's runner sets it: mem-secret run
-// VAR -- safari ... An MCP server's or a safari do session's own
-// environment is no caller's, and holds keys of its own (SAFARI_MODEL_KEY)
+// The environment of whoever ran the browser CLI, which hands it to its
+// tool call (cli/browser.ts), as a vault's runner sets it: mem-secret run
+// VAR -- safari ... An MCP server's or a browser do session's own
+// environment is no caller's, and holds keys of its own (BROWSER_MODEL_KEY)
 // that a page's text could ask a model to type into the page.
 export type CallerEnv = Record<string, string | undefined>;
 
@@ -71,10 +71,10 @@ export type CallerEnv = Record<string, string | undefined>;
 // disk to reach their fields, since type took none of them from there.
 function heldValue(name: unknown, caller: CallerEnv | undefined): string {
   if (typeof name !== "string" || !name) throw new Error('secret "env" needs env: the name of the variable that holds the value');
-  const run = `mem-secret run ${name} -- safari type <ref> '{{code}}' --tab N --secret env --env ${name}`;
-  if (!caller) throw new Error(`secret "env" reads only the environment of a safari CLI call, as in: ${run}`);
+  const run = `mem-secret run ${name} -- browser type <ref> '{{code}}' --tab N --secret env --env ${name}`;
+  if (!caller) throw new Error(`secret "env" reads only the environment of a browser CLI call, as in: ${run}`);
   const value = caller[name];
-  if (!value) throw new Error(`environment variable ${name} is empty or not set; set it in the environment of the safari CLI call, as in: ${run}`);
+  if (!value) throw new Error(`environment variable ${name} is empty or not set; set it in the environment of the browser CLI call, as in: ${run}`);
   return value;
 }
 
@@ -349,7 +349,7 @@ function missed(s: Site, sender: string | undefined, byText: boolean, mail: Mail
 // The messages whose codes were typed, so each is typed once: a site takes
 // a code once, and a resend's new code comes in beside the old one. A line
 // is the time in ms and the message's key, never the code; an hour is kept.
-const TYPED = join(homedir(), ".local/share/safari-harness/codes-typed");
+const TYPED = join(homedir(), ".local/share/browser-harness/codes-typed");
 const TYPED_MS = 3_600_000;
 
 function typedLines(): string[] {

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { lastDay, logCall, logDrop, openCalls } from "./calls.ts";
 import { failureOf, HarnessError } from "./failures.ts";
 
-// safari status prints the last day of this log, which must not keep what
+// browser status prints the last day of this log, which must not keep what
 // a call typed or the address of the page it read.
 test("the last day counts each call once, its failures by code, and the link's drops by why; a line keeps a page's host, not its address or what a call typed", () => {
   const dir = mkdtempSync(join(tmpdir(), "calls-"));

@@ -796,12 +796,12 @@
   {
    "name": "github-not-found",
    "source": {
-    "url": "https://github.com/safari-harness-no-such-page"
+    "url": "https://github.com/browser-harness-no-such-page"
    },
    "expect": null,
    "frames": [
     {
-     "url": "https://github.com/safari-harness-no-such-page",
+     "url": "https://github.com/browser-harness-no-such-page",
      "title": "Page not found · GitHub",
      "text": "Skip to content Type / to search Find code, projects, and people on GitHub: Search Contact Support — GitHub Status — @githubstatus Footer © 2026 GitHub, Inc. Footer navigation Terms Privacy Security Status Community Docs Contact Manage cookies Do not share my personal information",
      "markers": [],

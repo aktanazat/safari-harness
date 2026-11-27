@@ -1,4 +1,4 @@
-// Reddit (www.reddit.com) for safari repl: threads and search, read-only.
+// Reddit (www.reddit.com) for browser repl: threads and search, read-only.
 // Reddit answers its .json addresses with 403 even from a browser tab
 // (11-27, Ladybird, signed out), so this reads what its own pages draw. A thread is read from
 // the page itself, loaded in the kit's background tab: a fetched copy of the

@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 const MCP = join(import.meta.dir, "mcp-tools.ts");
-const CLI = join(import.meta.dir, "../cli/safari.ts");
+const CLI = join(import.meta.dir, "../cli/browser.ts");
 const EXTENSION = join(import.meta.dir, "../omp/index.ts");
 const SESSION_TASK = join(import.meta.dir, "session-task.ts");
 type WireCall = { tool: string; args: Record<string, unknown>; caller?: number; task?: string };
@@ -28,7 +28,7 @@ async function script(code: string, url: string, home: string) {
   const child = Bun.spawn([process.execPath, "-e", `import { setSessionTask } from ${JSON.stringify(SESSION_TASK)};
 setSessionTask("bootstrap-session", "bootstrap");
 ${code}`], {
-    env: { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: url, PI_SESSION_ID: "bootstrap-session" },
+    env: { ...process.env, HOME: home, BROWSER_HARNESS_HTTP: url, PI_SESSION_ID: "bootstrap-session" },
     stdout: "pipe", stderr: "pipe",
   });
   const [output, error, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
@@ -101,7 +101,7 @@ test("a shell command runs as written, and the Safari CLI in it sends its own ag
     const cli = `${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} tabs --json --host local`;
     const helpers = [
       { session: "helper-a", id: "reader", command: cli },
-      { session: "helper-b", id: "sibling", command: `SAFARI_HARNESS_TASK='["lead-a","main"]' eval '${cli}'` },
+      { session: "helper-b", id: "sibling", command: `BROWSER_HARNESS_TASK='["lead-a","main"]' eval '${cli}'` },
     ];
     const revised = await script(`import safariTurnEnd from ${JSON.stringify(EXTENSION)};
 const hooks = {};
@@ -113,7 +113,7 @@ process.stdout.write(JSON.stringify(revised.map((r) => r ?? "as written")));`, u
     expect(JSON.parse(revised)).toEqual(["as written", "as written"]);
     await Promise.all(helpers.map(async ({ session, command }) => {
       const child = Bun.spawn(["/bin/sh", "-c", command], {
-        env: { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: url, PI_SESSION_ID: session }, stdout: "pipe", stderr: "pipe",
+        env: { ...process.env, HOME: home, BROWSER_HARNESS_HTTP: url, PI_SESSION_ID: session }, stdout: "pipe", stderr: "pipe",
       });
       const [output, error, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
       expect({ exit, error }).toEqual({ exit: 0, error: "" });

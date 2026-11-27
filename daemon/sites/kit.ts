@@ -12,10 +12,11 @@ import type { Invoke } from "../call.ts";
 import { failureOf, HarnessError, rateLimited } from "../failures.ts";
 import { affectsPage } from "../lanes.ts";
 import type { Limit } from "../pace.ts";
+import { BROWSER_NAME } from "../front.ts";
 
 export class NotSignedIn extends Error {
   constructor(readonly site: string, detail = "") {
-    super(`not signed in to ${site} in Safari${detail ? ` (${detail})` : ""}; sign in there, then try again`);
+    super(`not signed in to ${site} in ${BROWSER_NAME}${detail ? ` (${detail})` : ""}; sign in there, then try again`);
     this.name = "NotSignedIn";
   }
 }
@@ -153,7 +154,7 @@ export class SiteKit {
   }
 
   // The tabs the kit holds open now, at the address each opened on: a
-  // session's list counts them (repl-host.ts). On 11-18 safari repl --list
+  // session's list counts them (repl-host.ts). On 11-18 browser repl --list
   // showed six sessions with 0 tabs while each held a Slack tab.
   held(): { id: number; url: string }[] {
     return [...this.tabs].flatMap(([origin, tab]) => {

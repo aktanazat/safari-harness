@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "safari-harness",
+      "name": "browser-harness",
       "dependencies": {
         "ajv": "8.17.1",
       },

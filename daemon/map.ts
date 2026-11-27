@@ -19,6 +19,7 @@ import { SEARCH_GAP_MS, turnAt } from "./pace.ts";
 import { classifyPage, partialRead, type PageKind, type PageState } from "./page-state.ts";
 import { checked, keep, recall } from "./reads.ts";
 import { cutFenced, defused } from "./injection.ts";
+import { BROWSER_NAME } from "./front.ts";
 
 export const MAP_MAX_URLS = 20;
 // No more at once than an agent's tab limit (AGENT_TAB_CAP in tools.ts),
@@ -39,7 +40,7 @@ export const READS: SaveKind[] = ["extract", "snapshot", "eval", "fetch"];
 // in October never opened the page (harness-audit), and on 10-23 the
 // Lancet's check that stood through map's 9 s let a tab opened later in.
 const CHECKED: Record<"page" | "block", string> = {
-  page: "a bot check stands in for the page; open it in a tab and wait a few seconds, since many checks clear on their own in Safari; if it remains, use another permitted source or report that the page is unavailable",
+  page: "a bot check stands in for the page; open it in a tab and wait a few seconds, since many checks clear on their own in a browser tab; if it remains, use another permitted source or report that the page is unavailable",
   block: "the site turns the browser away; the user cannot clear that either",
 };
 
@@ -243,7 +244,7 @@ async function readAll(urls: string[], job: Job, atOnce: number, end: number, ta
   // each and answered every page "extension request tabs.list timed out".
   const unanswered = answered.map((p) => (p.ok ? null : UNANSWERED.exec(p.error)));
   const [first] = unanswered;
-  if (first && unanswered.every(Boolean)) throw new Error(`extension stuck: the Safari extension answered none of map's ${urls.length} pages (its ${first[1] ?? first[2]} requests went unanswered); map again in a minute, and if it fails the same way, tell the user Safari is not answering`);
+  if (first && unanswered.every(Boolean)) throw new Error(`extension stuck: the ${BROWSER_NAME} extension answered none of map's ${urls.length} pages (its ${first[1] ?? first[2]} requests went unanswered); map again in a minute, and if it fails the same way, tell the user ${BROWSER_NAME} is not answering`);
   return { pages: answered, left: urls.filter((_, i) => (pages[i] === undefined && began[i] === undefined) || (!effectful && (pages[i] === undefined || disconnected[i] || stalled[i]))) };
 }
 

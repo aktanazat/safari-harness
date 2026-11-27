@@ -9,9 +9,9 @@ import { listTools } from "./mcp-tools.ts";
 // module it imports adds to that start. A tool call needs the tools, not
 // the modules of the repl (node:vm and the site kits), agent sessions,
 // guides, or launchd and its watch routines: loaded by every command, they
-// were 5 of the 26 ms `safari info` took, and 2 MB of each MCP server for its
+// were 5 of the 26 ms `browser info` took, and 2 MB of each MCP server for its
 // whole session. ajv, which only a site action's schema needs, was 11 of
-// the 53 ms `safari --help` took (11-08).
+// the 53 ms `browser --help` took (11-08).
 const COMMAND_ONLY = /\/daemon\/(repl|repl-host|sessions|agent|guides|watch)\.ts$|\/daemon\/sites\/|\/cli\/launchd\.ts$|\/node_modules\/ajv\//;
 
 const REPO = join(import.meta.dir, "..");
@@ -34,7 +34,7 @@ function spawn(argv: string[]) {
     cwd: home,
     stdin: "pipe", stdout: "pipe", stderr: "pipe",
     // HOME keeps the repl's files and the host settings in the scratch directory.
-    env: { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: `http://127.0.0.1:${daemon.port}`, MODULES_OUT: out },
+    env: { ...process.env, HOME: home, BROWSER_HARNESS_HTTP: `http://127.0.0.1:${daemon.port}`, MODULES_OUT: out },
   });
   const modules = async () => (await Bun.file(out).text()).split("\n");
   return { proc, modules };
@@ -56,7 +56,7 @@ async function mcpCall(name: string, args: Record<string, unknown>) {
 }
 
 test("a tool call from the CLI loads none of the repl's, sessions', guides', launchd's, or ajv's modules", async () => {
-  const { proc, modules } = spawn([join(REPO, "cli/safari.ts"), "info", "--tab", "7"]);
+  const { proc, modules } = spawn([join(REPO, "cli/browser.ts"), "info", "--tab", "7"]);
   proc.stdin.end();
   expect(await new Response(proc.stdout).text()).toContain("Example Domain");
   expect(await proc.exited).toBe(0);

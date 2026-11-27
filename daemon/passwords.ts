@@ -341,7 +341,7 @@ export class ApplePasswords {
   // Seals the session the bridge keeps; the key file holds the same key.
   private stashKey: Buffer | null = null;
 
-  constructor({ port = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT), profile = heliumProfile(port), timers = REAL_TIMERS, vault = memSecretVault() }: { port?: number; profile?: string; timers?: Timers; vault?: Vault } = {}) {
+  constructor({ port = Number(process.env.BROWSER_HARNESS_WS ?? DEFAULT_PORT), profile = heliumProfile(port), timers = REAL_TIMERS, vault = memSecretVault() }: { port?: number; profile?: string; timers?: Timers; vault?: Vault } = {}) {
     this.port = port;
     this.profile = profile;
     this.keyFile = join(profile, KEY_FILE);
@@ -375,7 +375,7 @@ export class ApplePasswords {
     let msg: { hello?: Hello; helper?: HelperMsg; closed?: string };
     try { msg = JSON.parse(raw); } catch { return; }
     if (msg.hello) {
-      this.greet(msg.hello).catch((e) => console.error("[safari-harness] the password bridge's hello failed:", e instanceof Error ? e.message : e));
+      this.greet(msg.hello).catch((e) => console.error("[browser-harness] the password bridge's hello failed:", e instanceof Error ? e.message : e));
       return;
     }
     if (msg.closed !== undefined) {
@@ -895,7 +895,7 @@ export class ApplePasswords {
   // after it without the password.
   async change(tab: number, username?: string, entry?: string, shared = false): Promise<{ username: string; site: string; newLogin?: true; helper?: number }> {
     await this.vault.ready().catch((e: Error) => {
-      throw new HarnessError("unavailable", `the vault cannot keep a new password (${e.message}), so none was made, saved, or typed`, { effect: "none", retryable: false, next: "fix what the login vault line of safari doctor names, then call change again" });
+      throw new HarnessError("unavailable", `the vault cannot keep a new password (${e.message}), so none was made, saved, or typed`, { effect: "none", retryable: false, next: "fix what the login vault line of browser doctor names, then call change again" });
     });
     await this.session();
     const form = (await probe(tab, "change")).find((f) => (f.fresh ?? 0) > 0);
@@ -931,7 +931,7 @@ export class ApplePasswords {
       // A keep stopped at its time limit may have written all the same.
       const kept = await this.vault.logins(c.site).catch(() => []);
       if (kept.some((l) => l.username === c.login && l.password === c.secret)) return;
-      throw new HarnessError("unavailable", `the vault did not keep the new password for ${c.login} on ${c.site} (${e.message}), so nothing was typed: the site keeps its old password and the vault what it kept before, and Apple Passwords now holds a new one the site never took`, { effect: "none", retryable: false, next: "fix what the login vault line of safari doctor names, then call change again: its new password replaces the one Apple Passwords holds" });
+      throw new HarnessError("unavailable", `the vault did not keep the new password for ${c.login} on ${c.site} (${e.message}), so nothing was typed: the site keeps its old password and the vault what it kept before, and Apple Passwords now holds a new one the site never took`, { effect: "none", retryable: false, next: "fix what the login vault line of browser doctor names, then call change again: its new password replaces the one Apple Passwords holds" });
     });
     keepSecret(tab, c.current, c.secret);
     const sent = [...(c.current ? ["current password"] : []), "new password", ...(c.fresh === 1 ? [] : ["confirm password"])];

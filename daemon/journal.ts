@@ -2,7 +2,7 @@
 // a call failed or the extension went away. A bounded list of timestamped
 // events (start and stop, extension connects and disconnects, requests the
 // extension never answered, pages it had to re-inject); /health shows the
-// latest, so `safari status` does. The daemon keeps it in a file beside its
+// latest, so `browser status` does. The daemon keeps it in a file beside its
 // log, so it survives restarts; anywhere else (tests) it stays in memory.
 
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -83,14 +83,14 @@ export function note(kind: string, fields: Record<string, unknown> = {}): void {
   if (!file) return;
   // The log says the first of a run, and again each time it doubles.
   const n = typeof e.n === "number" ? e.n : 1;
-  if ((n & (n - 1)) === 0) console.log(`[safari-harness] ${kind}`, Object.keys(fields).length ? JSON.stringify(fields) : "", ...(n > 1 ? [`(${n} alike since ${String(e.since)})`] : []));
+  if ((n & (n - 1)) === 0) console.log(`[browser-harness] ${kind}`, Object.keys(fields).length ? JSON.stringify(fields) : "", ...(n > 1 ? [`(${n} alike since ${String(e.since)})`] : []));
   // The bridge notes as it connects and fails requests: a journal it cannot
   // write (its folder deleted, the disk full) must not stop either.
   try {
     if (++appended < MAX) appendFileSync(file, `${JSON.stringify(e)}\n`);
     else rewrite(file);
   } catch (err) {
-    console.error("[safari-harness] journal not written:", err instanceof Error ? err.message : err);
+    console.error("[browser-harness] journal not written:", err instanceof Error ? err.message : err);
   }
 }
 

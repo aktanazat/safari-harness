@@ -8,7 +8,7 @@ import { handedOff, paced, seenLater, settledVisit, waitsInVain } from "./checks
 import { followTab, forgetPopups, popupWaiting, queuePopup, recordRenumbered, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
 import { note } from "./journal.ts";
 import { pageData } from "./pagedata.ts";
-import { inFront, input, notify, raiseSafari, show } from "./front.ts";
+import { BROWSER_NAME, inFront, input, notify, raiseSafari, show } from "./front.ts";
 import { renderPdf, pdfText } from "./pdf.ts";
 import { findFiles } from "./finder.ts";
 import { watchDownloads } from "./downloads.ts";
@@ -144,7 +144,7 @@ export async function resolveTab(tab: unknown, tabs: () => Promise<TabInfo[]> = 
     const front = listed.find((t) => t.front);
     // A listing Safari's windows did not finish names no front tab
     // (partial), which is not Safari having none.
-    if (!front) throw new Error(listed.some((t) => typeof t.partial === "string") ? "Safari did not say which tab is in front within 2.5 s; try again, or name the tab by its id" : "Safari has no front tab");
+    if (!front) throw new Error(listed.some((t) => typeof t.partial === "string") ? `${BROWSER_NAME} did not say which tab is in front within 2.5 s; try again, or name the tab by its id` : `${BROWSER_NAME} has no front tab`);
     id = front.id;
   } else if (tab === "latest") {
     const owner = currentOwner();
@@ -244,7 +244,7 @@ export function heldSearchTab(tab: number): number | undefined {
 // as no tab opens in a window of the user's (background.js).
 function daemonPage(address: string): boolean {
   const u = URL.parse(address);
-  return u !== null && (u.hostname === "127.0.0.1" || u.hostname === "localhost") && u.port === String(Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334)) && /^\/(agents|space|memory)(\/|$)/.test(u.pathname);
+  return u !== null && (u.hostname === "127.0.0.1" || u.hostname === "localhost") && u.port === String(Number(process.env.BROWSER_HARNESS_HTTP_PORT ?? 37334)) && /^\/(agents|space|memory)(\/|$)/.test(u.pathname);
 }
 
 // A window that closed since its space last found it fails the open: from
@@ -332,7 +332,7 @@ async function reuseTab(address: string, space: Space, among?: Set<number>): Pro
 // off-screen window can keep Safari from closing it; the extension tries
 // for 15 s and says so. This limit is only for an extension that never
 // answers. A tab the harness held or closed that Safari no longer has is
-// closed already, and the answer says how: on 10-16 `safari close 5203`
+// closed already, and the answer says how: on 10-16 `browser close 5203`
 // failed "that tab is gone" after the repl had closed it (HuntsUsage). A
 // listing first finds one a Safari that started again holds under a new id
 // (sighted).
@@ -1030,7 +1030,7 @@ async function closeTrackedTab(tab: number, t: HarnessTab, shown?: TabInfo, reas
       lost(tab, reconnectedSince(t));
       return;
     }
-    if (linkDropped(link)) console.error(`[safari-harness] closing tab ${tab} failed: ${message}; trying again on the next connection`);
+    if (linkDropped(link)) console.error(`[browser-harness] closing tab ${tab} failed: ${message}; trying again on the next connection`);
     else closeLater(tab, t, message);
   } finally {
     delete t.closing;
@@ -1048,7 +1048,7 @@ function closeLater(tab: number, t: HarnessTab, why: string): void {
   const wait = closeRetryMs(tries);
   t.retry = { tries, at: Date.now() + wait, ...(why.startsWith("Safari did not close") ? { stuck: true as const } : {}) };
   t.failed = true;
-  console.error(`[safari-harness] closing tab ${tab} failed: ${why}; trying again in ${wait / 1000} s`);
+  console.error(`[browser-harness] closing tab ${tab} failed: ${why}; trying again in ${wait / 1000} s`);
 }
 
 function forget(tab: number) {
@@ -1085,7 +1085,7 @@ function save() {
     renameSync(pending, tabsFile);
     for (const t of harnessTabs.values()) written.set(t, t.used);
   } catch (e) {
-    console.error("[safari-harness] tab list not written:", e instanceof Error ? e.message : e);
+    console.error("[browser-harness] tab list not written:", e instanceof Error ? e.message : e);
   }
 }
 
@@ -1394,7 +1394,7 @@ function withNotes(result: object): object {
   const slug = first && url !== undefined ? guideFor(url) : undefined;
   if (notes === undefined && slug === undefined) return result;
   const { space, ...rest }: { space?: unknown } = result;
-  return { ...rest, ...(slug === undefined ? {} : { guide: `safari guide ${slug}` }), ...(notes === undefined ? {} : { notes }), ...(space === undefined ? {} : { space }) };
+  return { ...rest, ...(slug === undefined ? {} : { guide: `browser guide ${slug}` }), ...(notes === undefined ? {} : { notes }), ...(space === undefined ? {} : { space }) };
 }
 
 // A page a site guide names as the site's error page (error-titles) is not
@@ -1406,7 +1406,7 @@ function flagged(result: object): object {
   const url = "url" in result && typeof result.url === "string" ? result.url : "";
   if (!errorPage(url, title)) return result;
   const slug = guideFor(url);
-  return { ...result, ok: false, warning: `${pageHost(url)} answered with its error page ("${title}"), not the page asked for${slug === undefined ? "" : `; safari guide ${slug} says what to try`}` };
+  return { ...result, ok: false, warning: `${pageHost(url)} answered with its error page ("${title}"), not the page asked for${slug === undefined ? "" : `; browser guide ${slug} says what to try`}` };
 }
 
 const snapshotHistory = new SnapshotHistory();
@@ -1711,7 +1711,7 @@ async function clickRef(tab: number, ref: number | string, opts: { noWaitAfter?:
 export async function type(opts: { tab?: number; ref: number | string; text: string; append?: boolean; secret?: unknown; noWaitAfter?: boolean }) {
   const tab = await resolveTab(opts.tab);
   const text = str(opts.text, "text");
-  if (typeof opts.secret === "string" || text.includes("{{code}}")) throw new HarnessError("invalid_argument", "a code is filled in by the safari CLI or MCP tools, not over the daemon's port: call type through them");
+  if (typeof opts.secret === "string" || text.includes("{{code}}")) throw new HarnessError("invalid_argument", "a code is filled in by the browser CLI or MCP tools, not over the daemon's port: call type through them");
   // the tab's answers have it cut after the page moves on too (redact.ts)
   if (opts.secret === true) keepSecret(tab, text);
   const answer = await relay(tab, "type", [opts.ref, text, { append: !!opts.append, secret: opts.secret === true, ...(opts.noWaitAfter === true ? { noWaitAfter: true } : {}) }]);
@@ -1731,7 +1731,7 @@ export async function press(opts: { tab?: number; ref?: number | string; key: st
 
 // A ref scrolls its element to the middle of the view: on 09-29 an agent
 // called scroll with a ref to bring a control into sight. to goes all the
-// way to the page's top or bottom: on 10-16 an agent's `safari scroll --to
+// way to the page's top or bottom: on 10-16 an agent's `browser scroll --to
 // bottom` was refused as unknown (HuntsUsage).
 const ALL_THE_WAY = 1e9;
 
@@ -2131,7 +2131,7 @@ async function blankHint(tab: number, end: number): Promise<string> {
 // watched still gets its ms, as a sleep did. On screen (front), it holds
 // the tab there all of ms: what it waits on is an animation, which a quiet
 // page does not rule out. A bare wait is a quiet wait of the default ms,
-// as its description says: `safari open X && safari wait` failed on
+// as its description says: `browser open X && browser wait` failed on
 // "wait needs ms ..." in the work sessions of 11-16.
 export async function wait(opts: { tab?: number; ms?: number; selector?: string; text?: string; any?: string[]; gone?: string; url?: string; quiet?: boolean; changed?: boolean; front?: boolean; look?: string; after?: string }) {
   // The wait's time runs from the call, finding the user's front tab in it:
@@ -2473,7 +2473,7 @@ async function netReadOffering(opts: { tab?: number; url?: string; urls?: boolea
   return {
     ...shown,
     readers,
-    next: "to read one again without the page, save it as this site's reader: run {steps:[{tool:\"request_catalog\",args:{do:\"save\",tab,name,request,observedAt,field,type}}]}, field the JSON path of its rows (safari guide request_catalog)",
+    next: "to read one again without the page, save it as this site's reader: run {steps:[{tool:\"request_catalog\",args:{do:\"save\",tab,name,request,observedAt,field,type}}]}, field the JSON path of its rows (browser guide request_catalog)",
   };
 }
 
@@ -2665,7 +2665,7 @@ function ownedReadTab(value: unknown): number {
 }
 
 export async function requestCatalogContext(value: unknown) {
-  if (process.env.SAFARI_HARNESS_REMOTE) throw new HarnessError("invalid_argument", "request catalogs require a local owned tab");
+  if (process.env.BROWSER_HARNESS_REMOTE) throw new HarnessError("invalid_argument", "request catalogs require a local owned tab");
   const tab = ownedReadTab(value);
   const page = (await relay(tab, "eval", ["({url:location.href,ready:document.readyState,timeOrigin:performance.timeOrigin})"])) as { result?: { url?: string; ready?: string; timeOrigin?: number } };
   const { url, ready, timeOrigin } = page.result ?? {};
@@ -2737,7 +2737,7 @@ export async function authenticatedRead(opts: { tab?: number; url: string; forma
   if (!final || final.origin !== requested.origin || /\/(?:login|log-in|signin|sign-in|captcha|challenge)(?:\/|$)/i.test(final.pathname) || final.pathname === "/account/access") throw new HarnessError("unavailable", "the site redirected this read to sign-in or another site; open the page and complete its sign-in first");
   if (response.status === undefined || response.status < 200 || response.status >= 300) throw new HarnessError("unavailable", `the signed-in page answered HTTP ${response.status ?? "unknown"}`);
   const type = response.type ?? null;
-  if (!type || !/^(?:text\/|application\/(?:json|[^;]+\+json)\b)/i.test(type) || response.text === undefined) throw new HarnessError("not_content", /^application\/pdf\b/i.test(type ?? "") ? "this response is a PDF, not text: pdf {do: \"read\", url} (CLI safari pdf read URL) reads its text" : "this response is not readable text; use download for a file");
+  if (!type || !/^(?:text\/|application\/(?:json|[^;]+\+json)\b)/i.test(type) || response.text === undefined) throw new HarnessError("not_content", /^application\/pdf\b/i.test(type ?? "") ? "this response is a PDF, not text: pdf {do: \"read\", url} (CLI browser pdf read URL) reads its text" : "this response is not readable text; use download for a file");
   const html = /^text\/html\b/i.test(type) ? await readableHtml(response.text) : undefined;
   if (html && (html.login || html.shell || /\b(?:sign in|log in|login|just a moment|verify you are human|captcha)\b/i.test(html.title))) throw new HarnessError("unavailable", "the site returned a sign-in, challenge, or loading page instead of the requested content");
   if (format === "json" && !/[/+]json\b/i.test(type)) throw new HarnessError("not_content", "this response is not JSON");
@@ -2895,7 +2895,7 @@ async function upgradeContext(tab: number): Promise<UpgradeContext> {
 
 function siteActionsCoordinator(): SiteActions {
   const connection = bridge.extensionInfo?.connectedAt;
-  if (connection === undefined) throw new HarnessError("unavailable", "the Safari extension is not connected", { effect: "none" });
+  if (connection === undefined) throw new HarnessError("unavailable", `the ${BROWSER_NAME} extension is not connected`, { effect: "none" });
   if (siteActionsState?.connection === connection) return siteActionsState.coordinator;
   siteActionsState?.coordinator.dispose();
   const send = (binding: SiteActionBinding, method: string, args: unknown[], timeoutMs = 10000) =>
@@ -3552,7 +3552,7 @@ export type Tool = {
   desc: string;
   params: Record<string, Param>;
   // options the tool reads that its listing leaves out, to keep the listing
-  // short: a call and the CLI may still pass them (guard.ts, cli/safari.ts)
+  // short: a call and the CLI may still pass them (guard.ts, cli/browser.ts)
   unlisted?: Record<string, Param>;
   required?: string[];
   // reached by name over RPC, never listed to a model (the real-input tools use it)
@@ -4064,7 +4064,7 @@ export const TOOLS: Record<string, Tool> = {
   // closed the sign-up its agent had kept. ended: the session is over for
   // good (ended on request, or the tab is a site global's own), and the tab
   // closes as at a turn's end, a handoff still pending alone staying: on
-  // 10-29 safari repl --close left open the tabs of all 3 sessions tried,
+  // 10-29 browser repl --close left open the tabs of all 3 sessions tried,
   // the x reader's own among them, each changed by the calls made in it.
   close: {
     desc: "Close a tab you opened.",
@@ -4146,7 +4146,7 @@ export const TOOLS: Record<string, Tool> = {
     desc: "Set ref's text; append keeps it. Never returns text. {{code}} fills unseen codes, texted or mailed; secret page reads from, scoped by from_selector.",
     params: { tab: TAB, ref: REF, text: { type: "string", description: "text to enter" }, append: { type: "boolean", description: "keep the existing text" }, secret: { type: "string", enum: ["sms", "mail", "page", "passwords"], description: "code source" }, from: { type: "number", description: "source tab for secret page" }, from_selector: { type: "string", description: "CSS selecting one email for secret page" }, snapshot: PAGE },
     // secret "env" reads only a CLI call's environment (secret.ts), so an
-    // MCP client is never offered it: safari type --secret env --env VAR
+    // MCP client is never offered it: browser type --secret env --env VAR
     unlisted: { env: SECRET_ENV, sender: CODE_SENDER, account: CODE_ACCOUNT, noWaitAfter: { type: "boolean", description: "answer once the field holds the text, without giving the page a moment with it; a reformat or complaint the page makes after is not seen" } },
     required: ["tab", "ref", "text"],
     run: action(async (a) => {
@@ -4467,7 +4467,7 @@ export const TOOLS: Record<string, Tool> = {
   // calls by its old one (continuity.ts), and the answer then carries
   // replaced.
   resolve_tab: {
-    desc: "The id a tab has now, for an id from before Safari gave it a new one, or \"front\".",
+    desc: `The id a tab has now, for an id from before ${BROWSER_NAME} gave it a new one, or "front".`,
     params: { tab: TAB },
     required: ["tab"],
     hidden: true,
@@ -4795,7 +4795,7 @@ export function formatResult(value: unknown, max = Infinity): string {
     const seen = (value as { siteActions?: SiteActionsSeen }).siteActions;
     const actions = seen === undefined ? ""
       : "unread" in seen ? "site actions: enabled here, but the page's tools could not be read; reload the page if it loaded before they were enabled\n"
-      : `site actions: ${seen.count} declared by this page, named below as page text; list, schema and call them with site_actions (a run step or the safari CLI)\n${seen.names.length ? `${fence(seen.names.join(", "))}\n` : ""}`;
+      : `site actions: ${seen.count} declared by this page, named below as page text; list, schema and call them with site_actions (a run step or the browser CLI)\n${seen.names.length ? `${fence(seen.names.join(", "))}\n` : ""}`;
     if (typeof v.snapshot === "string") {
       const note = v.truncated ? "; truncated: narrow with query or root, raise maxNodes, or save it to a file" : "";
       const changed = v.changes === "delta" ? "; changes since your last snapshot of this tab: - gone, + new; for the whole page, snapshot {tab, full: true}"
@@ -5130,7 +5130,7 @@ const TIDY: Record<string, true> = { close: true, keep: true };
 // so the first error stops the run, but for close and keep. call runs one
 // step: here, the daemon's own tools; in a caller (call.ts), any tool,
 // wherever it runs, but for repl, which runs in its own session
-// (mcp-tools.ts, safari repl): on 09-29 an agent put repl in a run twice and
+// (mcp-tools.ts, browser repl): on 09-29 an agent put repl in a run twice and
 // was offered replay.
 export async function runSteps(steps: unknown, call: (tool: string, args: Record<string, unknown>) => Promise<unknown> = callTool, check: (tool: string, args: Record<string, unknown>) => Checked = (t, a) => checkStep(TOOLS, t, a), tab?: unknown): Promise<Steps> {
   if (!Array.isArray(steps) || steps.length === 0) throw new Error('run needs steps: [{"tool": "open", "args": {"url": "…"}}, …]');
@@ -5141,7 +5141,7 @@ export async function runSteps(steps: unknown, call: (tool: string, args: Record
     try {
       const step = stepOf(raw);
       tool = step.tool;
-      if (tool.toLowerCase() === "repl") throw new Error("repl is its own call, not a run step: call repl {code} (in a shell, safari repl) apart from the run");
+      if (tool.toLowerCase() === "repl") throw new Error("repl is its own call, not a run step: call repl {code} (in a shell, browser repl) apart from the run");
       if (tool.toLowerCase() === "run") throw new Error("a run cannot contain another run: put those steps directly in the outer run");
       planned.push({ ...step, checked: check(tool, step.args) });
     } catch (e) {

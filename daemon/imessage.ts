@@ -699,7 +699,7 @@ async function sendFile(file: FileToSend, dir: string, index: number, chat: bool
 // Approval was approved: true, which a model could set on its first call
 // and which re-resolved the recipient, so a draft to one chat by name could
 // go to another (audit SH-21).
-const DRAFTS = join(HOME, ".local", "share", "safari-harness", "drafts");
+const DRAFTS = join(HOME, ".local", "share", "browser-harness", "drafts");
 const DRAFT_MS = 30 * 60_000;
 
 // A draft file's hash and time, or undefined for a file that is not one.

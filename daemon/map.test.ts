@@ -12,7 +12,7 @@ import { WAIT_NEEDS } from "./receipt.ts";
 
 // The bot checks map meets are learned into site notes (checks.ts): kept
 // out of the user's.
-process.env.SAFARI_HARNESS_NOTES = mkdtempSync(join(tmpdir(), "map-notes-"));
+process.env.BROWSER_HARNESS_NOTES = mkdtempSync(join(tmpdir(), "map-notes-"));
 
 // Pages that fail in each way a page can: its tab goes away mid-read, it
 // answers with an error, a bot check stands in for it, it never shows what

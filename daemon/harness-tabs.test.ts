@@ -214,7 +214,7 @@ test("a repl session's end closes the tabs it opened and its site reader's, but 
   agent.kill();
 });
 
-// 10-29: safari repl --close left open the tabs of all 3 sessions tried,
+// 10-29: browser repl --close left open the tabs of all 3 sessions tried,
 // each changed by the calls made in it.
 test("a repl session ended on request closes the pages its calls changed too, but not one kept for the user", async () => {
   const agent = keeper();

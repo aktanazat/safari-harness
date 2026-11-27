@@ -167,7 +167,7 @@ test("passwords given a selector says code finds the field itself", () => {
 
 // 10-05 to 10-19: in 17 stuck spells agents' calls failed at once 44
 // times, each telling the agent to reload the extension, and agents ran
-// safari extension reload 27 times.
+// browser extension reload 27 times.
 test("a model's call that meets a stuck extension has it reloaded inside the call, and its answer says so", async () => {
   jest.useFakeTimers();
   const asked: string[] = [];

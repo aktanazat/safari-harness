@@ -1,4 +1,4 @@
-// The site globals `safari repl` binds, by name. Each factory takes the
+// The site globals `browser repl` binds, by name. Each factory takes the
 // session's SiteKit and returns plain methods; nothing opens until a method
 // runs.
 

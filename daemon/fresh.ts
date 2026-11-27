@@ -87,7 +87,7 @@ async function listApart(): Promise<unknown[]> {
 // from the one calls ran on. switched runs once per release loaded.
 export function fresh(switched: () => void): Promise<McpTools> {
   // Another Mac's daemon runs whatever release that Mac has.
-  if (process.env.SAFARI_HARNESS_REMOTE) return calls();
+  if (process.env.BROWSER_HARNESS_REMOTE) return calls();
   const now = Date.now();
   if (last && now - last.at < CHECK_MS) return last.check;
   const check = daemonHealth().then(async (health) => {

@@ -7,7 +7,7 @@ import { crc32, deflateSync } from "node:zlib";
 import type { Subprocess } from "bun";
 import type * as EvidenceModule from "../../daemon/evidence.ts";
 
-const candidate = resolve(process.env.SAFARI_RESEARCH_ROOT ?? join(import.meta.dir, "../.."));
+const candidate = resolve(process.env.BROWSER_RESEARCH_ROOT ?? join(import.meta.dir, "../.."));
 const browserMode = process.argv.includes("--browser");
 const userAgent = "OpenAI File Downloader, XaiImageApiFetch/1.0";
 const maximum = 1024 * 1024;
@@ -196,7 +196,7 @@ try {
   rpcBase = `http://127.0.0.1:${httpPort}`;
   const identity = Bun.spawn([process.execPath, "-e", "setInterval(()=>{},1000)"], { cwd: scratch, env: { HOME: home, PATH: process.env.PATH }, stdout: "ignore", stderr: "ignore" });
   children.add(identity); caller = identity.pid;
-  daemon = Bun.spawn([process.execPath, join(candidate, "daemon/main.ts"), "serve"], { cwd: candidate, env: { ...process.env, HOME: home, TMPDIR: scratch, SAFARI_HARNESS_WS: String(wsPort), SAFARI_HARNESS_HTTP_PORT: String(httpPort), SAFARI_HARNESS_HTTP: rpcBase }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  daemon = Bun.spawn([process.execPath, join(candidate, "daemon/main.ts"), "serve"], { cwd: candidate, env: { ...process.env, HOME: home, TMPDIR: scratch, BROWSER_HARNESS_WS: String(wsPort), BROWSER_HARNESS_HTTP_PORT: String(httpPort), BROWSER_HARNESS_HTTP: rpcBase }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   children.add(daemon);
   const ready = Promise.withResolvers<void>();
   const collect = async (stream: ReadableStream<Uint8Array>) => {
@@ -354,7 +354,7 @@ try {
     await scenario("official Safari browser proof on only served synthetic reports", async () => {
       assert(results.every(result => result.status === "pass"), "non-browser attacks must pass before browser proof");
       browserCli = Bun.which("safari") ?? "";
-      assert(browserCli, "official installed safari CLI is required");
+      assert(browserCli, "official installed browser CLI is required");
       assert(hostile && hostileHtml && hostileMarkdown, "hostile reports must have passed before browser proof");
       pages.set("/positive-control", `<!doctype html><title>Synthetic execution control</title><script>${execution}</script><img src="${base}/canary/browser-positive">`);
       pages.set("/report", hostileHtml);
@@ -369,7 +369,7 @@ try {
       assert.equal(hits.length, afterControl, "browser report rendering unexpectedly fetched a canary");
       assert.equal(closedTabs.length, 3);
     });
-  } else console.log("NOT RUN browser DOM execution and canary proof; parent may rerun with --browser using the installed safari CLI");
+  } else console.log("NOT RUN browser DOM execution and canary proof; parent may rerun with --browser using the installed browser CLI");
   await stop(daemon);
   await Promise.all(logReaders);
 } catch (error) {

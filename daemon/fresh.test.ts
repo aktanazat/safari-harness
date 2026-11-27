@@ -52,7 +52,7 @@ function session(daemonUrl: string) {
     stdin: "pipe",
     stdout: "pipe",
     stderr: "ignore",
-    env: { ...process.env, SAFARI_HARNESS_HTTP: daemonUrl, HOME: scratch },
+    env: { ...process.env, BROWSER_HARNESS_HTTP: daemonUrl, HOME: scratch },
   });
   const seen: Message[] = [];
   const replies = new Map<number, PromiseWithResolvers<Message>>();

@@ -9,7 +9,7 @@ import { join } from "node:path";
 
 const MCP = join(import.meta.dir, "mcp-tools.ts");
 const AGENT = join(import.meta.dir, "agent.ts");
-const CLI = join(import.meta.dir, "../cli/safari.ts");
+const CLI = join(import.meta.dir, "../cli/browser.ts");
 const TASK = JSON.stringify(["session", "agent"]);
 const tab = 7001;
 const url = "https://shop.example/";
@@ -27,18 +27,18 @@ const probes = [Bun.serve({ port: 0, fetch: () => new Response() }), Bun.serve({
 const [wsPort, httpPort] = probes.map((s) => s.port);
 await Promise.all(probes.map((s) => s.stop(true)));
 const home = mkdtempSync(join(tmpdir(), "repeat-read-"));
-const state = join(home, ".local/share/safari-harness");
+const state = join(home, ".local/share/browser-harness");
 mkdirSync(join(state, "tasks"), { recursive: true });
 // A keeper counts as running, so no call starts one in the real Safari
 // (claimSpaces in call.ts).
 writeFileSync(join(state, "keeper.pid"), String(process.pid));
 writeFileSync(join(state, "tasks", "session"), TASK);
 const daemon = Bun.spawn([process.execPath, join(import.meta.dir, "main.ts")], {
-  env: { ...process.env, HOME: home, SAFARI_HARNESS_WS: String(wsPort), SAFARI_HARNESS_HTTP_PORT: String(httpPort) },
+  env: { ...process.env, HOME: home, BROWSER_HARNESS_WS: String(wsPort), BROWSER_HARNESS_HTTP_PORT: String(httpPort) },
   stdout: "pipe",
   stderr: "inherit",
 });
-const env = { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: `http://127.0.0.1:${httpPort}`, PI_SESSION_ID: "session" };
+const env = { ...process.env, HOME: home, BROWSER_HARNESS_HTTP: `http://127.0.0.1:${httpPort}`, PI_SESSION_ID: "session" };
 
 const logged: string[] = [];
 let ended = false;
@@ -58,7 +58,7 @@ void (async () => {
 function logs(what: string): Promise<void> {
   const { promise, resolve, reject } = Promise.withResolvers<void>();
   heard = () => {
-    if (logged.some((l) => l.split("[safari-harness] ")[1]?.startsWith(what))) resolve();
+    if (logged.some((l) => l.split("[browser-harness] ")[1]?.startsWith(what))) resolve();
     else if (ended) reject(new Error(`the daemon exited before it logged ${what}`));
   };
   heard();
@@ -86,7 +86,7 @@ async function output(child: Bun.Subprocess<"ignore", "pipe", "pipe">): Promise<
   return text;
 }
 
-// What the agent's shell prints for safari snapshot.
+// What the agent's shell prints for browser snapshot.
 const cli = () => output(Bun.spawn([process.execPath, CLI, "snapshot", "--tab", String(tab)], { env, stdin: "ignore", stdout: "pipe", stderr: "pipe" }));
 
 // The answers the agent's MCP server gives its reads, one after another; a
@@ -131,8 +131,8 @@ test("an MCP call with a __safari argument this release does not read still runs
   expect(read).toContain(whole);
 }, 30_000);
 
-// safari do's loop trims its older tool results (agent.ts).
-test("safari do's repeat action read holds the whole page", async () => {
+// browser do's loop trims its older tool results (agent.ts).
+test("browser do's repeat action read holds the whole page", async () => {
   const code = `import { runAgent } from ${JSON.stringify(AGENT)};
 const hover = { role: "assistant", content: null, tool_calls: [{ id: "hover", type: "function", function: { name: "hover", arguments: JSON.stringify({ tab: ${tab}, ref: "1", snapshot: true }) } }] };
 const replies = [hover, hover, { role: "assistant", content: "done" }];

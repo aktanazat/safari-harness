@@ -138,7 +138,7 @@ export function openMissionHistory(path: string): void {
     process.once("exit", flushHistory);
   } catch {
     historyError = "History could not be opened.";
-    console.error("[safari-harness] mission history could not be opened");
+    console.error("[browser-harness] mission history could not be opened");
   }
 }
 
@@ -187,7 +187,7 @@ function remember(agent?: Agent): void {
     void history.cleanup().catch(() => { historyError = "Expired pictures could not be removed."; });
   } catch {
     historyError = "History could not be saved.";
-    console.error("[safari-harness] mission history could not be saved");
+    console.error("[browser-harness] mission history could not be saved");
   }
 }
 
@@ -225,7 +225,7 @@ function track(owner: number): Agent {
     remember(agent);
     agent.unwatch = undefined;
   });
-  named(agent).catch((e) => console.error(`[safari-harness] no program name for agent ${owner}:`, e instanceof Error ? e.message : e));
+  named(agent).catch((e) => console.error(`[browser-harness] no program name for agent ${owner}:`, e instanceof Error ? e.message : e));
   return agent;
 }
 
@@ -255,7 +255,7 @@ async function readRexTitle(agent: Agent): Promise<void> {
   try {
     rex.title = await rexTitle(rex.tab, agent.owner);
   } catch (e) {
-    console.error(`[safari-harness] no Rex title for agent ${agent.owner}:`, e instanceof Error ? e.message : e);
+    console.error(`[browser-harness] no Rex title for agent ${agent.owner}:`, e instanceof Error ? e.message : e);
   } finally {
     rex.read = Date.now();
     delete rex.reading;
@@ -889,7 +889,7 @@ function stepsOf(steps: unknown[], notRun: unknown, withheld: string[]): string[
 // ---------- what the pages read ----------
 
 type Summary = { id: string; owner: number | null; process: string | null; rex: string | null; status: Status; since: number; active: number; raised: number; controls: boolean; needsObservation: number[]; pictures: boolean; inspectionOnly?: boolean; controlSecret?: string };
-// /agents.json, and what safari agents prints. tabs: those the agent opened
+// /agents.json, and what browser agents prints. tabs: those the agent opened
 // that are open, in its windows or not.
 type WindowSummary = ManagedWindow & { closeSecret: string };
 type RecentTabSummary = RecentTab & { reopenSecret: string };
@@ -1219,7 +1219,7 @@ async function raise(agent: Agent, window: number | undefined): Promise<number |
     await bridge.request("tabs.activate", [tab], 10_000);
     return tab;
   } catch (e) {
-    console.error(`[safari-harness] could not show tab ${tab} for the user to drive:`, e instanceof Error ? e.message : e);
+    console.error(`[browser-harness] could not show tab ${tab} for the user to drive:`, e instanceof Error ? e.message : e);
     return undefined;
   }
 }
@@ -1857,7 +1857,7 @@ function agentsPage(): Response {
 
 
 function refused(req: Request, url: URL): Response {
-  console.log(`[safari-harness] refused ${req.method} ${url.pathname} for ${url.host}, origin ${req.headers.get("origin") ?? "(none)"}, site ${req.headers.get("sec-fetch-site") ?? "(none)"}`);
+  console.log(`[browser-harness] refused ${req.method} ${url.pathname} for ${url.host}, origin ${req.headers.get("origin") ?? "(none)"}, site ${req.headers.get("sec-fetch-site") ?? "(none)"}`);
   return new Response("forbidden", { status: 403 });
 }
 

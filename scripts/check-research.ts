@@ -7,7 +7,7 @@ import type * as RpcModule from "../daemon/rpc.ts";
 import type * as EvidenceModule from "../daemon/evidence.ts";
 import type * as ReplModule from "../daemon/repl.ts";
 
-const root = process.env.SAFARI_RESEARCH_ROOT ?? join(homedir(), ".local/share/safari-harness/current");
+const root = process.env.BROWSER_RESEARCH_ROOT ?? join(homedir(), ".local/share/browser-harness/current");
 const { invoke } = await import(join(root, "daemon/call.ts")) as typeof CallModule;
 const { ownCalls, daemonHttp } = await import(join(root, "daemon/rpc.ts")) as typeof RpcModule;
 ownCalls();

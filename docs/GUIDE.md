@@ -1,9 +1,9 @@
-Details: `safari guide <tool>`, `safari guide reference` (sections), `safari guide repl` (script API), `safari guide <site> [--query words]`, `safari <command> --help`.
+Details: `browser guide <tool>`, `browser guide reference` (sections), `browser guide repl` (script API), `browser guide <site> [--query words]`, `browser <command> --help`.
 
 ## Tabs
 - `open` returns a tab id; pass it as `tab` everywhere. `tab: "front"` is his front tab, only when he asks about his page. Never navigate, type in or close his tabs or windows.
 - Your tabs close at turn end and after 2 idle minutes; never end a task with `close`. `keep` only a page he still needs. A closed tab's id reopens the page under a new id: snapshot before acting.
-- Outside an agent (ssh, scripts; never inside omp) set one unique `SAFARI_OWNER=<key>` so tabs outlive each command.
+- Outside an agent (ssh, scripts; never inside omp) set one unique `BROWSER_OWNER=<key>` so tabs outlive each command.
 - When a call says he paused or stopped you, do what it says. After Give back, snapshot before acting.
 
 ## Turns
@@ -13,13 +13,13 @@ Details: `safari guide <tool>`, `safari guide reference` (sections), `safari gui
 - From bash, a `map` or `repl` that may pass 25 s runs `async: true`; never poll it or loop on `status`, `doctor`, `guide`.
 - Read the whole output. Narrow with `query` or `root`, never `| head`, `| grep`, `sed`, or `>/dev/null`, which hide a failed call.
 - A CLI step whose answer you do not need takes `-q`: silent when it works, one line and exit 1 when it misses.
-- Screenshots of several pages: one `shots` call (`safari shots --widths 1440 --out DIR URL...`), not a loop of `window` and `shot`.
-- A ref is the bare number: `safari click 15 --tab N` (zsh globs `[15]`).
+- Screenshots of several pages: one `shots` call (`browser shots --widths 1440 --out DIR URL...`), not a loop of `window` and `shot`.
+- A ref is the bare number: `browser click 15 --tab N` (zsh globs `[15]`).
 
 ## Failures
 - `effect: "possibly_effected"`: it may have happened. Never repeat blindly, least of all a send, purchase or submit: take a whole snapshot or extract (no query, root, selector, ref), check, follow `next`. A read-only `eval`/`fetch` retries with `read: true`.
 - A sign-in, subscriber, consent or region wall (`pageState`) is not the content.
-- `extension stuck:`: try once more, then tell him. Never `safari extension reload`. Unexplained failure: `safari doctor` once.
+- `extension stuck:`: try once more, then tell him. Never `browser extension reload`. Unexplained failure: `browser doctor` once.
 
 ## Sites and sign-in
 - The first call on a site returns `guide:` and `notes`: read them. Learned something the hard way: `learn {site, fact, source}`, one sentence, no secrets.

@@ -1,7 +1,7 @@
-// The guides `safari guide` prints: docs/GUIDE.md, the short card of rules;
-// one section of docs/REFERENCE.md, a tool's (`safari guide eval`) or an
-// idea's (`safari guide reference troubleshooting`); docs/REPL.md for
-// safari repl; and one per site in docs/sites/, followed by the notes
+// The guides `browser guide` prints: docs/GUIDE.md, the short card of rules;
+// one section of docs/REFERENCE.md, a tool's (`browser guide eval`) or an
+// idea's (`browser guide reference troubleshooting`); docs/REPL.md for
+// browser repl; and one per site in docs/sites/, followed by the notes
 // agents have learned on that site (notes.ts).
 
 import { readFile } from "node:fs/promises";
@@ -11,9 +11,9 @@ import { bundled, covering, covers, type Guide } from "./site-guides.ts";
 
 const DOCS = new URL("../docs/", import.meta.url);
 
-// which is what followed `safari guide`, its words joined by spaces. Words
+// which is what followed `browser guide`, its words joined by spaces. Words
 // that name nothing together are each a topic of their own: on 10-22
-// `safari guide repl x linkedin` missed, and its agent asked three times.
+// `browser guide repl x linkedin` missed, and its agent asked three times.
 export async function guide(which?: string): Promise<string | null> {
   const words = (which ?? "").trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return readFile(new URL("GUIDE.md", DOCS), "utf8");
@@ -122,7 +122,7 @@ function find(all: Section[], words: string): Section | undefined {
     ?? all.find((s) => !s.tool && s.heading.toLowerCase().includes(q));
 }
 
-// `safari guide reference` lists the sections: on 10-16 an agent printed
+// `browser guide reference` lists the sections: on 10-16 an agent printed
 // all 113 KB of the reference (omp showed 52 KB of it), and others paged
 // it with sed. `all` prints the whole file; a name prints that section.
 function referenceSection(md: string, words: string): string | null {
@@ -132,9 +132,9 @@ function referenceSection(md: string, words: string): string | null {
   const ideas = all.filter((s) => !s.tool).map((s) => `  ${s.heading}`);
   const tools = all.flatMap((s) => (s.tool ? [s.tool] : []));
   return [
-    "The reference, a section at a time. `safari guide <tool>` prints one tool's section (safari guide eval);",
-    "`safari guide reference <words>` an idea's, by the first words of its heading (safari guide reference troubleshooting);",
-    "`safari guide reference all` the whole file.",
+    "The reference, a section at a time. `browser guide <tool>` prints one tool's section (browser guide eval);",
+    "`browser guide reference <words>` an idea's, by the first words of its heading (browser guide reference troubleshooting);",
+    "`browser guide reference all` the whole file.",
     "",
     "Ideas:",
     ...ideas,
@@ -207,8 +207,8 @@ function labels(host: string): string[] {
 // What to say when no guide or notes answer which: the noted hosts nearest
 // it, and the call that lists every site (list). $s is a shell variable the
 // shell passed as written, as it did for an agent's loop on 09-29.
-export function noGuide(which: string, list = "safari guide sites"): string {
-  if (/^reference\s/.test(which)) return `no section of the reference is named ${which.replace(/^reference\s+/, "")}; safari guide reference lists them`;
+export function noGuide(which: string, list = "browser guide sites"): string {
+  if (/^reference\s/.test(which)) return `no section of the reference is named ${which.replace(/^reference\s+/, "")}; browser guide reference lists them`;
   if (/^\$\{?\w+\}?$/.test(which)) return `no guide for ${which}: the shell passed the variable as written, so it was empty or unset, or in single quotes; give the site itself, like geico.com`;
   const asked = labels(which.toLowerCase().replace(/^https?:\/\//, "").split(/[/:]/)[0]);
   // a label two letters or fewer from one asked for, and not all of it

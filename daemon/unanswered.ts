@@ -11,6 +11,7 @@
 // to hosts no DNS server knows.
 
 import { redactUrl } from "./redact.ts";
+import { BROWSER_NAME } from "./front.ts";
 
 // node:dns and node:net load on the first failed request they explain:
 // every process that imports tools.ts imports this file, and the two cost
@@ -80,9 +81,9 @@ export async function unopened(e: unknown): Promise<unknown> {
   if (!parsed || !host || (await import("node:net")).isIP(host)) return e;
   if (host === "localhost") {
     const at = await loopback(parsed);
-    return at ? new Error(`Safari could not open ${url}, though a server listens there: something on this Mac refused the name localhost. Open ${at} instead; a page that sends the tab back to localhost fails the same way, so goto its address with ${new URL(at).host} in place of ${parsed.host}`) : e;
+    return at ? new Error(`${BROWSER_NAME} could not open ${url}, though a server listens there: something on this Mac refused the name localhost. Open ${at} instead; a page that sends the tab back to localhost fails the same way, so goto its address with ${new URL(at).host} in place of ${parsed.host}`) : e;
   }
   const answer = await hostAnswer(host);
   const why = answer === "blocked" ? `a DNS block list on this network answers 0.0.0.0 for ${host}, so Safari never reached the site` : answer === "missing" ? `${host} does not resolve to any address: the address is wrong, the site is gone, or this Mac is offline` : undefined;
-  return why ? new Error(`Safari could not open ${url}: ${why}; opening it again will not help`) : e;
+  return why ? new Error(`${BROWSER_NAME} could not open ${url}: ${why}; opening it again will not help`) : e;
 }

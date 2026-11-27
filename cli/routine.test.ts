@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { codeHash } from "../daemon/codehash.ts";
 import { watchOwner } from "../daemon/owner.ts";
 
-// `safari routine run` starts omp, and omp starts the safari MCP server for
+// `browser routine run` starts omp, and omp starts the browser MCP server for
 // the model's calls. Here omp is a stand-in in the scratch home: it runs the
 // MCP server as omp does, makes the calls its prompt lists, then prints the
 // summary a model would end with. The daemon is a fake that answers every
@@ -24,7 +24,7 @@ const daemon = Bun.serve({
 afterAll(() => daemon.stop(true));
 
 const home = mkdtempSync(join(tmpdir(), "routine-cli-"));
-const routines = join(home, ".local", "share", "safari-harness", "routines");
+const routines = join(home, ".local", "share", "browser-harness", "routines");
 mkdirSync(routines, { recursive: true });
 mkdirSync(join(home, ".bun", "bin"), { recursive: true });
 writeFileSync(join(home, "omp.ts"), `
@@ -58,11 +58,11 @@ chmodSync(join(home, ".bun", "bin", "launchctl"), 0o755);
 afterAll(() => rmSync(home, { recursive: true, force: true }));
 
 function startCommand(args: string[]) {
-  return Bun.spawn([process.execPath, join(import.meta.dir, "safari.ts"), ...args], {
+  return Bun.spawn([process.execPath, join(import.meta.dir, "browser.ts"), ...args], {
     env: {
       ...process.env, HOME: home,
       PATH: `${join(home, ".bun", "bin")}:${process.env.PATH ?? ""}`,
-      SAFARI_HARNESS_HTTP: `http://127.0.0.1:${daemon.port}`,
+      BROWSER_HARNESS_HTTP: `http://127.0.0.1:${daemon.port}`,
     },
     stdout: "pipe", stderr: "pipe",
   });
@@ -95,8 +95,8 @@ async function addScript(name: string): Promise<string> {
 async function run(name: string, calls: unknown[]): Promise<string[]> {
   writeFileSync(join(routines, `${name}.md`), JSON.stringify(calls));
   writeFileSync(join(routines, `${name}.json`), JSON.stringify({ name, schedule: { everyMinutes: 60 }, created: "2026-09-30" }));
-  const p = Bun.spawn([process.execPath, join(import.meta.dir, "safari.ts"), "routine", "run", name], {
-    env: { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: `http://127.0.0.1:${daemon.port}` },
+  const p = Bun.spawn([process.execPath, join(import.meta.dir, "browser.ts"), "routine", "run", name], {
+    env: { ...process.env, HOME: home, BROWSER_HARNESS_HTTP: `http://127.0.0.1:${daemon.port}` },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -130,8 +130,8 @@ test("a routine that makes more calls than the log keeps logs the first ones, sa
 async function runScript(name: string, code: string, schedule: unknown, flags: string[]): Promise<{ code: number; out: string; err: string }> {
   writeFileSync(join(routines, `${name}.js`), code);
   writeFileSync(join(routines, `${name}.json`), JSON.stringify({ name, schedule, created: "2026-10-07" }));
-  const p = Bun.spawn([process.execPath, join(import.meta.dir, "safari.ts"), "routine", "run", name, ...flags], {
-    env: { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: `http://127.0.0.1:${daemon.port}` },
+  const p = Bun.spawn([process.execPath, join(import.meta.dir, "browser.ts"), "routine", "run", name, ...flags], {
+    env: { ...process.env, HOME: home, BROWSER_HARNESS_HTTP: `http://127.0.0.1:${daemon.port}` },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -150,7 +150,7 @@ test("a routine set for one day that launchd starts on another day runs nothing"
   const { code, out } = await runScript("missed", `console.log("ran")`, { at: { hour: 6, minute: 36 }, on: { year: 2020, month: 1, day: 1 } }, ["--scheduled"]);
   expect(code).toBe(1);
   expect(out).toContain("missed did not run");
-  expect(existsSync(join(home, "Library", "Logs", "safari-harness", "routines", "missed.last"))).toBe(false);
+  expect(existsSync(join(home, "Library", "Logs", "browser-harness", "routines", "missed.last"))).toBe(false);
 });
 
 // Under -q a failed run printed nothing at all, its failure with the rest
@@ -248,7 +248,7 @@ test.each([false, true])("scheduled invocations cannot overlap a task after wrap
   expect(await firstError).toBe("");
 }, 15_000);
 
-const sessions = join(home, ".local", "share", "safari-harness", "sessions");
+const sessions = join(home, ".local", "share", "browser-harness", "sessions");
 
 function savedSession(id: string, baseUrl: string): string {
   mkdirSync(sessions, { recursive: true });
@@ -312,7 +312,7 @@ test.each([false, true])("pause lets an active scheduled model finish (saved con
     const resumed = routineMeta(name);
     expect(resumed.paused).toBe(false);
     expect(resumed.generation).not.toBe(generation);
-    const installed = readFileSync(join(home, "Library", "LaunchAgents", `at.aktan.safari-harness.routine.${name}.plist`), "utf8");
+    const installed = readFileSync(join(home, "Library", "LaunchAgents", `at.aktan.browser-harness.routine.${name}.plist`), "utf8");
     expect(installed).toContain(`<string>${resumed.generation}</string>`);
     const stale = await command(["routine", "run", name, "--scheduled", "--generation", generation]);
     expect(stale.code).toBe(1);
@@ -499,7 +499,7 @@ test("a saved continuation failure exits nonzero and leaves its error and last-r
     const run = await command(["routine", "run", "failed-work"]);
     expect(run.code).toBe(1);
     expect(outputLog(run.out)).toContain("model error 503");
-    expect(readFileSync(join(home, "Library", "Logs", "safari-harness", "routines", "failed-work.last"), "utf8")).toContain("exit 1");
+    expect(readFileSync(join(home, "Library", "Logs", "browser-harness", "routines", "failed-work.last"), "utf8")).toContain("exit 1");
     expect((await command(["session", "show", "abc89012", "--json"])).out).toContain('"status":"failed"');
   } finally { endpoint.stop(true); }
 });

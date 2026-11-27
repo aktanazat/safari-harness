@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// safari extension reload waits up to 30 s for the extension to connect
+// browser extension reload waits up to 30 s for the extension to connect
 // again (bridge.ts). Bun's server cut any request its handler had not
 // answered within 10 s, so a reload that took longer failed as "daemon not
 // reachable" while the reload went on (10-16, 10-17). The daemon runs in a
@@ -15,7 +15,7 @@ const [wsPort, httpPort] = probes.map((s) => s.port);
 await Promise.all(probes.map((s) => s.stop(true)));
 const home = mkdtempSync(join(tmpdir(), "reload-wait-"));
 const daemon = Bun.spawn([process.execPath, join(import.meta.dir, "main.ts")], {
-  env: { ...process.env, HOME: home, SAFARI_HARNESS_WS: String(wsPort), SAFARI_HARNESS_HTTP_PORT: String(httpPort) },
+  env: { ...process.env, HOME: home, BROWSER_HARNESS_WS: String(wsPort), BROWSER_HARNESS_HTTP_PORT: String(httpPort) },
   stdout: "ignore",
   stderr: "inherit",
 });

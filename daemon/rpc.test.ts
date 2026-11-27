@@ -15,19 +15,19 @@ function daemon(answers: Response[], port = 0) {
       return answers.shift() ?? Response.json({ ok: false, error: "no answer left" });
     },
   });
-  process.env.SAFARI_HARNESS_HTTP = `http://127.0.0.1:${server.port}`;
+  process.env.BROWSER_HARNESS_HTTP = `http://127.0.0.1:${server.port}`;
   return { server, calls };
 }
 
 const servers: { stop(): void }[] = [];
 afterEach(() => {
   for (const s of servers.splice(0)) s.stop();
-  delete process.env.SAFARI_HARNESS_HTTP;
+  delete process.env.BROWSER_HARNESS_HTTP;
 });
 
 test("a call a restarting daemon turned away goes through, once, when it is back", async () => {
   const d = daemon([
-    Response.json({ ok: false, restarting: true, error: "the safari daemon is restarting (deploy)" }, { status: 503 }),
+    Response.json({ ok: false, restarting: true, error: "the browser daemon is restarting (deploy)" }, { status: 503 }),
     Response.json({ ok: true, value: "done" }),
   ]);
   servers.push(d.server);
@@ -49,7 +49,7 @@ test("a call held a second or more while the daemon restarted says so in its ans
     },
   });
   servers.push(server);
-  process.env.SAFARI_HARNESS_HTTP = `http://127.0.0.1:${server.port}`;
+  process.env.BROWSER_HARNESS_HTTP = `http://127.0.0.1:${server.port}`;
   expect(await rpc("info", { tab: 1 })).toEqual({ ok: true, note: expect.stringMatching(/^this call waited 1 s for its turn \(the daemon restarting, as a deploy does\), from \d\d:\d\d:\d\d UTC$/) });
 });
 
@@ -57,7 +57,7 @@ test("a call made while no daemon listens goes through when one starts", async (
   const gone = daemon([]).server;
   const free = gone.port;
   gone.stop();
-  process.env.SAFARI_HARNESS_HTTP = `http://127.0.0.1:${free}`;
+  process.env.BROWSER_HARNESS_HTTP = `http://127.0.0.1:${free}`;
   const answered = rpc("info", { tab: 1 });
   // Only a port nobody listens on refuses, so nothing can signal that the
   // client has tried; the real clock puts its first try before the start.
@@ -91,7 +91,7 @@ test.each([
 
 // From 11-10 to 11-16 a tab opened by `ssh personal 'safari …'` closed as
 // that one command ended, 27 times in 16 sessions: each command's agent
-// was its ssh session. Commands that name one SAFARI_OWNER work for one
+// was its ssh session. Commands that name one BROWSER_OWNER work for one
 // lease that outlives them, until it is ended.
 test("separate processes that name one owner key work for one lease that outlives them, until it ends", async () => {
   const calls: { caller?: number }[] = [];
@@ -101,11 +101,11 @@ test("separate processes that name one owner key work for one lease that outlive
   } });
   servers.push(server);
   const home = mkdtempSync("/private/var/tmp/sho-");
-  const env = { ...process.env, HOME: home, SAFARI_HARNESS_HTTP: `http://127.0.0.1:${server.port}` };
-  delete env.SAFARI_HARNESS_REMOTE;
-  delete env.SAFARI_OWNER;
+  const env = { ...process.env, HOME: home, BROWSER_HARNESS_HTTP: `http://127.0.0.1:${server.port}` };
+  delete env.BROWSER_HARNESS_REMOTE;
+  delete env.BROWSER_OWNER;
   const call = async (owner?: string) => {
-    const p = Bun.spawn([process.execPath, "-e", `await (await import(${JSON.stringify(join(import.meta.dir, "rpc.ts"))})).rpc("tabs")`], { env: owner === undefined ? env : { ...env, SAFARI_OWNER: owner }, stderr: "pipe" });
+    const p = Bun.spawn([process.execPath, "-e", `await (await import(${JSON.stringify(join(import.meta.dir, "rpc.ts"))})).rpc("tabs")`], { env: owner === undefined ? env : { ...env, BROWSER_OWNER: owner }, stderr: "pipe" });
     expect(await p.exited).toBe(0);
     return p.pid;
   };
@@ -117,7 +117,7 @@ test("separate processes that name one owner key work for one lease that outlive
     expect(calls).toEqual([{ tool: "tabs", args: {}, caller: lease, own: true }, { tool: "tabs", args: {}, caller: lease, own: true }, { tool: "tabs", args: {}, caller: plain }]);
     expect([first, second, plain]).not.toContain(lease);
     expect(alive(lease)).toBe(true);
-    const end = Bun.spawn([process.execPath, join(import.meta.dir, "../cli/safari.ts"), "owner", "--owner", "job", "--end", "--json"], { env, stdout: "pipe" });
+    const end = Bun.spawn([process.execPath, join(import.meta.dir, "../cli/browser.ts"), "owner", "--owner", "job", "--end", "--json"], { env, stdout: "pipe" });
     expect(JSON.parse(await new Response(end.stdout).text())).toEqual({ owner: "job", pid: lease });
     for (let i = 0; i < 100 && alive(lease); i++) await Bun.sleep(20);
     expect(alive(lease)).toBe(false);

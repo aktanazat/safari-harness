@@ -14,6 +14,7 @@ import { affectsPage } from "./lanes.ts";
 import { redactedLine } from "./redact.ts";
 import type { ReplResult, ReplSession } from "./repl.ts";
 import { verbatim, withTask } from "./rpc.ts";
+import { BROWSER_NAME } from "./front.ts";
 
 // This connection's own REPL session: its bindings last as long as the
 // connection runs this release, and its tabs close with it.
@@ -25,7 +26,7 @@ let repl: ReplSession | undefined;
 // defined", the page bound an hour before; the session that made a new
 // one says so with its first answer, and names the pages to attach again.
 type Made = { started: string; tabs: () => { id: number; url: string }[] };
-const MADE = Symbol.for("safari-harness.mcp-repl");
+const MADE = Symbol.for("browser-harness.mcp-repl");
 let fresh: string | undefined;
 
 function connectionSession(make: () => ReplSession): ReplSession {
@@ -42,8 +43,8 @@ function connectionSession(make: () => ReplSession): ReplSession {
 }
 
 const REPL_TOOL: Tool = {
-  desc: "Run JS in Safari; bindings persist; last value/console.log returned. 120 s limit; some clients 60 s: split waits. p.waitForChange() for new lines. API and site kits: safari guide <site|repl>.",
-  params: { code: { type: "string", description: "JS, top-level await (or file: path)" }, file: { type: "string" }, session: { type: "string", description: "a named session, shared with safari repl --session; omit: this connection's own" } },
+  desc: `Run JS in ${BROWSER_NAME}; bindings persist; last value/console.log returned. 120 s limit; some clients 60 s: split waits. p.waitForChange() for new lines. API and site kits: browser guide <site|repl>.`,
+  params: { code: { type: "string", description: "JS, top-level await (or file: path)" }, file: { type: "string" }, session: { type: "string", description: "a named session, shared with browser repl --session; omit: this connection's own" } },
   run: async (a) => {
     // The repl's modules (node:vm, the site kits) load on its first call:
     // most sessions never make one, and this server lives as long as its session.
@@ -53,7 +54,7 @@ const REPL_TOOL: Tool = {
     const own = a.session === undefined;
     const r: ReplResult & { hint?: string } = own
       ? await connectionSession(() => new ReplSession(`mcp-${process.pid}`, { cwd: join(REPL_DIR, `mcp-${process.pid}`) })).run(code)
-      : await runInSession(String(a.session), code, { host: process.env.SAFARI_HARNESS_HOST });
+      : await runInSession(String(a.session), code, { host: process.env.BROWSER_HARNESS_HOST });
     const notice = own && fresh !== undefined ? `${fresh}\n` : "";
     if (own) fresh = undefined;
     const cut = r.redacted === undefined ? "" : `\n${redactedLine(r.redacted)}`;

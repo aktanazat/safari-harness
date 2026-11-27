@@ -3,11 +3,11 @@
 //   bun daemon/main.ts
 //
 // Endpoints:
-//   ws   :SAFARI_HARNESS_WS (default 37333)
+//   ws   :BROWSER_HARNESS_WS (default 37333)
 //     /              extension background worker connects here
 //     /passwords     the hidden Helium's Apple Passwords bridge (passwords.ts)
 //     /devtools/…    CDP-compatible shim for Chrome-protocol clients
-//   http :SAFARI_HARNESS_HTTP_PORT (default 37334)
+//   http :BROWSER_HARNESS_HTTP_PORT (default 37334)
 //     /rpc           {tool,args,caller} -> {ok,value|error}   (CLI + MCP client)
 //     /health        bridge status, calls in flight, the code and directory
 //                    it runs, recent events
@@ -44,8 +44,8 @@ import { pruneSaved } from "./save.ts";
 import { sweepPlaybookLearning } from "./playbooks.ts";
 import { sweepDrafts } from "./drafts.ts";
 
-const wsPort = Number(process.env.SAFARI_HARNESS_WS ?? DEFAULT_PORT);
-const httpPort = Number(process.env.SAFARI_HARNESS_HTTP_PORT ?? 37334);
+const wsPort = Number(process.env.BROWSER_HARNESS_WS ?? DEFAULT_PORT);
+const httpPort = Number(process.env.BROWSER_HARNESS_HTTP_PORT ?? 37334);
 
 // Every line of the log (launchd's StandardOutPath) says when.
 for (const level of ["log", "warn", "error"] as const) {
@@ -56,7 +56,7 @@ for (const level of ["log", "warn", "error"] as const) {
 // The release it runs (scripts/dev-install.sh keeps that one while it runs)
 const ROOT = join(import.meta.dir, "..");
 const CODE = codeHash(ROOT);
-const LOGS = join(homedir(), "Library", "Logs", "safari-harness");
+const LOGS = join(homedir(), "Library", "Logs", "browser-harness");
 // launchd's log of the daemon (cli/launchd.ts), about 600 lines a day on
 // 10-21: a week or so of it stays.
 trimLog(join(LOGS, "daemon.log"), 5000);
@@ -69,11 +69,11 @@ note("start", {
   code: CODE,
   reason: !last ? "first start" : last.kind === "stop" ? `after a stop: ${String(last.reason)}` : "the previous daemon ended without stopping (it crashed or was killed)",
 });
-loadTabs(join(homedir(), ".local/share/safari-harness", `tabs-${httpPort}.json`));
-loadSpaces(join(homedir(), ".local/share/safari-harness", `spaces-${httpPort}.json`), tracksOwner);
+loadTabs(join(homedir(), ".local/share/browser-harness", `tabs-${httpPort}.json`));
+loadSpaces(join(homedir(), ".local/share/browser-harness", `spaces-${httpPort}.json`), tracksOwner);
 // The agent screen companion's folder, under the account's own home as it reads it.
 watchDisplayChanges(join(userInfo().homedir, ".agent-display"), displaysChanged);
-openMissionHistory(join(homedir(), ".local/share/safari-harness", `history-${httpPort}.json`));
+openMissionHistory(join(homedir(), ".local/share/browser-harness", `history-${httpPort}.json`));
 // The extension reports every load in its owned tabs (bridge.ts), including
 // loads no tool caused, so browsing_history can leave those visits out.
 openLoads(loadsFile(httpPort));
@@ -85,7 +85,7 @@ sweepPlaybookLearning();
 try {
   sweepDrafts();
 } catch (e) {
-  console.error("[safari-harness] form drafts not swept:", e instanceof Error ? e.message : String(e));
+  console.error("[browser-harness] form drafts not swept:", e instanceof Error ? e.message : String(e));
 }
 // What the user taught in a tab (teach mode) is saved as he stops it; a
 // notification tells him its name, or why it was not saved.
@@ -94,7 +94,7 @@ bridge.onRecording = (recording) => {
     notify(`Saved the recording as ${saveRecording(recording)}`);
   } catch (e) {
     const why = e instanceof Error ? e.message : String(e);
-    console.error("[safari-harness] recording not saved:", why);
+    console.error("[browser-harness] recording not saved:", why);
     notify(`The recording was not saved: ${why}`);
   }
 };
@@ -137,7 +137,7 @@ function callerOf(path: string): Caller {
 }
 
 function refuse(req: Request, url: URL): Response {
-  console.log(`[safari-harness] refused ${req.method} ${url.pathname} from origin ${req.headers.get("origin") ?? "(none)"}`);
+  console.log(`[browser-harness] refused ${req.method} ${url.pathname} from origin ${req.headers.get("origin") ?? "(none)"}`);
   return new Response("forbidden", { status: 403 });
 }
 
@@ -212,7 +212,7 @@ const SIGNAL_DRAIN_MS = 15000;
 const SHUTDOWN_DRAIN_MS = 60000;
 
 // idleTimeout 0: Bun's default cut a request its handler had not answered
-// within 10 s, so safari extension reload, which waits up to 30 s for the
+// within 10 s, so browser extension reload, which waits up to 30 s for the
 // extension to connect again, failed as "daemon not reachable" (10-16,
 // 10-17). Every route bounds its own wait.
 const rpcServer = Bun.serve({
@@ -248,7 +248,7 @@ const rpcServer = Bun.serve({
     if (url.pathname === "/calls") return Response.json(lastDay());
     if (url.pathname === "/rpc" && req.method === "POST") {
       if (stopping) {
-        const error = `the safari daemon is restarting (${stopping}); try again in a moment`;
+        const error = `the browser daemon is restarting (${stopping}); try again in a moment`;
         return Response.json({ ok: false, restarting: true, error, failure: failureOf(new HarnessError("unavailable", error, { retryable: true, effect: "none", next: "wait for the daemon to finish restarting" })) }, { status: 503 });
       }
       let body: unknown;
@@ -293,7 +293,7 @@ const rpcServer = Bun.serve({
     // one (omp/index.ts): before 11-06 one could start here and be cut as
     // the daemon stopped (AuditSafariHarness-10).
     if ((url.pathname === "/turn-end/prepare" || url.pathname === "/turn-end") && req.method === "POST") {
-      if (stopping) return Response.json({ ok: false, restarting: true, error: `the safari daemon is restarting (${stopping})` }, { status: 503 });
+      if (stopping) return Response.json({ ok: false, restarting: true, error: `the browser daemon is restarting (${stopping})` }, { status: 503 });
       const body = safeParse(await req.text());
       const owner = body?.owner;
       if (!Number.isInteger(owner) || Number(owner) <= 1) return Response.json({ ok: false, error: "owner must be a process id" }, { status: 400 });
@@ -314,7 +314,7 @@ const rpcServer = Bun.serve({
         // (tools.ts): from 10-30 01:05Z to 01:50Z, while Safari left
         // tabs.list unanswered, every turn end escaped here as Bun's 500.
         const error = e instanceof Error ? e.message : String(e);
-        console.error(`[safari-harness] turn end for ${owner} failed: ${error}`);
+        console.error(`[browser-harness] turn end for ${owner} failed: ${error}`);
         return Response.json({ ok: false, error }, { status: 503 });
       } finally {
         if (--inFlight === 0) for (const wake of idle) wake();
@@ -325,7 +325,7 @@ const rpcServer = Bun.serve({
       void stop(typeof reason === "string" && reason ? reason : "shutdown requested", SHUTDOWN_DRAIN_MS);
       return Response.json({ ok: true, inFlight });
     }
-    // safari extension reload (safari.ts): the reload the bridge gives a
+    // browser extension reload (browser.ts): the reload the bridge gives a
     // stuck extension by itself, asked for now.
     if (url.pathname === "/extension/reload" && req.method === "POST") {
       try {
@@ -338,7 +338,7 @@ const rpcServer = Bun.serve({
   },
 });
 
-console.log(`[safari-harness] extension+cdp ws :${wsPort}  rpc http :${httpPort}`);
+console.log(`[browser-harness] extension+cdp ws :${wsPort}  rpc http :${httpPort}`);
 
 async function stop(reason: string, drainMs: number) {
   if (stopping) return;

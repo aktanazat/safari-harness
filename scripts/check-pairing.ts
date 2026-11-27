@@ -4,8 +4,8 @@
 // unlocked. Run it with a pairing up (passwords {do: "status"} says
 // unlocked), holding the live lock:
 //
-//   until mkdir /private/var/tmp/safari-harness-live.lock 2>/dev/null; do sleep 2; done
-//   bun scripts/check-pairing.ts; rmdir /private/var/tmp/safari-harness-live.lock
+//   until mkdir /private/var/tmp/browser-harness-live.lock 2>/dev/null; do sleep 2; done
+//   bun scripts/check-pairing.ts; rmdir /private/var/tmp/browser-harness-live.lock
 //
 // It restarts the daemon twice, and works only in a background tab it opens
 // and closes. It prints no username or password.
@@ -14,7 +14,7 @@ import { DEFAULT_PORT } from "../daemon/bridge.ts";
 import { heliumProfile } from "../daemon/passwords.ts";
 
 const HTTP = "http://127.0.0.1:37334";
-const LABEL = "at.aktan.safari-harness.daemon";
+const LABEL = "at.aktan.browser-harness.daemon";
 const PROFILE = heliumProfile(DEFAULT_PORT);
 
 async function call(tool: string, args: Record<string, unknown> = {}): Promise<any> {

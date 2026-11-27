@@ -12,6 +12,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { HarnessError, rateLimited } from "../failures.ts";
 import { NotSignedIn, draftOrSend, wroteOutside, type SiteKit } from "./kit.ts";
+import { BROWSER_NAME } from "../front.ts";
 
 const SITE = "Slack";
 const ORIGIN = "https://app.slack.com";
@@ -638,7 +639,7 @@ export function slack(kit: SiteKit) {
       const { teams } = await readStore(kit);
       const want = teamId?.toLowerCase();
       const team = teamId ? teams.find((t) => t.teamId === teamId || t.domain.toLowerCase() === want) ?? teams.find((t) => t.name.toLowerCase() === want) : (teams.find((t) => t.lastActive) ?? teams[0]);
-      if (!team) throw new Error(`no workspace "${teamId}" in Safari; listWorkspaces() has ${teams.map((t) => `${t.name} (${t.teamId})`).join(", ")}`);
+      if (!team) throw new Error(`no workspace "${teamId}" in ${BROWSER_NAME}; listWorkspaces() has ${teams.map((t) => `${t.name} (${t.teamId})`).join(", ")}`);
       if (!team.signedIn) throw new NotSignedIn(SITE, `workspace ${team.name} needs a fresh sign-in`);
       return client(kit, team);
     },

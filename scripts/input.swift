@@ -39,7 +39,7 @@ import AppKit
 import ApplicationServices
 
 // The browser the harness drives: Safari, or Ladybird Harness (daemon/front.ts).
-let BROWSER = ProcessInfo.processInfo.environment["SAFARI_HARNESS_BUNDLE"] ?? "com.apple.Safari"
+let BROWSER = ProcessInfo.processInfo.environment["BROWSER_HARNESS_BUNDLE"] ?? "com.apple.Safari"
 
 var emergencyRelease: CGEvent?
 var emergencyClipboardRestore: (() -> Void)?

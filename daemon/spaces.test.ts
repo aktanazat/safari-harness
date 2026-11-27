@@ -281,13 +281,13 @@ const pageIn = (tabs: Map<number, Tab>, window: number | undefined) => [...tabs.
 // Imported by a specifier with a query, since a static import would share
 // this file's one module and its records.
 async function daemonOn(port: number, as: string) {
-  const was = process.env.SAFARI_HARNESS_HTTP_PORT;
-  process.env.SAFARI_HARNESS_HTTP_PORT = String(port);
+  const was = process.env.BROWSER_HARNESS_HTTP_PORT;
+  process.env.BROWSER_HARNESS_HTTP_PORT = String(port);
   try {
     return (await import(`./spaces.ts?${as}`)) as typeof Spaces;
   } finally {
-    if (was === undefined) delete process.env.SAFARI_HARNESS_HTTP_PORT;
-    else process.env.SAFARI_HARNESS_HTTP_PORT = was;
+    if (was === undefined) delete process.env.BROWSER_HARNESS_HTTP_PORT;
+    else process.env.BROWSER_HARNESS_HTTP_PORT = was;
   }
 }
 
@@ -1213,7 +1213,7 @@ test("an ended window whose page close the extension's link took down closes as 
 });
 
 // On 10-23 ended agents' windows stayed open through restarts, and nothing
-// in safari status --journal said so.
+// in browser status --journal said so.
 test("a window that holds only its page five minutes after its task ended is noted in the journal once", async () => {
   const start = Date.now();
   const w = await unclosable(() => {

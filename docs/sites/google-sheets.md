@@ -6,9 +6,9 @@ hosts: docs.google.com/spreadsheets
 
 Spreadsheets are read through their export links, so the editor never opens and nothing changes in the sheet.
 
-## In safari repl
+## In browser repl
 
-The `googleSheets` global reads a spreadsheet through its export endpoints with the signed-in Safari session; the grid is never opened in the editor.
+The `googleSheets` global reads a spreadsheet through its export endpoints with the signed-in browser session; the grid is never opened in the editor.
 
 - `getSpreadsheetInfo(idOrUrl, {account})`: `{id, title, sheets: [{name, gid}]}`.
 - `readSheet(idOrUrl, {sheet | gid, range, account})`: one sheet's cells as rows of strings, the values as shown (formatted, not formulas); the first sheet unless `sheet` (its name) or `gid` says which; `range` like `"A1:C20"` narrows it. Trailing empty cells and rows are dropped.

@@ -12,7 +12,7 @@ type Asked = { sent: true; hint: string } | { sent: false; why: string; hint: st
 async function ask(question: string): Promise<Asked> {
   if (!(await isAway())) return { atMac: true, hint: "the user is at the Mac: ask in your own chat; nothing was sent" };
   try {
-    await alert(`${process.env.SAFARI_HARNESS_AWAY === "1" ? "test of the question alert: " : ""}an agent asks: ${question} answer it in the agent's chat on your mac.`);
+    await alert(`${process.env.BROWSER_HARNESS_AWAY === "1" ? "test of the question alert: " : ""}an agent asks: ${question} answer it in the agent's chat on your mac.`);
   } catch (e) {
     return { sent: false, why: e instanceof Error ? e.message : String(e), hint: "nothing reached his phone: ask it in your own chat, where he answers once he is back at the Mac" };
   }

@@ -123,7 +123,7 @@ import { TOOLS } from "./tools.ts";
 // miss (22), and shot's absolute out (9) brought it to 26,714: a 99point
 // agent took 45 shot calls and 47 resizes for 14 pages at two widths
 // (S99PartA), its fetch-timing evals ran 25 to 30 s against a 30 s cap it
-// could not raise (S99PartB), and on 10-16 an agent's `safari scroll --to
+// could not raise (S99PartB), and on 10-16 an agent's `browser scroll --to
 // bottom` was refused as unknown (HuntsUsage). shot's live (110) brought it
 // to 26,824: a shot now ends the page's finite animations first, and live
 // keeps them running for a shot of the motion itself. An action's snapshot
@@ -132,7 +132,7 @@ import { TOOLS } from "./tools.ts";
 // page with snapshot in the turn after 373 actions on its tab, and
 // snapshot: true could have given 92 of those reads; this gives 343. The
 // repl tool's crib of its main calls (411) brought it to 27,493: in the
-// two weeks before 10-19 agents ran `safari guide repl` or `safari guide
+// two weeks before 10-19 agents ran `browser guide repl` or `browser guide
 // reference` 155 times, 21.8 minutes of their time, most for the few
 // calls a script needs. map's follow (173) brought it to 27,666: in the
 // two weeks of logs before 10-19 an agent copied a map's addresses out of
@@ -204,7 +204,7 @@ test("a call that names do as action passes the listed required parameters, and 
 
 test("an MCP run that stops on a failed step signals failure", async () => {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], {
-    env: { ...process.env, SAFARI_HARNESS_REMOTE: "1" },
+    env: { ...process.env, BROWSER_HARNESS_REMOTE: "1" },
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -224,7 +224,7 @@ test("an MCP run that stops on a failed step signals failure", async () => {
 
 test("a nested run is rejected before any outer step acts", async () => {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], {
-    env: { ...process.env, SAFARI_HARNESS_REMOTE: "1" },
+    env: { ...process.env, BROWSER_HARNESS_REMOTE: "1" },
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",

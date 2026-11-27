@@ -87,7 +87,7 @@ do {
         require(try !transaction.restore(), "restoration ran more than once")
         require(board.contents == concurrent, "a later copy was lost to repeated cleanup")
     case "native-isolated":
-        let pasteboard = NSPasteboard(name: NSPasteboard.Name("safari-harness-input-test-\(getpid())"))
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("browser-harness-input-test-\(getpid())"))
         defer { pasteboard.releaseGlobally() }
         let board = NativeClipboard(board: pasteboard)
         let start = board.changeCount
@@ -98,7 +98,7 @@ do {
         require(try transaction.restore(), "native pasteboard restoration failed")
         require(try board.snapshot() == original, "native pasteboard changed original bytes or item order")
     case "native-unavailable":
-        let pasteboard = NSPasteboard(name: NSPasteboard.Name("safari-harness-unavailable-test-\(getpid())"))
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("browser-harness-unavailable-test-\(getpid())"))
         defer { pasteboard.releaseGlobally() }
         let readable = NSPasteboardItem()
         let unavailable = NSPasteboardItem()
@@ -123,7 +123,7 @@ do {
             require(items[1].types.contains(missingType), "refusing an unavailable representation dropped its declaration")
         }
     case "native-empty":
-        let pasteboard = NSPasteboard(name: NSPasteboard.Name("safari-harness-empty-test-\(getpid())"))
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("browser-harness-empty-test-\(getpid())"))
         defer { pasteboard.releaseGlobally() }
         pasteboard.clearContents()
         let board = NativeClipboard(board: pasteboard)

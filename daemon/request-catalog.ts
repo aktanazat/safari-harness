@@ -90,7 +90,7 @@ function checkedJson(text: unknown, check: Check): CheckedJson {
 }
 
 async function contextOf(tab: unknown, call: Call): Promise<Context> {
-  if (!Number.isSafeInteger(tab) || Number(tab) <= 0 || process.env.SAFARI_HARNESS_REMOTE) throw new Error("request catalog reads need one local numeric tab owned by this agent, never front");
+  if (!Number.isSafeInteger(tab) || Number(tab) <= 0 || process.env.BROWSER_HARNESS_REMOTE) throw new Error("request catalog reads need one local numeric tab owned by this agent, never front");
   const context = fields(await call("request_catalog_context", { tab }));
   if (!Number.isSafeInteger(context.tab) || Number(context.tab) <= 0
     || typeof context.url !== "string" || !URL.canParse(context.url)

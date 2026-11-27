@@ -1,6 +1,6 @@
-# safari repl
+# browser repl
 
-A JavaScript session over Safari, shaped like Playwright. Use it when a task
+A JavaScript session over the browser, shaped like Playwright. Use it when a task
 takes more than a few clicks: a loop over pages, a download, a PDF, reading
 a signed-in site through its own API. Each call runs one script; top-level
 `await` works, and top-level bindings stay for the next call in the same
@@ -11,14 +11,14 @@ expression prints, or what it `return`s; a script with both a top-level
 An error names the script line it came from when the stack shows one.
 
 ```sh
-safari repl "const p = await openTab('https://example.com')"
-safari repl "console.log(await p.title())"   # your next call still has p
-safari repl --session work "const p = await openTab('https://example.com')"
-safari repl --session work "console.log((await snapshot(p)).tree)"
-echo "console.log((await gmail.search(0, 'from:bank', {limit: 5})).results)" | safari repl --session work
-safari repl --session work --file /tmp/work.js   # in the message that writes it; the repl tool: {file}
-safari repl --list                  # sessions still running
-safari repl --close work            # end one; its tabs close, kept ones stay
+browser repl "const p = await openTab('https://example.com')"
+browser repl "console.log(await p.title())"   # your next call still has p
+browser repl --session work "const p = await openTab('https://example.com')"
+browser repl --session work "console.log((await snapshot(p)).tree)"
+echo "console.log((await gmail.search(0, 'from:bank', {limit: 5})).results)" | browser repl --session work
+browser repl --session work --file /tmp/work.js   # in the message that writes it; the repl tool: {file}
+browser repl --list                  # sessions still running
+browser repl --close work            # end one; its tabs close, kept ones stay
 ```
 
 Without `--session`, a call runs in your agent's own session, `agent-<pid>`:
@@ -53,7 +53,7 @@ another helper. Reusing bindings does not reuse the previous caller's page
 ownership. The omp extension adds the reserved `__safariTask` MCP argument,
 and `__safariVerbatim` to the model's own calls, not an eval cell's, when
 the current release has `daemon/mcp-marks.txt`; the MCP boundary removes
-every `__safari` argument before Safari validates the tool arguments.
+every `__browser` argument before the browser validates the tool arguments.
 Shell commands run as written. Before each one runs, the extension saves
 its identity under the session id omp gives the command (`PI_SESSION_ID`),
 and the CLI calls the command makes, directly or through scripts, read it
@@ -77,7 +77,7 @@ process-wide ownership.
   `attachBrowserTab(id)` for a tab opened outside this session).
   `openTab`, `page.goto` and `snapshot` print the site's saved notes the
   first time a session reaches that site.
-- `listBrowserTabs()` lists every Safari tab; `attachBrowserTab(id)` and
+- `listBrowserTabs()` lists every browser tab; `attachBrowserTab(id)` and
   `attachActiveBrowserTab()` hand you one the user already has. Only read
   those; never close or move them.
 - `tabs` (the pages this session holds), `getTabs()`, `getTabByTargetId(id)`
@@ -104,7 +104,7 @@ process-wide ownership.
   `.text`. Past 20,000 characters (`maxBytes`) `.text` holds the start,
   `.total` counts the whole, and `.saved` is the file that holds all of
   it. `expand` and `scroll` read all of a thread or feed first
-  (`safari guide reference extract`).
+  (`browser guide reference extract`).
 - `harvest(page, {selector, item, key, expand, scroll, max, ms})`, or
   `page.harvest({...})`, returns `{url, title, items, harvested,
   incomplete}`: each item of the page's list once, as `{text}` or `{key,
@@ -119,7 +119,7 @@ process-wide ownership.
   This works after `closeTab(page)`, until the receipt expires or its
   caller ends. Only the original safe read is saved; arbitrary evaluated
   text is not accepted. Research stays separate from personal browsing.
-  See `safari guide memory` for permissions and public-source limits.
+  See `browser guide memory` for permissions and public-source limits.
 - `page.capture({path, fullPage, ref, annotate, tiles, tileHeight})` returns
   `{path, evidence, screens?, cut?}`. `evidence.path` names the immutable
   receipt with sanitized source details and image SHA256; tiles keep the
@@ -148,7 +148,7 @@ action result is not safe to repeat until a fresh read shows what happened.
   <tab id>}` for one a tab shows, `{secret: "passwords"}` for an
   authenticator code.
   A value from the owner's vault is typed from the shell instead:
-  `mem-secret run VAR -- safari type <ref> '{{code}}' --tab N --secret env
+  `mem-secret run VAR -- browser type <ref> '{{code}}' --tab N --secret env
   --env VAR` (only a CLI call's own environment is read).
 - Locator: `click dragTo paste fill type press hover selectOption setInputFiles check
   uncheck textContent innerText innerHTML inputValue getAttribute isVisible
@@ -170,7 +170,7 @@ action result is not safe to repeat until a fresh read shows what happened.
 - `source.dragTo(destination)` sends one real mouse drag between locators in
   the same page. Both endpoints must already be visible and uncovered in the
   same viewport. It does not scroll either endpoint into view. The page,
-  endpoints, frame covers, and Safari window are checked again before input.
+  endpoints, frame covers, and browser window are checked again before input.
   A failed or interrupted drag releases the mouse button. Read the result
   before another drag; a delivered gesture does not prove the page kept it.
 - `locator.paste(text, {html?, tsv?})` pastes at that editable target's current
@@ -222,7 +222,7 @@ action result is not safe to repeat until a fresh read shows what happened.
 ## Site globals
 
 Each reads the user's signed-in site through tabs of its own, and says "not
-signed in to <site> in Safari" when it is not. Methods that send or change
+signed in to <site> in <browser>" when it is not. Methods that send or change
 anything return a draft with a `draftId` and its recipients (`to`); Slack's
 and Gmail's also name the account it goes out as (`from`). Only after the
 owner approves that draft, call again in a later call with the same
@@ -237,8 +237,8 @@ count of each kind. The script itself sees the page as it is; what an
 approved send sends is never cut.
 
 `slack`, `gmail`, `googleAccounts`, `notion`, `googleDocs`, `googleSheets`,
-`googleSearch`, `youtube`, `x` (also `twitter`), `linkedin`, `reddit`. `safari guide <site>`
-lists each one's methods under "In safari repl". A list comes with its
+`googleSearch`, `youtube`, `x` (also `twitter`), `linkedin`, `reddit`. `browser guide <site>`
+lists each one's methods under "In browser repl". A list comes with its
 paging: `gmail.search` answers `{results, hasMore, total, nextOffset}`.
 
 A site that rate-limits a global fails the call with `e.code ===
@@ -306,7 +306,7 @@ and whose `exists()` says whether it is there.
   and use the new refs.
 - Large results go to a file (`fs.writeFile('rows.json', ...)`); print a
   count and the path, not the whole thing. Output past 10,000 characters
-  is saved whole to `~/.local/share/safari-harness/saved/page-<time>.txt`,
+  is saved whole to `~/.local/share/browser-harness/saved/page-<time>.txt`,
   and the answer is its first 2,000 characters and that path. A run that
   fails keeps 8 lines of its output, and 8 of its error, the rest saved
   the same way.
@@ -326,5 +326,5 @@ and whose `exists()` says whether it is there.
   when the total has doubled.
 - When another model judges a page, give it field names and labels, never
   the values the user typed or the site showed.
-- `safari repl --close <name>` and start again under the same name when
+- `browser repl --close <name>` and start again under the same name when
   bindings are in a bad state; the session's files stay in its folder.

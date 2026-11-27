@@ -1,4 +1,4 @@
-// safari repl: a persistent JavaScript session over the helper's tools, in
+// browser repl: a persistent JavaScript session over the helper's tools, in
 // the manner of Playwright. Code runs in a V8 context of its own whose
 // top-level bindings last from call to call. `page`, `openTab`, `snapshot`,
 // locators and the rest call the same tools the CLI and MCP server call, so
@@ -25,6 +25,7 @@ import { SITE_ALIASES, SITE_GLOBALS } from "./sites/index.ts";
 import type { CaptureResult } from "./evidence.ts";
 import { stateLine, type PageState } from "./page-state.ts";
 import type { ResearchReceipt } from "./browser-memory.ts";
+import { BROWSER_NAME } from "./front.ts";
 
 export const REPL_TIMEOUT_MS = 120_000;
 
@@ -497,7 +498,7 @@ export class Page {
     const r = (await this.call("wait", { selector: String(selector), ms })) as { found?: boolean; unanswered?: boolean };
     // A wait the page gave no answer by its end says nothing of the page
     // (wait in tools.ts): on 10-16, with Safari slow, one read as a miss.
-    if (r.unanswered === true) throw new Error(`the page gave no answer in time (Safari or the page is slow), so whether ${selector} appeared within ${Math.round(ms / 1000)} s is unknown; wait for it again`);
+    if (r.unanswered === true) throw new Error(`the page gave no answer in time (${BROWSER_NAME} or the page is slow), so whether ${selector} appeared within ${Math.round(ms / 1000)} s is unknown; wait for it again`);
     if (!r.found) throw new Error(`${selector} did not appear within ${Math.round(ms / 1000)} s`);
     // Then reads where the page is, as waitForTimeout does.
     await this.info();
@@ -510,7 +511,7 @@ export class Page {
   async waitForChange(opts: { timeout?: number } = {}): Promise<string[]> {
     const ms = opts.timeout ?? 10_000;
     const r = (await this.call("wait", { changed: true, ms })) as { found?: boolean; unanswered?: boolean; added?: string[] };
-    if (r.unanswered === true) throw new Error(`the page gave no answer in time (Safari or the page is slow), so whether it changed within ${Math.round(ms / 1000)} s is unknown; wait again`);
+    if (r.unanswered === true) throw new Error(`the page gave no answer in time (${BROWSER_NAME} or the page is slow), so whether it changed within ${Math.round(ms / 1000)} s is unknown; wait again`);
     if (!r.found) throw new Error(`nothing new appeared within ${Math.round(ms / 1000)} s`);
     // Then reads where the page is, as waitForTimeout does.
     await this.info();
@@ -862,7 +863,7 @@ export class ReplSession {
     const before = this.#abandoned;
     if (before?.late === undefined && before?.abandoned !== undefined) {
       const s = Math.round((Date.now() - before.abandoned) / 1000);
-      return failed("", new HarnessError("unavailable", `the run before this one passed its time limit ${s} s ago and is still running; its calls are stopped as they come, and this code did not run: run it again once that run ends, or end the session (safari repl --close)`, { effect: "none", retryable: true, next: "wait, then run the code again, or end the session" }));
+      return failed("", new HarnessError("unavailable", `the run before this one passed its time limit ${s} s ago and is still running; its calls are stopped as they come, and this code did not run: run it again once that run ends, or end the session (browser repl --close)`, { effect: "none", retryable: true, next: "wait, then run the code again, or end the session" }));
     }
     if (before?.late !== undefined) {
       this.#abandoned = undefined;
@@ -1037,7 +1038,7 @@ export class ReplSession {
 
   async attachActiveBrowserTab(): Promise<Page> {
     const row = (await this.#rows()).find((r) => r.front);
-    if (!row) throw new Error("Safari has no front tab");
+    if (!row) throw new Error(`${BROWSER_NAME} has no front tab`);
     return this.attachBrowserTab(row.id);
   }
 
@@ -1185,7 +1186,7 @@ export class ReplSession {
     return res;
   }
 
-  // asked: the session was ended on request (safari repl --close), so the
+  // asked: the session was ended on request (browser repl --close), so the
   // pages its scripts changed close too, as at a turn's end; ended by itself
   // (30 minutes unused, its agent's exit) it leaves those be. A tab kept for
   // the user, or handed to him, stays either way (close in tools.ts).

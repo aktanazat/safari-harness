@@ -14,7 +14,7 @@ import { callTool, formatResult } from ${JSON.stringify(new URL("./tools.ts", im
 import { stopBrowserMemory } from ${JSON.stringify(new URL("./browser-memory-runtime.ts", import.meta.url).href)};
 import { runAs } from ${JSON.stringify(new URL("./owner.ts", import.meta.url).href)};
 const mode = process.env.RESEARCH_FAILURE_FIXTURE;
-const directory = join(homedir(), ".local/share/safari-harness/browser-memory");
+const directory = join(homedir(), ".local/share/browser-harness/browser-memory");
 const source = { url: "https://example.com/research", title: "Public report", body: "PRIVATE_CANDIDATE_MUST_NOT_LEAK", partial: false };
 mkdirSync(join(directory, ".."), { recursive: true });
 if (mode === "during-read") browserMemory.configure({ researchEnabled: true, summarize: false });
@@ -149,7 +149,7 @@ test.each(["unavailable", "during-read"])("%s research storage cannot destroy a 
   expect(result.snapshot).toHaveProperty("snapshot", '- text "The report describes lithium battery recycling."');
   for (const key of ["extract", "snapshot", "savedExtract", "savedSnapshot"]) {
     const value = result[key];
-    expect(value).toHaveProperty("memoryWarning", "research memory is unavailable; check safari memory status.");
+    expect(value).toHaveProperty("memoryWarning", "research memory is unavailable; check browser memory status.");
     expect(value).not.toHaveProperty("memorySource");
     expect(value).not.toHaveProperty("memoryReceipt");
   }

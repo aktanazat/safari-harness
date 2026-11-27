@@ -28,7 +28,7 @@ const answers: Record<string, unknown> = {
 };
 const CUT_NET = { entries: [{ url: "https://my.example/verify", t: 1, body: `{"code":"...","case":"1${CODE}"}` }] };
 // The caller's variable secret env names; no test sets it but its own.
-const VAR = "SAFARI_HARNESS_TEST_SECRET";
+const VAR = "BROWSER_HARNESS_TEST_SECRET";
 connect({
   send(data: string) {
     const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
@@ -204,7 +204,7 @@ test.each([["unset", {}], ["empty", { [VAR]: "" }]])("secret env with the variab
 test.each(SECRET_TOOLS)("%s with secret env through MCP types nothing, though the server's environment has the variable", async (tool) => {
   process.env[VAR] = CODE;
   watchSecretTyping();
-  await expect(mcpCall(tool, envArgs(tool))).rejects.toThrow('secret "env" reads only the environment of a safari CLI call');
+  await expect(mcpCall(tool, envArgs(tool))).rejects.toThrow('secret "env" reads only the environment of a browser CLI call');
   expect(fields).toEqual([]);
 });
 

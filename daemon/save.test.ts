@@ -103,7 +103,7 @@ afterAll(() => {
 async function saveWithOldFiles(call: string): Promise<{ saved: string; folder: string; path: string }> {
   const home = mkdtempSync(join(tmpdir(), "save-home-"));
   homes.push(home);
-  const saved = join(home, ".local/share/safari-harness/saved");
+  const saved = join(home, ".local/share/browser-harness/saved");
   const folder = join(home, "chosen");
   const day = 24 * 60 * 60;
   const now = Date.now() / 1000;

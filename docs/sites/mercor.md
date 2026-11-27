@@ -16,7 +16,7 @@ Wait for the next page's words, not `quiet`: Mercor keeps a long-poll open (coil
 - Country: clicking the combobox re-renders it under a new ref; snapshot before typing in it.
 
 ## Okta setup
-- "Provision access" opens a c-mercor.okta.com reset-password tab. With an old Okta session in Safari it lands on /login/signout and shows "400 Bad Request" every time; run cookies clear on https://c-mercor.okta.com, then click Provision access again.
+- "Provision access" opens a c-mercor.okta.com reset-password tab. With an old Okta session in the browser it lands on /login/signout and shows "400 Bad Request" every time; run cookies clear on https://c-mercor.okta.com, then click Provision access again.
 - The login is new to Apple Passwords: run passwords change with site c-mercor.okta.com and the account's email as username, then click Reset Password.
 - "Set up security methods" is required next. "Security Key or Biometric Authenticator" makes a Touch ID passkey: hand off so he picks it and presses Set up (only the user can approve). Done lands on /app/UserHome.
 - The Okta step turns done only when Provision access is clicked again after the account is active: Mercor then reads the Okta user as active and moves to Payment setup.

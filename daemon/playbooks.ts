@@ -54,7 +54,7 @@ async function locked<T>(path: string, run: () => Promise<T>, wait = false): Pro
   } finally { closeSync(lock); }
 }
 async function scope(tab: unknown): Promise<{ owner: number; path: string }> {
-  if (!Number.isInteger(tab) || Number(tab) <= 0 || process.env.SAFARI_HARNESS_REMOTE) throw new Error("learning needs one local numeric tab opened by this agent, never front");
+  if (!Number.isInteger(tab) || Number(tab) <= 0 || process.env.BROWSER_HARNESS_REMOTE) throw new Error("learning needs one local numeric tab opened by this agent, never front");
   const owner = await agentOf();
   if (owner === undefined) throw new Error("learning needs an identifiable calling agent");
   return { owner, path: dataFile(`playbook-learning/${owner}-${tab}.json`) };
@@ -64,7 +64,7 @@ const tabsPath = (owner: number) => dataFile(`playbook-learning/${owner}-tabs.js
 // Numeric ownership receipts only. A separate CLI process can learn a tab
 // this agent opened; an arbitrary owner/peer tab cannot opt itself in.
 export async function notePlaybookTab(tool: string, args: Record<string, unknown>, result: unknown): Promise<void> {
-  if (process.env.SAFARI_HARNESS_REMOTE || !["open", "close", "keep"].includes(tool)) return;
+  if (process.env.BROWSER_HARNESS_REMOTE || !["open", "close", "keep"].includes(tool)) return;
   const owner = await agentOf();
   if (owner === undefined) return;
   const path = tabsPath(owner);
@@ -191,7 +191,7 @@ export async function inspectLearnedAction(tool: string, a: Record<string, unkno
 }
 
 export async function learnAgentAction(tool: string, a: Record<string, unknown>, run: () => Promise<unknown>, call: Call = rpc, real = false): Promise<unknown> {
-  if (!Number.isInteger(a.tab) || process.env.SAFARI_HARNESS_REMOTE) return run();
+  if (!Number.isInteger(a.tab) || process.env.BROWSER_HARNESS_REMOTE) return run();
   const { path } = await scope(a.tab);
   const active = read<Learning>(path);
   if (!active) return run();

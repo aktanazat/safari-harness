@@ -4,6 +4,7 @@ import { assertAgentRecording, loadRecording, playbookUrl, secretOfField } from 
 import { checkCall } from "./guard.ts";
 import type { AgentRecording, AgentStep } from "./recordings.ts";
 import type { Tool } from "./tools.ts";
+import { BROWSER_NAME } from "./front.ts";
 
 export type MintRequest = { url: string; example: Record<string, string>; from?: string };
 export type MintResult = { ok: true; name: string; tool: string; revision: number; verified: true; exampleResult: unknown };
@@ -64,9 +65,9 @@ export function mintRequest(url: unknown, example: unknown, from?: unknown): Min
 }
 
 export function mintProvider(model?: string): { model: string; baseUrl: string } {
-  const baseUrl = process.env.SAFARI_MODEL_BASE;
+  const baseUrl = process.env.BROWSER_MODEL_BASE;
   return {
-    model: model ?? process.env.SAFARI_MODEL ?? (baseUrl ? "gemma4:12b-mlx" : "opencode-go/claude-haiku-5-5"),
+    model: model ?? process.env.BROWSER_MODEL ?? (baseUrl ? "gemma4:12b-mlx" : "opencode-go/claude-haiku-5-5"),
     baseUrl: baseUrl ?? "omp://subscription",
   };
 }
@@ -114,7 +115,7 @@ export async function runMintAgent(messages: ChatMsg[], cfg: AgentConfig, state:
   const stop = (message: string): never => { state.failure = message; throw new Error(message); };
 
   try {
-    if (process.env.SAFARI_HARNESS_REMOTE) throw new Error("mint needs the owner's local Safari; use --host local");
+    if (process.env.BROWSER_HARNESS_REMOTE) throw new Error(`mint needs the owner's local ${BROWSER_NAME}; use --host local`);
     if (state.result) {
       savedRecording(state.result.name, state);
       return { answer: JSON.stringify(state.result), status: "done" };
@@ -123,7 +124,7 @@ export async function runMintAgent(messages: ChatMsg[], cfg: AgentConfig, state:
     if (state.pendingAction) throw new Error("the previous action has no confirmed outcome; review the live page before starting a new authoring request");
     if (state.tab === undefined) {
       const opened = fields(await invoke("open", { url: state.url, background: true, new: true }, true));
-      if (!Number.isInteger(opened.id) || Number(opened.id) <= 0) throw new Error("Safari did not return an owned background tab");
+      if (!Number.isInteger(opened.id) || Number(opened.id) <= 0) throw new Error(`${BROWSER_NAME} did not return an owned background tab`);
       state.tab = Number(opened.id);
       await cfg.save?.(messages);
     }
@@ -330,7 +331,7 @@ async function mintTool(args: Record<string, unknown>): Promise<unknown> {
     return { ok: false, id: rec.id, status: statusOf(rec), error: rec.mint.failure ?? rec.answer ?? "authoring ended without a saved verified tool" };
   }
   if (action !== "start") throw new Error("mint do must be start, get or cancel");
-  if (process.env.SAFARI_HARNESS_REMOTE) throw new Error("mint needs the owner's local Safari");
+  if (process.env.BROWSER_HARNESS_REMOTE) throw new Error(`mint needs the owner's local ${BROWSER_NAME}`);
   if (typeof args.task !== "string" || !args.task.trim()) throw new Error("mint start needs a plain-language task");
   const request = mintRequest(args.url, args.example, args.from);
   const steps = stepLimit(args.steps);
@@ -390,7 +391,7 @@ if (import.meta.main) {
     const rec = await loadSession(process.argv[2] ?? "");
     if (!rec.mint) throw new Error("this session is not a mint request");
     const done = await runSession(rec, {
-      apiKey: process.env.SAFARI_MODEL_KEY, maxSteps: stepLimit(process.argv[3]), maxTimeMs: 20 * 60_000,
+      apiKey: process.env.BROWSER_MODEL_KEY, maxSteps: stepLimit(process.argv[3]), maxTimeMs: 20 * 60_000,
       onEvent: () => {}, onStart: () => { process.send?.({ ready: true }, () => {}); },
     });
     process.exit(done.status === "done" ? 0 : 1);

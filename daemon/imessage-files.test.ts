@@ -148,7 +148,7 @@ test("a search with a chat finds the words in that conversation only", async () 
   const one = await invoke(home, "imessage_search", { text: "photos", chat: "other@example.com", days: 36500 });
   expect(all.value.map((m: { text: string }) => m.text)).toEqual(["more photos", "photos"]);
   expect(one.value.map((m: { text: string }) => m.text)).toEqual(["more photos"]);
-  const cli = Bun.spawn([process.execPath, join(import.meta.dir, "..", "cli", "safari.ts"), "imessage", "search", "photos", "--chat", "other@example.com", "--days", "36500", "--json"], {
+  const cli = Bun.spawn([process.execPath, join(import.meta.dir, "..", "cli", "browser.ts"), "imessage", "search", "photos", "--chat", "other@example.com", "--days", "36500", "--json"], {
     env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "pipe",
   });
   const [printed] = await Promise.all([new Response(cli.stdout).text(), cli.exited]);

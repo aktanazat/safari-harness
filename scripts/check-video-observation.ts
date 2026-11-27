@@ -4,7 +4,7 @@ import { frontApp, inFront } from "../daemon/front.ts";
 import { removeCapture, verifyEvidence, type CaptureResult } from "../daemon/evidence.ts";
 import type { VideoFramesResult, VideoSource } from "../daemon/video-observation.ts";
 
-const base = process.env.SAFARI_HARNESS_HTTP ?? "http://127.0.0.1:37334";
+const base = process.env.BROWSER_HARNESS_HTTP ?? "http://127.0.0.1:37334";
 const ua = "OpenAI File Downloader, XaiImageApiFetch/1.0";
 async function call<T>(tool: string, args: Record<string, unknown> = {}): Promise<T> {
   const response = await fetch(`${base}/rpc`, { method: "POST", headers: { "content-type": "application/json", "user-agent": ua }, body: JSON.stringify({ tool, args, caller: process.pid, own: true }) });

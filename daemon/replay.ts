@@ -12,6 +12,7 @@ import type { Clock } from "./downloads.ts";
 import { isFingerprint, lookalikeKey, matchFingerprint, unmatched, type Candidate } from "./fingerprint.ts";
 import { assertAgentRecording, gateOfStep, loadRecording, outputOf, playbookUrl, readOnlySearchSubmit } from "./recordings.ts";
 import type { AgentRecording, AgentStep, AppliedInput, PlaybookOutput } from "./recordings.ts";
+import { BROWSER_NAME } from "./front.ts";
 
 type Call = (tool: string, args: Record<string, unknown>) => Promise<unknown>;
 type Fields = Record<string, unknown>;
@@ -319,7 +320,7 @@ export async function replay(a: Record<string, unknown>, call: Call, clock: Cloc
 function shown(w: unknown, missing: string, unknown: string): void {
   const f = fields(w);
   if (f.found === true) return;
-  throw new Error(f.unanswered === true ? `the page gave no answer in time (Safari or the page is slow), so ${unknown}` : missing);
+  throw new Error(f.unanswered === true ? `the page gave no answer in time (${BROWSER_NAME} or the page is slow), so ${unknown}` : missing);
 }
 
 // A failed replay leaves its tab open, for the caller to look at, hand to
