@@ -30,7 +30,7 @@ import { codeHash } from "./codehash.ts";
 import { ownerOf, runAs } from "./owner.ts";
 import { missionRoute, tracksOwner, watched } from "./mission.ts";
 import { saveRecording } from "./recordings.ts";
-import { notify } from "./front.ts";
+import { drivenExtension, notify } from "./front.ts";
 import { displaysChanged, loadSpaces } from "./spaces.ts";
 import { watchDisplayChanges } from "./display-watch.ts";
 import { loadsFile, openLoads } from "./loads.ts";
@@ -101,7 +101,7 @@ bridge.onRecording = (recording) => {
 startBrowserMemory();
 
 type SocketScope =
-  | { kind: "extension"; automation: boolean }
+  | { kind: "extension"; refused?: "automation" | "other browser" }
   | { kind: "passwords" }
   | { kind: "browser"; connId: number }
   | { kind: "page"; tabId: number; connId: number };
@@ -158,8 +158,9 @@ const server = Bun.serve<SocketScope>({
       return srv.upgrade(req, { data: scope }) ? undefined : new Response("upgrade failed", { status: 400 });
     }
     if (url.pathname === "/") {
-      const automation = await fromAutomation(srv.requestIP(req)?.port ?? 0);
-      return srv.upgrade(req, { data: { kind: "extension", automation } }) ? undefined : new Response("upgrade failed", { status: 400 });
+      const refused = !drivenExtension(req.headers.get("origin") ?? "") ? "other browser" as const
+        : await fromAutomation(srv.requestIP(req)?.port ?? 0) ? "automation" as const : undefined;
+      return srv.upgrade(req, { data: { kind: "extension", refused } }) ? undefined : new Response("upgrade failed", { status: 400 });
     }
     if (url.pathname === "/passwords") {
       return srv.upgrade(req, { data: { kind: "passwords" } }) ? undefined : new Response("upgrade failed", { status: 400 });
@@ -174,7 +175,7 @@ const server = Bun.serve<SocketScope>({
     maxPayloadLength: MESSAGE_MAX,
     backpressureLimit: MESSAGE_MAX,
     open(ws) {
-      if (ws.data.kind === "extension") bridge.attach(ws, ws.data.automation);
+      if (ws.data.kind === "extension") bridge.attach(ws, ws.data.refused);
       else if (ws.data.kind === "passwords") passwords.attach(ws);
     },
     message(ws, raw) {

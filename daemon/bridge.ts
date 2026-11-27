@@ -317,6 +317,7 @@ export class Bridge {
   private said = new WeakMap<ExtSocket, Said>();
   // A copy that keeps retrying is refused twice a second: noted once.
   private refusing = false;
+  private refusedOther = false;
   // The connected extension's answers, for telling when a kind of request
   // is stuck on it: when it last answered anything, each kind's timeouts in
   // a row, and when the daemon asked it to reload itself, the latest last.
@@ -365,11 +366,19 @@ export class Bridge {
   // connected one keeps it while it answers a ping. A ping under load says
   // nothing about which copy is the user's, so a copy from a Safari
   // launched for automation (automation.ts) is refused outright (10-17);
-  // 4002 tells it to stop trying (background.js).
-  attach(sock: ExtSocket, automation = false) {
-    if (automation) {
+  // 4002 tells it to stop trying (background.js). So is the extension of
+  // the browser the harness does not drive now (front.ts drivenExtension),
+  // with 4003: it tries again seldom, for a `browser mode` that switches.
+  attach(sock: ExtSocket, refused?: "automation" | "other browser") {
+    if (refused === "automation") {
       note("connect", { refused: "a copy of the extension in a Safari launched for automation, which sees none of the user's windows" });
       sock.close(4002, "this Safari was launched for automation");
+      return;
+    }
+    if (refused === "other browser") {
+      if (!this.refusedOther) note("connect", { refused: "the extension of the browser the harness does not drive" });
+      this.refusedOther = true;
+      sock.close(4003, "the harness drives the other browser");
       return;
     }
     const old = this.sock;

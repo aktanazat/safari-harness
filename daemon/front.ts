@@ -40,6 +40,15 @@ export const LADYBIRD_PROFILE_PATH = process.env.LADYBIRD_PROFILE_PATH ?? chosen
 export const LADYBIRD = BROWSER.startsWith("org.ladybird.");
 // The browser as the user and agents know it: tool labels, phone cards, errors.
 export const BROWSER_NAME = LADYBIRD ? "Ladybird" : "Safari";
+// The extension origin the Ladybird bridge (ladybird/bridge.ts) presents;
+// Safari's is its own safari-web-extension:// id.
+export const LADYBIRD_EXTENSION_ID = "ladybird-harness";
+// Whether an extension socket from origin is the driven browser's: on 11-27
+// Safari's extension took the link 0.2 s after Ladybird went down, in
+// Ladybird mode, and kept Ladybird's bridge out when it came back.
+export function drivenExtension(origin: string): boolean {
+  return (origin === `safari-web-extension://${LADYBIRD_EXTENSION_ID}`) === LADYBIRD;
+}
 
 // Whether the browser runs, by its bundle id (lsappinfo).
 export async function browserRunning(): Promise<boolean> {

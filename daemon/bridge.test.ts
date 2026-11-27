@@ -94,6 +94,19 @@ test("an extension that answers the ping with an error is still there, so a seco
   expect(await bridge.request("tabs.list")).toBe("the older build");
 });
 
+// 11-27: in Ladybird mode Safari's extension took the free link 0.2 s after
+// Ladybird went down, and kept Ladybird's bridge out when it came back.
+test("the extension of the browser the harness does not drive is refused with 4003, even with no link up, and the driven one then takes it", async () => {
+  const bridge = new Bridge(60000);
+  const other = extension(bridge, "Safari, not driven");
+  bridge.attach(other.sock, "other browser");
+  expect(await other.closed).toBe(4003);
+  expect(bridge.connected).toBe(false);
+  const driven = extension(bridge, "Ladybird");
+  bridge.attach(driven.sock);
+  expect(await bridge.request("tabs.list")).toBe("Ladybird");
+});
+
 test("a socket that takes over from a silent one keeps the ticks it asked for while it waited", async () => {
   const bridge = new Bridge(5);
   const gone = extension(bridge);

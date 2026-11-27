@@ -32,8 +32,12 @@ async function getPort() {
 
 // The daemon refuses the copy of this extension in a Safari that Apple's
 // safaridriver launched for WebDriver, with 4002 (automation.ts): that
-// copy sees none of the user's windows, so it stops trying for good.
+// copy sees none of the user's windows, so it stops trying for good. It
+// refuses the extension of the browser it does not drive with 4003, which
+// tries again every OTHER_BROWSER_MS, for `browser mode` to switch, not
+// every 2 s.
 let automationCopy = false;
+const OTHER_BROWSER_MS = 10_000;
 let reloadAsked = false;
 
 // Each socket's handlers act on that socket alone. They once used the
@@ -114,7 +118,10 @@ function connect() {
       memoryPolicy = { enabled: false, sites: [], excludedSites: [] };
       memoryRevision = -1;
       if (ev.code === 4002) automationCopy = true;
-      else scheduleReconnect();
+      else {
+        if (ev.code === 4003) backoff = OTHER_BROWSER_MS;
+        scheduleReconnect();
+      }
     };
     sock.onerror = () => { try { sock.close(); } catch {} };
   });
