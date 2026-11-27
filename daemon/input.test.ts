@@ -57,6 +57,7 @@ type Page = {
   nativeFailure?: string;
   probes?: Record<string, unknown>[];
   probeError?: string;
+  blocksEval?: boolean;
   clipboardRestored?: boolean;
   inFrontInstead?: string;
   // a prompt that comes up as Safari is raised (Mac.prompt)
@@ -147,7 +148,11 @@ function mac(page: Page = {}): Mac {
       }
       if (dom === "tabInfo") return answer({ url: "https://example.com/", title: "Page", viewport: { w: 1200, h: 800 } });
       if (dom === "snapshot") return answer({ url: "https://example.com/", title: "Page", snapshot: "[1] button Continue", truncated: false });
-      if (dom === "eval") return answer({ result: { marks, focus: true } });
+      if (dom === "eval") {
+        if (page.blocksEval) return queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, error: "EVAL_BLOCKED" })));
+        throw new Error("unexpected eval in the native input fixture");
+      }
+      if (dom === "inputState") return answer({ marks, focus: true });
       if (dom === "click") return answer({ ok: true, receipt: { ...QUIET, ...page.clicked?.shift() } });
       if (dom === "type") return answer({ ok: true, kept: true });
       queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, error: `no ${op} here` })));
@@ -272,6 +277,12 @@ test.each([[{ pressed: true }], [{ pressed: false, why: "Safari offers no press 
 
 test("where Safari offers no press, the tab comes to the front and the real mouse clicks", async () => {
   const m = mac({ press: { pressed: false, why: "Safari offers no press on the element" } });
+  expect(await click(21)).toEqual({ ok: true, at: { x: 140, y: 160 } });
+  expect(run(m, "click")).toEqual([["click", "140", "160", "--count", "1", "--button", "left"]]);
+});
+
+test("a real mouse click completes on a page that blocks dynamic JavaScript", async () => {
+  const m = mac({ picker: true, blocksEval: true });
   expect(await click(21)).toEqual({ ok: true, at: { x: 140, y: 160 } });
   expect(run(m, "click")).toEqual([["click", "140", "160", "--count", "1", "--button", "left"]]);
 });
@@ -640,7 +651,7 @@ test.each([
     return callTool(tool, values, undefined, daemonRpc.takesNews());
   });
   await expect(INPUT_TOOLS.real_input.run({ tab: 21, ...args })).rejects.toMatchObject({ code: "stale_view", effect: "none" });
-  expect(m.asked.some((op) => /^(pressMark|typeMark|eval) 21$/.test(op))).toBe(true);
+  expect(m.asked.some((op) => /^(pressMark|typeMark|inputState) 21$/.test(op))).toBe(true);
   expect(m.helper.filter((command) => ["press", "setvalue", "click", "key", "type"].includes(command[0]))).toEqual([]);
 });
 

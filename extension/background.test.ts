@@ -336,6 +336,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
       executeScript: async ({ target, func, args = [], files }: Inject) => {
         const refused = "Invalid call to scripting.executeScript(). This extension does not have access to this tab.";
         const tab = tabOf(target.tabId);
+        if (tab.doc.shut && tab.doc.url === "about:blank") trips.push("script on about:blank");
         if (tab.doc.shut) throw new Error(refused);
         const frameOf = (frameId: number) => (frameId === 0 ? tab.doc : tab.frames?.get(frameId));
         const frameIds = target.allFrames ? [0, ...(tab.frames?.keys() ?? [])] : (target.frameIds ?? [0]);
@@ -746,6 +747,28 @@ test("a new page in a tab agents work in, or one the harness owns, gets content.
   b.trips.length = 0;
   expect((await b.ask(driven, "tabInfo")).value).toEqual({ url: "https://example.org/" });
   expect(b.trips).toEqual(["message tabInfo"]);
+});
+
+test("a blank owned tab opens and resizes before navigation without asking for content", async () => {
+  const b = await start();
+  const window = await b.agentWindow();
+  const blank = new Doc("about:blank");
+  blank.shut = true;
+  b.serve(blank);
+  let opened: Answer | undefined;
+  void b.request("tabs.open", [blank.url, true, window, true]).then((answer) => { opened = answer; });
+  await b.clock.advance(0);
+  expect(b.trips).not.toContain("script on about:blank");
+  const tab = b.showing(blank);
+  expect(opened).toMatchObject({ value: { id: tab.id, url: blank.url } });
+  let sized: Answer | undefined;
+  void b.request("window", [tab.id, { width: 390, height: 844 }, true]).then((answer) => { sized = answer; });
+  await b.clock.advance(0);
+  expect(sized).toMatchObject({ value: { ok: true, size: { width: 390, height: 844 } } });
+  expect(b.trips).not.toContain("script on about:blank");
+  const page = new Doc("https://example.com/shot");
+  b.navigate(tab, page, false);
+  expect(await b.report(tab, page)).toMatchObject({ content: true, dialogs: { accept: false, text: null } });
 });
 
 // The daemon gives a probe 2 s (challenge.ts).
@@ -2345,6 +2368,7 @@ type ShotResult = {
 function shotPage(tab: Tab, viewport = { width: 8, height: 6, devicePixelRatio: 1 }, height = 10) {
   let y = 0, savedY = 0;
   const page = { protected: false, annotated: false, finished: 0, refusePrepare: false, changeDuringCapture: false, stillsChange: false, still: false, get y() { return y; } };
+  const geometry = { get height() { return height; }, set height(value: number) { height = value; }, rounding: 0 };
   tab.doc.title = "Private page";
   const state = () => ({
     ok: true,
@@ -2368,7 +2392,10 @@ function shotPage(tab: Tab, viewport = { width: 8, height: 6, devicePixelRatio: 
     }
     if (op === "eval") {
       const top = /top:(\d+)/.exec(String(msg.args?.[0]));
-      if (top) y = Math.min(Number(top[1]), Math.max(0, height - viewport.height));
+      if (top) {
+        const offset = Number(top[1]);
+        y = Math.min(offset + (offset > 0 ? geometry.rounding : 0), Math.max(0, height - viewport.height));
+      }
       return { ok: true, result: y };
     }
     if (op === "locate") return { x: 1, y: 1, width: 4, height: 3, innerWidth: viewport.width, innerHeight: viewport.height };
@@ -2381,7 +2408,7 @@ function shotPage(tab: Tab, viewport = { width: 8, height: 6, devicePixelRatio: 
     }
     return { ok: true };
   };
-  return page;
+  return Object.assign(page, { geometry });
 }
 
 test.each([
@@ -2556,6 +2583,34 @@ test("full-page captures retain overlapping viewport coverage without claiming e
   expect(page.y).toBe(0);
 });
 
+test("full-page capture stitches past scroll rounding without a missing raster row", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/rounded");
+  const page = shotPage(tab, { width: 4, height: 20, devicePixelRatio: 2 }, 42);
+  page.geometry.rounding = 0.5;
+  b.focus(tab);
+  b.captureWith(() => `data:image/png;base64,${rasterData(rasterImage(8, 40, (_x, y) => page.y * 2 + y + 1))}`);
+  const answer = await b.request("shot", [tab.id, { fullPage: true, live: true }]);
+  expect(answer.error).toBeUndefined();
+  const result = answer.value as ShotResult;
+  expect(result).toMatchObject({ cut: false, source: { width: 8, height: 84 } });
+  const image = readRaster(result.data);
+  expect(Array.from({ length: image.height }, (_, y) => image.pixels[y * image.width])).toEqual(Array.from({ length: 84 }, (_, y) => y + 1));
+});
+
+test("full-page capture returns no image when the document changes height", async () => {
+  const b = await start();
+  const tab = b.open("https://example.com/growing");
+  const page = shotPage(tab, { width: 8, height: 20, devicePixelRatio: 1 }, 45);
+  b.focus(tab);
+  b.captureWith(() => {
+    if (page.y > 0) page.geometry.height = 60;
+    return `data:image/png;base64,${rasterData(rasterImage(8, 20, () => 9))}`;
+  });
+  expect(await b.request("shot", [tab.id, { fullPage: true, live: true }])).toEqual({ error: "the page changed size or left a gap during full-page capture" });
+  expect(page.y).toBe(0);
+});
+
 test("a crop reports retained CSS coordinates and raster dimensions at the captured pixel scale", async () => {
   const b = await start();
   const tab = b.open("https://example.com/private");
@@ -2580,8 +2635,8 @@ test("a bounded full-page screenshot marks missing rows rather than claiming the
   const answer = await b.request("shot", [tab.id, { fullPage: true, live: true }]);
   expect(answer.error).toBeUndefined();
   const result = answer.value as ShotResult;
-  expect({ screens: result.screens, cut: result.cut, height: result.source.height }).toEqual({ screens: 12, cut: true, height: 72 });
-  expect(readRaster(result.data).height).toBe(72);
+  expect({ screens: result.screens, cut: result.cut, height: result.source.height }).toEqual({ screens: 12, cut: true, height: 61 });
+  expect(readRaster(result.data).height).toBe(61);
 });
 
 test("a failed frame crop restores the child frame's scroll position as well as the selected tab", async () => {

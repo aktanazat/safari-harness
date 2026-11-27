@@ -185,8 +185,14 @@ export async function challengeOf(tab: number): Promise<Challenge | null | undef
 // The check the tab shows and its signal (named), undefined for none, or
 // null when the top page did not answer.
 export async function challengeNamed(tab: number): Promise<{ challenge: Challenge; signal: string } | null | undefined> {
+  const observed = await observeChallenge(tab);
+  return observed === undefined ? null : observed.found;
+}
+
+export async function observeChallenge(tab: number): Promise<{ top: Facts; found: { challenge: Challenge; signal: string } | undefined } | undefined> {
   const frames = await framesOf(tab);
-  return frames && named(frames);
+  const top = frames?.[0];
+  return top && frames ? { top, found: named(frames) } : undefined;
 }
 
 // Cloudflare's wall checks the browser by itself and lets one it trusts

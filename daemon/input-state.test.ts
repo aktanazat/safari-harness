@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
-import { benchRows } from "../bench/bench.ts";
+import { runInNewContext } from "node:vm";
 import { inputStateTool } from "./input-state.ts";
 
 const initial = { tab: 7, frame: 0, focus: false, after: -1, ms: 0 };
 
 test("input_state returns only validated completion count and focus", async () => {
-  const tool = inputStateTool(async () => ({ result: { marks: 3, focus: true, privateText: "not returned" } }));
+  const tool = inputStateTool(async () => ({ marks: 3, focus: true, privateText: "not returned" }));
   expect(await tool.run(initial)).toEqual({ marks: 3, focus: true });
 });
 
@@ -20,36 +20,56 @@ test.each([
   { name: "a nonboolean focus request", extra: { focus: 1 } },
 ])("input_state refuses $name before reaching the browser", async ({ extra }) => {
   const reached: unknown[] = [];
-  const tool = inputStateTool(async (options) => {
-    reached.push(options);
-    return { result: { marks: 0, focus: false } };
+  const tool = inputStateTool(async (...args) => {
+    reached.push(args);
+    return { marks: 0, focus: false };
   });
   await expect(tool.run({ ...initial, ...extra })).rejects.toMatchObject({ code: "invalid_argument", effect: "none" });
   expect(reached).toEqual([]);
 });
 
 test.each([
-  { result: { marks: -1, focus: true } },
-  { result: { marks: 1, focus: "true" } },
-  { result: { marks: Number.POSITIVE_INFINITY, focus: false } },
-  { result: null },
+  { marks: -1, focus: true },
+  { marks: 1, focus: "true" },
+  { marks: Number.POSITIVE_INFINITY, focus: false },
+  null,
 ])("input_state refuses malformed page state %j", async (result) => {
   const tool = inputStateTool(async () => result);
   await expect(tool.run(initial)).rejects.toMatchObject({ code: "unavailable", effect: "none" });
 });
 
-let fixedExpression = "";
-await inputStateTool(async (options) => {
-  fixedExpression = options.expression;
-  return { result: { marks: 0, focus: false } };
-}).run(initial);
+test("the content script reports focus and counts only trusted F20 keyups without dynamic JavaScript", async () => {
+  const source = await Bun.file(new URL("../extension/content.js", import.meta.url)).text();
+  const page = new EventTarget();
+  let focused = false;
+  const document = Object.assign(new EventTarget(), { hasFocus: () => focused, querySelectorAll: () => [] });
+  type World = { top: World; __safariHarnessInjected: unknown; __safariHarnessRun: (message: { id: string; op: string; args: unknown[] }) => Promise<unknown> };
+  const window = {} as World;
+  window.top = window;
+  const globals = {
+    window, document, AbortController, Event, setTimeout,
+    addEventListener: (type: string, listener: (event: unknown) => void, options?: AddEventListenerOptions) => {
+      page.addEventListener(type, (event) => listener(type === "keyup" ? (event as CustomEvent).detail : event), options);
+    },
+    browser: { runtime: { sendMessage: async () => null, onMessage: { addListener: () => {} } } },
+    Function: function () { throw new EvalError("dynamic JavaScript is forbidden"); },
+  };
+  runInNewContext(source, globals);
 
-benchRows("trusted native input completion", [{
-  name: "page-created F20 events cannot acknowledge real input",
-  page: "blank.html",
-  steps: [
-    { op: "eval", args: [fixedExpression], answer: { value: { result: { marks: 0 } } } },
-    { op: "eval", args: ["(() => { const event = new KeyboardEvent('keyup',{code:'F20',bubbles:true}); return { dispatched: dispatchEvent(event), trusted: event.isTrusted, code: event.code }; })()"], answer: { value: { result: { dispatched: true, trusted: false, code: "F20" } } } },
-    { op: "eval", args: [fixedExpression], answer: { value: { result: { marks: 0 } } } },
-  ],
-}]);
+  const call = (op: string, ...args: unknown[]) => window.__safariHarnessRun({ id: "test", op, args });
+  const read = () => call("inputState", { focus: false, after: -1, ms: 0 });
+  const keyup = (code: string, isTrusted: boolean) => page.dispatchEvent(new CustomEvent("keyup", { detail: { code, isTrusted } }));
+
+  expect(await call("eval", "1")).toMatchObject({ error: expect.stringContaining("security policy blocks eval") });
+  expect(await read()).toMatchObject({ value: { marks: 0, focus: false } });
+  keyup("F20", false);
+  keyup("F19", true);
+  expect(await read()).toMatchObject({ value: { marks: 0 } });
+  keyup("F20", true);
+  focused = true;
+  expect(await read()).toMatchObject({ value: { marks: 1, focus: true } });
+  window.__safariHarnessInjected = null;
+  runInNewContext(source, globals);
+  keyup("F20", true);
+  expect(await read()).toMatchObject({ value: { marks: 2, focus: true } });
+});

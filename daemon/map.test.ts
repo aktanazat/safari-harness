@@ -25,6 +25,7 @@ const WALLED = "https://walled.example/";
 const LOST = "https://lost.example/";
 const SILENT = "https://silent.example/";
 const CLEARING = "https://clearing.example/";
+const LATE_WALL = "https://late-wall.example/";
 const SPLASH = "https://splash.example/";
 // reflex-gate's rule (11-12): a visit to a gate's host within 15 s of the
 // one before is turned away; WAF's block is Cloudflare's. BANNED turns away
@@ -111,6 +112,7 @@ const asked: string[] = [];
 const held: (() => void)[] = [];
 // SILENT's waits, answered when the test lets them
 const unanswered: (() => void)[] = [];
+const lateWallWaits = new Map<number, () => void>();
 let holding = false;
 let stuck: string | undefined;
 let nextTab = 0;
@@ -212,6 +214,8 @@ function answer(op: string, args: unknown[]): { value?: unknown; error?: string 
     const url = tabs.get(tab)?.url;
     const seen = (probes.get(tab) ?? 0) + 1;
     probes.set(tab, seen);
+    if (url === LATE_WALL && lateWallWaits.has(tab)) return { value: [{ frame: 0, url, title: "", text: "Sorry, you have been blocked", markers: [], answered: [], frames: [] }] };
+    if (url === SSO_DOCS) return { value: [{ frame: 0, url, title: REDIRECTS[MOVED_DOCS].title, text: "How to configure single sign-on", markers: [], answered: [], frames: [] }] };
     const walled = url === WALLED || (url === CLEARING && seen <= 3);
     if (url === CAPTCHA) return { value: [{ frame: 0, url: "https://www.google.com/sorry/index", title: "", text: "", markers: [], answered: [], frames: [] }] };
     if (gateBlocked.has(tab)) return { value: [{ frame: 0, url, title: "", text: url.startsWith(WAF) ? "Sorry, you have been blocked" : "Blocked: automated browser detected.", markers: [], answered: [], frames: [] }] };
@@ -235,9 +239,14 @@ connect({
       const [selector, want] = args[2] as [string | null, { text?: string }];
       asked.push(`wait ${url} for ${want.text ?? selector}`);
       if (url === SILENT) return void unanswered.push(() => reply({ value: { found: true } }));
-      return reply({ value: { found: url !== LOST && url !== SSO && url !== SSO_DOCS && want.text !== ABSENT } });
+      if (url === LATE_WALL) return void lateWallWaits.set(Number(args[0]), () => reply({ value: { found: false } }));
+      if (url === SSO_DOCS && want.text === "Later article section") return void setTimeout(() => reply({ value: { found: true } }), 3500);
+      return reply({ value: { found: url === SSO_DOCS ? want.text === "Configure single sign-on" : url !== LOST && url !== SSO && want.text !== ABSENT } });
     }
-    if (args[1] === "waitStop") return reply({ value: { ok: true } });
+    if (args[1] === "waitStop") {
+      lateWallWaits.get(Number(args[0]))?.();
+      return reply({ value: { ok: true } });
+    }
     // a missed wait's look at whether the page drew anything (tools.ts
     // DRAWN) is the wait's, not a read
     if (args[1] === "eval" && String((args[2] as unknown[])[0]).includes("innerText.trim()")) return reply({ value: { ok: true, result: true } });
@@ -730,16 +739,42 @@ test("with wait, each page is read once it shows what wait asks for; one that ne
   expect(pages[1]).toMatchObject({ ok: false, error: `it did not show what wait asked for; the tab is at ${LOST} ("Page Not Found")` });
 });
 
-// In the 11-16 work sessions ServiceNow, SAP and UKG doc pages missed
-// their waits 6 times at 20-27 s each, mostly on sign-in redirects.
-test("with wait, a page sent to a sign-in page says it was redirected to sign-in, not that it lacks what wait asked for", async () => {
-  const [page] = await map({ urls: [SIGNED_OUT], wait: { text: "Price" } });
-  expect(page).toMatchObject({ ok: false, error: `redirected to sign-in at ${SSO} ("Sign In"), so it shows no what wait asked for`, failure: { code: "blocked" } });
+test("map reports a confirmed sign-in redirect without waiting for content behind it", async () => {
+  asked.length = 0;
+  const [page] = await map({ urls: [SIGNED_OUT], wait: { text: "Price", ms: 10_000 } });
+  expect(page).toMatchObject({ ok: false, error: `redirected to sign-in at ${SSO} ("Sign In"), so it shows no what wait asked for`, failure: { code: "blocked" }, pageState: { kind: "login_wall" } });
+  expect(asked).not.toContain(`wait ${SSO} for Price`);
+});
+
+test("a bot block appearing during a map wait ends it before the content deadline", async () => {
+  jest.useFakeTimers();
+  const start = Date.now();
+  try {
+    const [page] = await waited(map({ urls: [LATE_WALL], wait: { text: "Price", ms: 10_000 } }));
+    expect(Date.now() - start).toBeLessThan(4_000);
+    expect(page).toMatchObject({ ok: false, challenge: { kind: "cloudflare", where: "block" }, failure: { code: "blocked" } });
+  } finally {
+    for (const release of lateWallWaits.values()) release();
+    lateWallWaits.clear();
+  }
 });
 
 test("with wait, a page sent to a docs page about sign-on is a redirected miss, not a sign-in", async () => {
   const [page] = await map({ urls: [MOVED_DOCS], wait: { text: "Price" } });
   expect(page).toMatchObject({ ok: false, error: `it did not show what wait asked for; it was redirected: the tab is at ${SSO_DOCS} ("Configure single sign-on | ServiceNow")`, failure: { code: "not_content" } });
+});
+
+test("map waits for and reads a public article reached through a sign-on-looking redirect", async () => {
+  const [page] = await map({ urls: [MOVED_DOCS], wait: { text: "Configure single sign-on" } });
+  expect(page).toMatchObject({ ok: true, finalUrl: SSO_DOCS, value: { text: `text of ${SSO_DOCS}` } });
+});
+
+test("a map waiting for a sign-in article does not reread it on every check", async () => {
+  jest.useFakeTimers();
+  const before = readUrls.length;
+  const [page] = await waited(map({ urls: [MOVED_DOCS], wait: { text: "Later article section" } }));
+  expect(page).toMatchObject({ ok: true, finalUrl: SSO_DOCS, value: { text: `text of ${SSO_DOCS}` } });
+  expect(readUrls.slice(before)).toHaveLength(3);
 });
 
 // The barred tab here also fails to close, which the page still tells.

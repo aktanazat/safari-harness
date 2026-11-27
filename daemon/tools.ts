@@ -3,7 +3,7 @@
 
 import { bridge, type RequestOptions } from "./bridge.ts";
 import { localTime, loginForm, passwords } from "./passwords.ts";
-import { challengeNamed, challengeOf, named, PASS_MS, passesByItself, settledChallenge, TEXT_MAX, type Challenge } from "./challenge.ts";
+import { challengeNamed, challengeOf, named, observeChallenge, PASS_MS, passesByItself, settledChallenge, TEXT_MAX, type Challenge } from "./challenge.ts";
 import { handedOff, paced, seenLater, settledVisit, waitsInVain } from "./checks.ts";
 import { followTab, forgetPopups, popupWaiting, queuePopup, recordRenumbered, recordReplaced, splitNews, withTabNews } from "./continuity.ts";
 import { note } from "./journal.ts";
@@ -23,7 +23,7 @@ import { pickFields, type Fielded, type RowsSource } from "./fields.ts";
 import { firstNotes, learn, pageHost, readerFor, readersOn, realInputSite, realInputSites } from "./notes.ts";
 import { errorPage, guideFor } from "./site-guides.ts";
 import { saveAnswer, saveOutput, SAVED_CHARS, targetOf, withLimit, type SaveKind } from "./save.ts";
-import { followPages, mapPages, mapText, MAP_EVAL_SOURCE, MAP_MAX_URLS, pagedPages, type Listing, type MapAnswer, type Page } from "./map.ts";
+import { followPages, mapPages, mapText, MAP_EVAL_SOURCE, MAP_MAX_URLS, MAP_WAIT_CHECK, pagedPages, type Listing, type MapAnswer, type MapWaitCheck, type Page, type WaitWall } from "./map.ts";
 import { met, walled } from "./reads.ts";
 import { beside, checkCall, checkStep, fromModel, guard, nameIn, type Checked } from "./guard.ts";
 import { acts, affectsPage, inLane, ordered, queuing } from "./lanes.ts";
@@ -2140,7 +2140,7 @@ async function blankHint(tab: number, end: number): Promise<string> {
 // page does not rule out. A bare wait is a quiet wait of the default ms,
 // as its description says: `browser open X && browser wait` failed on
 // "wait needs ms ..." in the work sessions of 11-16.
-export async function wait(opts: { tab?: number; ms?: number; selector?: string; text?: string; any?: string[]; gone?: string; url?: string; quiet?: boolean; changed?: boolean; front?: boolean; look?: string; after?: string }) {
+export async function wait(opts: { tab?: number; ms?: number; selector?: string; text?: string; any?: string[]; gone?: string; url?: string; quiet?: boolean; changed?: boolean; front?: boolean; look?: string; after?: string; [MAP_WAIT_CHECK]?: MapWaitCheck }) {
   // The wait's time runs from the call, finding the user's front tab in it:
   // a list Safari was slow to give held a 3 s wait on --tab front 5 s more
   // (smoke run after the 10-16 deploy).
@@ -2174,7 +2174,12 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
   }
   // when a wait on the page answers, its reads of the tab done (STOPPED_MS)
   const end = start + limit + STOPPED_MS;
-  const stop = () => { relay(tab, "waitStop").catch(() => {}); };
+  let stopped = false;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    relay(tab, "waitStop").catch(() => {});
+  };
   const spec = { text: opts.text, any: opts.any, gone: opts.gone, url: opts.url, quiet: opts.quiet === true || !named, ...(opts.changed === true ? { changed: true } : {}), ...(opts.after === undefined ? {} : { after: opts.after }) };
   const seen = relay(tab, "wait", [opts.selector ?? null, spec], limit + 5000) as Promise<Seen>;
   // A page that answers only after the limit (it navigated, and the new page
@@ -2189,12 +2194,37 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
     if (named) timer = setTimeout(() => timeUp.resolve(null), STOPPED_MS);
     else timeUp.resolve(null);
   }, start + limit - Date.now());
+  const inspect = opts[MAP_WAIT_CHECK];
+  const blocked = inspect && Promise.withResolvers<{ wall: WaitWall }>();
+  let inspecting: Timer | undefined;
+  let waiting = true;
+  if (inspect && blocked) {
+    const check = async () => {
+      if (!waiting || late) return;
+      const observed = await observeChallenge(tab).catch(() => undefined);
+      if (!waiting || late) return;
+      const wall = observed && await inspect({ url: redactUrl(observed.top.url), title: observed.top.title, text: observed.top.text, challenge: observed.found?.challenge }).catch(() => undefined);
+      if (!waiting || late) return;
+      if (wall) {
+        blocked.resolve({ wall });
+        try {
+          seenLater(tab, observed?.top.url, observed?.found);
+        } catch (e) {
+          note("could not learn bot check", { tab, error: e instanceof Error ? e.message : String(e) });
+        }
+      } else inspecting = setTimeout(check, 1000);
+    };
+    inspecting = setTimeout(check, 500);
+  }
   try {
-    if (!named) {
-      await Promise.race([seen.catch(() => timeUp.promise), timeUp.promise]);
-      return { ok: true, waitedMs: Date.now() - start, ...cut };
+    const seenOrTime = seen.catch((e) => { if (late || !named) return timeUp.promise; throw e; });
+    const answered = await (blocked ? Promise.race([seenOrTime, timeUp.promise, blocked.promise]) : Promise.race([seenOrTime, timeUp.promise]));
+    waiting = false;
+    if (answered && "wall" in answered) {
+      stop();
+      return { ok: false, found: false, waitedMs: Date.now() - start, ...answered };
     }
-    const answered = await Promise.race([seen.catch((e) => { if (late) return timeUp.promise; throw e; }), timeUp.promise]);
+    if (!named) return { ok: true, waitedMs: Date.now() - start, ...cut };
     if (answered === null) return { ok: false, found: false, unanswered: true, waitedMs: Date.now() - start, hint: UNANSWERED, ...cut };
     const { found: met, which, already, added, hint, meanwhile } = answered;
     const quietOnly = opts.quiet === true && opts.selector === undefined && opts.text === undefined && opts.any === undefined && opts.gone === undefined && opts.url === undefined && opts.changed !== true;
@@ -2215,6 +2245,8 @@ export async function wait(opts: { tab?: number; ms?: number; selector?: string;
     // found: false, after 20 s, as the page they waited for (HuntsUsage).
     return { ok: false, found, waitedMs, ...(drew ? {} : { empty: true }), url: now?.url, title: now?.title, ...(meanwhile === undefined ? {} : { meanwhile }), ...(hints.length === 0 ? {} : { hint: hints.join("; ") }), ...cut, ...(challenge ? { challenge } : {}) };
   } finally {
+    waiting = false;
+    clearTimeout(inspecting);
     clearTimeout(timer);
   }
 }
@@ -3500,9 +3532,8 @@ async function ownWindow(tab: number): Promise<boolean> {
 // px, which differ by Safari's page zoom and the window's edges: on 11-11
 // width 390 gave a page 455 px wide at zoom 0.85 (LOCK#595). cssWidth reads
 // the page's innerWidth after each resize (tabInfo, which runs no eval) and
-// moves the window by what it missed, CSS_ROUNDS resizes at most. A page
-// still off by more than 1 px answers ok, since the window did change, with
-// the width it reached in missed.
+// moves the window by what it missed, CSS_ROUNDS resizes at most. A miss
+// keeps the reached sizes because the native resize may have happened.
 //
 // Safari lays out no page in a window others cover whole, as it paints
 // none (place.ts): on 11-16 390, 1200 and 1440 each gave 1038 (BERK#121 to
@@ -3521,13 +3552,13 @@ async function cssViewport(tab: number, cssWidth: number, height: number, start 
     let before = was === undefined ? undefined : { window: Number.NaN, page: was.width };
     for (let round = 1; ; round++) {
       const sized = await viewport({ tab, width, height });
-      const page = pageSize(await relay(id, "tabInfo"));
-      if (page === undefined) return { ...sized, missed: "the page did not say its width; call window again once it has loaded" };
+      const page = pageSize(await relay(id, "tabInfo")) ?? pageSize(sized);
+      if (page === undefined) return { ...sized, ok: false, missed: "the page did not say its width; the window was resized, so call window again once the page has loaded" };
       const off = page.width - cssWidth;
       if (Math.abs(off) <= 1) return { ...sized, viewport: page };
       const stuck = before !== undefined && before.page === page.width;
       const unseen = restore === "covered" || restore === "hidden" ? `; other windows ${restore === "covered" ? "cover your window and no display has room to show it" : "hide it (minimized or on another desktop)"}, and Safari lays out no page it does not draw` : "";
-      if (stuck || round === CSS_ROUNDS) return { ...sized, viewport: page, missed: `the page is ${page.width} CSS px wide, not ${cssWidth}, ${stuck ? "and its width did not follow the window's" : `after ${round} resizes`}; the window is ${sized.size.width} points wide${unseen}` };
+      if (stuck || round === CSS_ROUNDS) return { ...sized, ok: false, viewport: page, missed: `the page is ${page.width} CSS px wide, not ${cssWidth}, ${stuck ? "and its width did not follow the window's" : `after ${round} resizes`}; the window is ${sized.size.width} points wide${unseen}` };
       // window points per CSS px: between the last two resizes, else the
       // window's width over the page's
       const rate = before === undefined || !Number.isFinite(before.window) || before.window === sized.size.width ? sized.size.width / page.width : (sized.size.width - before.window) / (page.width - before.page);
@@ -5209,6 +5240,12 @@ export async function runSteps(steps: unknown, call: (tool: string, args: Record
       }
       if (tool === "close" && tab !== undefined) closed.set(String(tab), i + 1);
       if (step.args.tab !== undefined && opened.length > 0 && !Object.hasOwn(TIDY, tool) && !opened.some((id) => String(id) === String(step.args.tab))) value = beside(value, "note", `tab ${step.args.tab} is not one this run opened (${opened.join(", ")})`);
+      if (step.checked.tool === "window" && value && typeof value === "object" && "ok" in value && value.ok === false && "missed" in value && typeof value.missed === "string") {
+        const error = value.missed;
+        done.push({ step: i + 1, tool, value, error, failure: failureOf(new HarnessError("command_failed", error, { next: "check the measured viewport before continuing the run" })) });
+        failed = true;
+        continue;
+      }
       done.push({ step: i + 1, tool, value });
     } catch (e) {
       if (failed && !Object.hasOwn(TIDY, tool)) continue;

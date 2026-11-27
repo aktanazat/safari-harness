@@ -213,7 +213,7 @@ function nextId() { nextId.n = (nextId.n || 0) + 1; return `r${nextId.n}`; }
 // (a redirect, or a chain of them), it is asked again of each new page. Any
 // other op may act on the page, so a navigation while it is pending is what
 // it caused: act reports that instead of sending it again (never act twice).
-const READS = new Set(["snapshot", "extract", "tabInfo", "locate", "element", "painted", "wait", "data", "lookalikes", "pressMark", "pressDone", "tabIntent", "typeMark", "typeField", "sendButton", "netBody", "memoryPage", "clickProbe", "assertFrameClickable", "gatherStop", "formDraft"]);
+const READS = new Set(["snapshot", "extract", "tabInfo", "locate", "element", "painted", "wait", "data", "lookalikes", "pressMark", "pressDone", "tabIntent", "typeMark", "typeField", "inputState", "sendButton", "netBody", "memoryPage", "clickProbe", "assertFrameClickable", "gatherStop", "formDraft"]);
 // extract with expand or scroll, and harvest, click and scroll the page as
 // they read it. One whose page goes on is not asked again of the new page,
 // which it would gather too: it fails, naming where the page went.
@@ -374,6 +374,7 @@ async function toTab(tabId, op, args, timeoutMs = 30000, frameId = 0, kept = nul
       if (sent) moved = true;
       if (sent && gathers(op, args)) throw await wentOn(tabId, deadline);
       if (sent && op === "eval") throw new Error("the page navigated while eval was running; its result was lost");
+      if (sent && op === "inputState") throw new Error("the page navigated before it reported its native input state");
       if (sent && !READS.has(op)) return { value: { ok: true } };
       if (Date.now() >= deadline) throw new Error("the page kept navigating; read it again once it settles");
     }
@@ -1593,15 +1594,18 @@ async function screenshotInWindow(tabId, windowId, opts) {
       const viewport = page.source?.viewport;
       if (!viewport || !Number.isFinite(viewport.height) || viewport.height <= 0 || !Number.isFinite(page.page?.height)) throw screenshotPrivacyError("the page size could not be inspected");
       let covered = 0;
-      for (let y = 0; y < page.page.height && shots.length < FULL_PAGE_MAX; y += viewport.height) {
+      const stride = viewport.height - Math.min(4, Math.floor(viewport.height / 4));
+      for (let y = 0; y < page.page.height && shots.length < FULL_PAGE_MAX; y += stride) {
         await pageValue(tabId, "eval", [`(scrollTo({left:0,top:${y},behavior:"instant"}), 1)`]);
         const shot = await grab();
         const actualY = shot.state.page?.y;
-        if (!Number.isFinite(actualY) || actualY < 0 || actualY > covered ||
+        if (!Number.isFinite(actualY) || actualY < 0 || actualY > covered + 2 ||
             shot.state.source.url !== page.source.url || shot.state.source.viewport.width !== viewport.width || shot.state.source.viewport.height !== viewport.height ||
+            shot.state.page.height !== page.page.height ||
             (shots.length > 1 && (shot.canvas.width !== shots[0].canvas.width || shot.canvas.height !== shots[0].canvas.height))) throw new Error("the page changed size or left a gap during full-page capture");
-        if (shots.length > 1 && actualY + viewport.height <= covered) { shots.pop(); break; }
-        covered = actualY + viewport.height;
+        shot.y = Math.min(actualY, covered);
+        if (shots.length > 1 && shot.y + viewport.height <= covered) { shots.pop(); break; }
+        covered = shot.y + viewport.height;
         if (covered >= page.page.height) break;
       }
     }
@@ -1634,14 +1638,14 @@ async function screenshotInWindow(tabId, windowId, opts) {
   } else if (page) {
     const scale = canvas.height / source.viewport.height;
     const last = shots[shots.length - 1];
-    const pageHeight = Math.max(page.page.height, ...shots.map((shot) => shot.state.page.height));
-    const height = Math.min(Math.ceil(pageHeight * scale), Math.round(last.state.page.y * scale) + last.canvas.height);
+    const pageHeight = Math.ceil(page.page.height * scale);
+    const height = Math.min(pageHeight, Math.round(last.y * scale) + last.canvas.height);
     const stitched = new OffscreenCanvas(canvas.width, height);
     const ctx = stitched.getContext("2d");
-    for (const shot of shots) ctx.drawImage(shot.canvas, 0, Math.round(shot.state.page.y * scale));
+    for (const shot of shots) ctx.drawImage(shot.canvas, 0, Math.round(shot.y * scale));
     canvas = stitched;
     result.screens = shots.length;
-    result.cut = height < Math.ceil(pageHeight * scale);
+    result.cut = height < pageHeight;
   }
   source.width = canvas.width;
   source.height = canvas.height;
@@ -1723,11 +1727,14 @@ async function handle(msg) {
       const [url, background, windowId, owned = background] = args;
       const known = await fileFirst(url);
       const tab = await createInAgentWindow(windowId, { url: known || !url ? "about:blank" : url, active: !background });
-      if (ready.get(tab.id) !== true) ready.set(tab.id, false);
-      drive(tab.id);
+      const blank = url === "about:blank" && blankTab(tab);
+      if (!blank) {
+        if (ready.get(tab.id) !== true) ready.set(tab.id, false);
+        drive(tab.id);
+      }
       if (owned) await ownTab(tab.id);
       if (known) files.set(tab.id, known);
-      const { tab: t, loading, file } = known ? { tab, loading: false, file: known } : await openedOrFile(tab.id, url, Date.now() + 15000);
+      const { tab: t, loading, file } = known || blank ? { tab, loading: false, file: known } : await openedOrFile(tab.id, url, Date.now() + 15000);
       if (failedPage(t)) {
         closing.add(t.id);
         api.tabs.remove(t.id).catch(() => closing.delete(t.id));
@@ -1982,7 +1989,7 @@ async function handle(msg) {
       const t = await api.tabs.get(tabId);
       const alone = (await api.tabs.query({ windowId: t.windowId })).length === 1;
       const dims = { width: Math.round(size.width), height: Math.round(size.height) };
-      const view = () => toTab(tabId, "tabInfo", [], 5000).then((r) => r?.value?.viewport, () => undefined);
+      const view = () => blankTab(t) ? undefined : toTab(tabId, "tabInfo", [], 5000).then((r) => r?.value?.viewport, () => undefined);
       const was = await view();
       let sized;
       if (whole || alone) {
@@ -2125,18 +2132,18 @@ async function ownsTab(tabId) {
   return (await policyOf(tabId)) !== null;
 }
 
+const blankTab = (tab) => !tab.url || tab.url === "about:blank";
+
 // Also tells the page, which may have reported in before the tab was owned.
 async function ownTab(tabId) {
   const policy = (await policyOf(tabId)) || { accept: false, text: null };
   await store.set({ [`dialogs:${tabId}`]: policy });
   // A fast open or popup may have loaded before its ownership was saved.
   const load = pageLoads.get(tabId);
+  const tab = await api.tabs.get(tabId).catch(() => null);
   if (load) await reportLoad(tabId, load);
-  else {
-    const tab = await api.tabs.get(tabId);
-    if (tab.status === "complete") loaded(tabId, tab.url);
-  }
-  await toTab(tabId, "dialogs", [policy], 5000).catch(() => {});
+  else if (tab?.status === "complete") loaded(tabId, tab.url);
+  if (tab && !blankTab(tab)) await toTab(tabId, "dialogs", [policy], 5000).catch(() => {});
 }
 
 // ---------- tabs gone ----------
