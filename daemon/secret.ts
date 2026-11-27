@@ -119,9 +119,9 @@ const WAIT_MS = 30_000;
 const MAIL_AFTER_MS = 10_000;
 // A code often lands before the call, sent for before the field was found:
 // on 11-27 Shop's came 63 s before, past the minute this once was, and two
-// waits of 30 s each missed it. The newest code goes first and a typed one
-// is passed over, so an older one is never typed for a newer.
-const BEFORE_MS = 180_000;
+// waits of 30 s each missed it. One from minutes before is an earlier
+// try's, and goes untyped.
+const BEFORE_MS = 90_000;
 // Gmail is searched every 2 s, as waitForMail does: about 0.6 s a search.
 const LOOK_MS = 2_000;
 
