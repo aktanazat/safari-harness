@@ -11,6 +11,7 @@ import { googleSearch } from "./google-search.ts";
 import { youtube } from "./youtube.ts";
 import { x } from "./x.ts";
 import { linkedin } from "./linkedin.ts";
+import { reddit } from "./reddit.ts";
 
 export const SITE_GLOBALS: Record<string, (kit: SiteKit) => object> = {
   slack,
@@ -23,6 +24,7 @@ export const SITE_GLOBALS: Record<string, (kit: SiteKit) => object> = {
   youtube,
   x,
   linkedin,
+  reddit,
   imessage,
 };
 
