@@ -408,17 +408,17 @@ function printId(result: unknown): void {
   exitOnMiss(result, true);
 }
 
-function flag(name: string, argv: string[]): string | undefined {
-  const i = argv.indexOf(`--${name}`);
+function flag(name: string, argv: string[], tool?: string): string | undefined {
+  const i = argv.findIndex((a, idx) => a === `--${name}` && (tool === undefined || !isFlagValue(idx, argv, tool)));
   if (i >= 0 && i + 1 < argv.length) return argv[i + 1];
-  const eq = argv.find((a) => a.startsWith(`--${name}=`));
+  const eq = argv.find((a, idx) => a.startsWith(`--${name}=`) && (tool === undefined || !isFlagValue(idx, argv, tool)));
   return eq ? eq.slice(name.length + 3) : undefined;
 }
 
 // A flag that takes no value is on when given, unless the word after it is
 // false (BOOLEAN_FLAGS).
-function hasFlag(name: string, argv: string[]): boolean {
-  const i = argv.indexOf(`--${name}`);
+function hasFlag(name: string, argv: string[], tool?: string): boolean {
+  const i = argv.findIndex((a, idx) => a === `--${name}` && (tool === undefined || !isFlagValue(idx, argv, tool)));
   return i >= 0 && argv[i + 1] !== "false";
 }
 
@@ -428,8 +428,8 @@ function fileFlags(argv: string[]): string[] | undefined {
   return files.length ? files.map((f) => resolve(f)) : undefined;
 }
 
-function tabArg(argv: string[]): Record<string, unknown> {
-  const t = flag("tab", argv);
+function tabArg(argv: string[], tool?: string): Record<string, unknown> {
+  const t = flag("tab", argv, tool);
   if (t === undefined) return {};
   return { tab: t === "front" || t === "latest" ? t : Number(t) };
 }
@@ -438,10 +438,10 @@ function tabArg(argv: string[]): Record<string, unknown> {
 // --save=<path> names the file, as does a path after --save: agents wrote
 // --save /private/var/tmp/rows.json, and the path went into eval's code. A
 // relative path is the terminal's, not the daemon's.
-function saveArg(argv: string[]): Record<string, unknown> {
-  const i = argv.indexOf("--save");
+function saveArg(argv: string[], tool?: string): Record<string, unknown> {
+  const i = argv.findIndex((a, idx) => a === "--save" && (tool === undefined || !isFlagValue(idx, argv, tool)));
   if (i >= 0) return isSavePath(i + 1, argv) ? { save: resolve(argv[i + 1]) } : { save: true };
-  const path = flag("save", argv);
+  const path = flag("save", argv, tool);
   return path === undefined ? {} : { save: resolve(path) };
 }
 
@@ -456,13 +456,50 @@ function isSavePath(i: number, argv: string[]): boolean {
 // into the saved folder and reads rows.json as the command's word.
 const SAVE_HOW = " (--save alone saves into the saved folder; give a path as --save=<path> or --save ./<path>, a relative one taken from the current folder)";
 
-// --snapshot prints the page after an action whole, and --snapshot=<words>
-// only its lines that have them. A word after a bare --snapshot is the
-// command's own, unless it is true or false (BOOLEAN_FLAGS).
-function snapshotArg(argv: string[]): Record<string, unknown> {
-  if (hasFlag("snapshot", argv)) return { snapshot: true };
-  const words = flag("snapshot", argv);
-  return words === undefined || words === "false" ? {} : { snapshot: words === "true" ? true : words };
+function isSnapshotJson(i: number, argv: string[]): boolean {
+  return argv[i - 1] === "--snapshot" && jsonObject(argv[i]);
+}
+
+// --snapshot prints the page after an action whole, --snapshot=<words>
+// only its lines that have them, and --snapshot '<json>' (or =<json>)
+// passes a PageRead object. A non-JSON word after a bare --snapshot stays
+// positional, unless it is true or false (BOOLEAN_FLAGS).
+function snapshotArg(argv: string[], tool?: string): Record<string, unknown> {
+  const i = argv.findIndex((a, idx) => a === "--snapshot" && (tool === undefined || !isFlagValue(idx, argv, tool)));
+  if (i >= 0) {
+    const next = argv[i + 1];
+    if (next === "false") return {};
+    if (isSnapshotJson(i + 1, argv)) return { snapshot: JSON.parse(next) as Record<string, unknown> };
+    return { snapshot: true };
+  }
+  const eq = argv.find((a, idx) => a.startsWith("--snapshot=") && (tool === undefined || !isFlagValue(idx, argv, tool)));
+  if (eq === undefined) return {};
+  const words = eq.slice("--snapshot=".length);
+  if (words === "false") return {};
+  if (words === "true") return { snapshot: true };
+  return { snapshot: jsonObject(words) ? JSON.parse(words) as Record<string, unknown> : words };
+}
+
+const isShortFlag = (a: string): boolean => /^-[a-zA-Z]/.test(a);
+const isFlag = (a: string): boolean => a.startsWith("--") || isShortFlag(a);
+
+function jsonArgs(cmd: string, argv: string[], tool?: string): Record<string, unknown> | undefined {
+  let out: Record<string, unknown> | undefined;
+  for (const [i, a] of argv.entries()) {
+    if (!isShortFlag(a) || isFlagValue(i, argv, tool)) continue;
+    if (a === "-j" || a.startsWith("-j=")) {
+      const raw = a === "-j" ? argv[i + 1] : a.slice(3);
+      if (raw === undefined) fail('-j needs a JSON object, as -j \'{"tab":7}\'', 2);
+      let parsed: unknown;
+      try { parsed = JSON.parse(raw); }
+      catch (e) { fail(`-j takes a JSON object (${e instanceof Error ? e.message : String(e)})`, 2); }
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) fail('-j takes a JSON object, as -j \'{"tab":7}\'', 2);
+      out = { ...out, ...(parsed as Record<string, unknown>) };
+      continue;
+    }
+    fail(`unknown flag ${a}: browser uses --<flag> (or -j '<json>', -q, --help; browser ${cmd} --help lists flags)`, 2);
+  }
+  return out;
 }
 
 const SNAPSHOT_HOW = "also print the page after it; --snapshot=<words> prints only its lines that have them";
@@ -602,7 +639,9 @@ async function runAndReport(rec: SessionRecord, argv: string[]) {
 async function mintCommand(argv: string[], host: string) {
   const flags = ["url", "example", "from", "steps", "model", "host", "json", "quiet"];
   for (const [i, arg] of argv.entries()) {
-    if (arg.startsWith("--") && !isFlagValue(i, argv) && !flags.includes(arg.slice(2).split("=")[0])) fail(`mint takes no ${arg.split("=")[0]}; see: browser mint --help`, 2);
+    if (isFlagValue(i, argv)) continue;
+    if (isShortFlag(arg)) fail(`mint takes no ${arg}: browser uses --<flag> (see: browser mint --help)`, 2);
+    if (arg.startsWith("--") && !flags.includes(arg.slice(2).split("=")[0])) fail(`mint takes no ${arg.split("=")[0]}; see: browser mint --help`, 2);
   }
   if (host !== "local") fail("mint needs the owner's browser on this Mac; use --host local", 2);
   const pos = argv.filter((arg, i) => !arg.startsWith("--") && !isFlagValue(i, argv));
@@ -711,8 +750,10 @@ const REPL_FLAGS = ["session", "list", "close", "file", "host", "json", "quiet"]
 
 async function replCommand(argv: string[]) {
   for (const [i, arg] of argv.entries()) {
+    if (isFlagValue(i, argv)) continue;
+    if (isShortFlag(arg)) fail(`repl takes no ${arg}: browser uses --<flag> (flags: ${REPL_FLAGS.map((f) => `--${f}`).join(" ")})`, 2);
     const given = arg.slice(2).split("=")[0];
-    if (!arg.startsWith("--") || isFlagValue(i, argv) || REPL_FLAGS.includes(given)) continue;
+    if (!arg.startsWith("--") || REPL_FLAGS.includes(given)) continue;
     const near = closestParam(given, REPL_FLAGS);
     fail(`repl takes no --${given}${near ? `; did you mean --${near}?` : ""} (flags: ${REPL_FLAGS.map((f) => `--${f}`).join(" ")}; browser repl --list lists the sessions running, browser repl --close <name> ends one)`, 2);
   }
@@ -808,10 +849,10 @@ const EXTENSION_EVENTS: Record<string, true> = { start: true, stop: true, connec
 
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2).filter((a) => a !== "-q");
-  if (!cmd || cmd === "--help") { console.log(USAGE); process.exit(cmd ? 0 : 1); }
+  if (!cmd || cmd === "--help" || cmd === "-h") { console.log(USAGE); process.exit(cmd ? 0 : 1); }
   // help <command> prints that command alone, as <command> --help does,
   // where it printed all of USAGE.
-  if (cmd === "help" || rest.includes("--help")) {
+  if (cmd === "help" || rest.some((a, i) => (a === "--help" || a === "-h") && !isFlagValue(i, rest, toolName(cmd)))) {
     const which = cmd === "help" ? rest.find((a) => !a.startsWith("-")) : cmd;
     return console.log(which === undefined ? USAGE : commandHelp(which) ?? unknownCommand(which));
   }
@@ -1069,8 +1110,9 @@ async function main() {
     return;
   }
 
-  const named = toolName(cmd === "call" ? (rest.find((a, i) => !a.startsWith("--") && !isFlagValue(i, rest)) ?? "") : cmd);
-  const positional = rest.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, rest, named));
+  const named = toolName(cmd === "call" ? (rest.find((a, i) => !isFlag(a) && !isFlagValue(i, rest)) ?? "") : cmd);
+  const jargs = jsonArgs(cmd, rest, named);
+  const positional = rest.filter((a, i) => !isFlag(a) && !isFlagValue(i, rest, named));
   // A command's words are words, not its call's JSON: on 09-30 an agent
   // wrote `browser dialog --tab front '{"do":"read"}'`, which sent the whole
   // object as do, and open, snapshot, and goto failed on theirs with errors
@@ -1079,24 +1121,25 @@ async function main() {
     fail(`${cmd} takes words and flags, not a JSON object: browser call ${toolName(cmd) ?? cmd} '${positional[0]}' (flags such as --tab still apply), or its flags (browser ${cmd} --help)`, 2);
   }
   let tool = ALIAS[cmd] ?? cmd;
-  let args: Record<string, unknown> = { ...tabArg(rest), ...saveArg(rest), ...snapshotArg(rest) };
+  let args: Record<string, unknown> = { ...tabArg(rest, named), ...saveArg(rest, named), ...snapshotArg(rest, named) };
 
   switch (cmd) {
     case "memory": {
-      args.do = positional[0] ?? "status";
+      args.do = positional[0] ?? jargs?.do ?? "status";
       if (args.do === "search" || args.do === "recall") args.query = positional.slice(1).join(" ") || undefined;
       break;
     }
-    case "tabs": args.host = flag(FLAG_FOR.tabs.host, rest) ?? null; break;
+    case "tabs": args.host = flag(FLAG_FOR.tabs.host, rest) ?? jargs?.host ?? null; break;
     case "open": {
       // open opens a tab of its own: `open <url> --tab 12153` opened tab
       // 13608 and left 12153 on its old page (S99PartC).
-      if (args.tab !== undefined) fail(`open takes no --tab: it opens a tab of its own. To load the page in tab ${String(args.tab)}, run: browser goto ${positional[0] ?? "<url>"} --tab ${String(args.tab)}`, 2);
-      args.url = positional[0];
-      args.background = hasFlag("bg", rest);
+      const openTab = args.tab ?? jargs?.tab;
+      if (openTab !== undefined) fail(`open takes no --tab: it opens a tab of its own. To load the page in tab ${String(openTab)}, run: browser goto ${positional[0] ?? String(jargs?.url ?? "<url>")} --tab ${String(openTab)}`, 2);
+      if (positional[0] !== undefined) args.url = positional[0];
+      args.background = hasFlag("bg", rest) || jargs?.background === true;
       break;
     }
-    case "goto": args.url = positional[0]; break;
+    case "goto": if (positional[0] !== undefined) args.url = positional[0]; break;
     case "back": case "forward": case "reload": args.do = cmd; break;
     // activate too, as focus: on 11-17 `safari activate 12842` failed "tab
     // must be a number"
@@ -1111,39 +1154,48 @@ async function main() {
       if (hasFlag("diff", rest)) args.diff = true;
       break;
     }
-    case "click": args.ref = positional[0]; break;
-    case "clickat": args.x = Number(positional[0]); args.y = Number(positional[1]); break;
+    case "click": if (positional[0] !== undefined) args.ref = positional[0]; break;
+    case "clickat":
+      if (positional[0] !== undefined) args.x = Number(positional[0]);
+      if (positional[1] !== undefined) args.y = Number(positional[1]);
+      break;
     case "type": {
       // --ref is the first word given as a flag: on 11-16 `type --tab N
       // --ref 1 "Eval Agent"` looked for "Eval Agent" on the page.
-      const ref = flag("ref", rest);
+      const ref = flag("ref", rest, named) ?? (typeof jargs?.ref === "string" || typeof jargs?.ref === "number" ? String(jargs.ref) : undefined);
       const words = ref === undefined ? positional.slice(1) : positional;
-      args.ref = ref ?? positional[0];
-      args.text = words.join(" ").replace(/^"|"$/g, "");
-      args.append = hasFlag("append", rest);
+      const textFlag = flag("text", rest, named);
+      if (words.length > 0 && (textFlag !== undefined || jargs?.text !== undefined)) {
+        fail(`type takes text either as a positional argument or with ${textFlag !== undefined ? "--text" : "-j"}, not both (extra: ${words.join(" ")}); for a snapshot query use --snapshot=<words> or --snapshot '<json>'`, 2);
+      }
+      if (ref !== undefined || positional[0] !== undefined) args.ref = ref ?? positional[0];
+      if (words.length > 0) args.text = words.join(" ").replace(/^"|"$/g, "");
+      else if (textFlag !== undefined) args.text = textFlag;
+      else if (jargs?.text === undefined) args.text = "";
+      args.append = hasFlag("append", rest, named) || jargs?.append === true;
       break;
     }
     case "press": {
-      args.key = positional[0];
+      if (positional[0] !== undefined) args.key = positional[0];
       const ref = flag("ref", rest);
       if (ref) args.ref = ref;
       break;
     }
     case "select": {
-      const ref = flag("ref", rest);
+      const ref = flag("ref", rest) ?? (typeof jargs?.ref === "string" || typeof jargs?.ref === "number" ? String(jargs.ref) : undefined);
       const words = ref === undefined ? positional.slice(1) : positional;
-      args.ref = ref ?? positional[0];
+      if (ref !== undefined || positional[0] !== undefined) args.ref = ref ?? positional[0];
       if (words.length) args.option = words.join(" ");
       break;
     }
-    case "hover": args.ref = positional[0]; break;
+    case "hover": if (positional[0] !== undefined) args.ref = positional[0]; break;
     case "upload": {
       if (positional.length) args.paths = positional;
       const ref = flag("ref", rest);
       if (ref) args.ref = ref;
       break;
     }
-    case "scroll": args.dy = Number(positional[0] ?? 600); break;
+    case "scroll": args.dy = Number(positional[0] ?? jargs?.dy ?? 600); break;
     case "eval": {
       // --timeout is in seconds, as the error that suggests it says
       const secs = flag("timeout", rest);
@@ -1153,7 +1205,7 @@ async function main() {
       const file = flag("file", rest);
       if (file !== undefined) args.expression = await Bun.file(resolve(file)).text();
       else if (positional.length) args.expression = positional.join(" ");
-      args.page = hasFlag("page", rest);
+      args.page = hasFlag("page", rest) || jargs?.page === true;
       break;
     }
     case "extract": {
@@ -1201,15 +1253,16 @@ async function main() {
       if (out !== undefined) args.out = out;
       const ref = flag("ref", rest);
       if (ref) args.ref = ref;
-      args.annotate = hasFlag("annotate", rest);
-      args.fullPage = hasFlag("full", rest);
+      args.annotate = hasFlag("annotate", rest) || jargs?.annotate === true;
+      args.fullPage = hasFlag("full", rest) || jargs?.fullPage === true;
       break;
     }
     case "shots": {
-      args.urls = positional;
+      if (positional.length) args.urls = positional;
+      else if (jargs?.urls === undefined) args.urls = [];
       const widths = flag("widths", rest);
       if (widths !== undefined) args.widths = widths.split(",").map(Number);
-      args.fullPage = hasFlag("full", rest);
+      args.fullPage = hasFlag("full", rest) || jargs?.fullPage === true;
       break;
     }
     case "download": {
@@ -1223,7 +1276,7 @@ async function main() {
       if (positional[0]) args.do = positional[0];
       if (positional[1] !== undefined) args.text = positional.slice(1).join(" ");
       break;
-    case "fetch": case "read": args.url = positional[0]; break;
+    case "fetch": case "read": if (positional[0] !== undefined) args.url = positional[0]; break;
     // No words leave the urls to --urls '[…]', as map --help offers: on
     // 11-16 that form failed "map needs urls".
     case "map": if (positional.length) args.urls = positional; break;
@@ -1247,19 +1300,19 @@ async function main() {
       const size = flag("size", rest);
       const wh = size === undefined ? positional : /^(\d+)x(\d+)$/i.exec(size)?.slice(1);
       if (wh === undefined) fail(`--size takes WIDTHxHEIGHT in points, as 390x844, not ${size}`, 2);
-      args.width = Number(wh[0]);
-      args.height = Number(wh[1]);
+      if (wh[0] !== undefined) args.width = Number(wh[0]);
+      if (wh[1] !== undefined) args.height = Number(wh[1]);
       break;
     }
     case "history-search": case "browsing-history": {
       // --any a b c: each word a text of its own, as in browsing_history's any
       const any = flag("any", rest);
-      args = any === undefined || any.startsWith("[") ? { text: positional.join(" ") || undefined } : { any: [any, ...positional] };
+      args = any === undefined || any.startsWith("[") ? { ...(positional.length ? { text: positional.join(" ") } : {}) } : { any: [any, ...positional] };
       break;
     }
-    case "learn": args.site = positional[0]; if (positional.length > 1) args.fact = positional.slice(1).join(" "); break;
-    case "record": args.do = positional[0] ?? "list"; if (positional[1] !== undefined) args.name = positional[1]; break;
-    case "ask": args.question = positional.join(" "); break;
+    case "learn": if (positional[0] !== undefined) args.site = positional[0]; if (positional.length > 1) args.fact = positional.slice(1).join(" "); break;
+    case "record": args.do = positional[0] ?? jargs?.do ?? "list"; if (positional[1] !== undefined) args.name = positional[1]; break;
+    case "ask": if (positional.length) args.question = positional.join(" "); else if (jargs?.question === undefined) args.question = ""; break;
     case "run": {
       // Steps from a file, or stdin for --steps -, need no shell quoting:
       // an apostrophe in one step's text broke an agent's quoted JSON (09-29).
@@ -1304,6 +1357,11 @@ async function main() {
       if (args[k] === undefined || args[k] === "" || Number.isNaN(args[k])) args[k] = v;
     }
   }
+  if (jargs) {
+    for (const [k, v] of Object.entries(jargs)) {
+      if (args[k] === undefined || Number.isNaN(args[k])) args[k] = v;
+    }
+  }
   // A path is this terminal's, as a word or as a flag (PATH_PARAMS).
   for (const key of PATH_PARAMS[name ?? ""] ?? []) {
     const v = args[key];
@@ -1336,9 +1394,11 @@ const BOOLEAN_FLAGS: Record<string, true> = { bg: true, keep: true, append: true
 // trip` opened no window for trip. Only that tool's: open's site is a
 // boolean, and passwords' a site's name.
 function isFlagValue(i: number, argv: string[], tool?: string): boolean {
+  if (i <= 0 || isFlagValue(i - 1, argv, tool)) return false;
   const prev = argv[i - 1];
+  if (prev === "-j") return true;
   const bare = (name: string) => Object.hasOwn(BOOLEAN_FLAGS, name) || (tool !== undefined && paramFor(toolsOf(tool), tool, name)?.[1].type === "boolean");
-  return i > 0 && ((prev.startsWith("--") && !prev.includes("=") && (!bare(prev.slice(2)) || argv[i] === "true" || argv[i] === "false")) || isSavePath(i, argv));
+  return (prev.startsWith("--") && !prev.includes("=") && (!bare(prev.slice(2)) || argv[i] === "true" || argv[i] === "false")) || isSavePath(i, argv) || isSnapshotJson(i, argv);
 }
 
 function jsonObject(word: string | undefined): boolean {

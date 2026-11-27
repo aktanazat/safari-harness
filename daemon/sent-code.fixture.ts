@@ -42,7 +42,7 @@ db.exec(`
   CREATE TABLE message (date INTEGER, is_from_me INTEGER, text TEXT, attributedBody BLOB,
     cache_has_attachments INTEGER, handle_id INTEGER, item_type INTEGER, associated_message_type INTEGER,
     is_sent INTEGER, is_delivered INTEGER, error INTEGER);
-  INSERT INTO handle VALUES ('63641'),('22395'),('73981');
+  INSERT INTO handle VALUES ('63641'),('22395'),('73981'),('938763');
 `);
 const APPLE = Date.UTC(2001, 0, 1);
 // A text at ms at from handle 1, the shop's short code, 2, another site's,
@@ -287,6 +287,13 @@ test("a code texted without the site's name from a number its guide names is typ
   page = "https://secure.bankofamerica.com/auth/signon/#/authcode";
   setTimeout(() => text(`${CODE} is your authorization code. Never share it.`, Date.now(), 3), 1_000);
   expect(await waited(invoke("type", { ...CALL, secret: "sms" }, true))).toMatchObject({ ok: true, source: "text from 73981" });
+  expect(fields).toEqual(typedCode(CODE));
+});
+
+test("a Shop Pay code texted without the site's name from 938763 is typed in one call", async () => {
+  page = "https://shop.app/checkout/cn/token/shoppay";
+  setTimeout(() => text(`${CODE} is your verification code.`, Date.now(), 4), 1_000);
+  expect(await waited(invoke("type", { ...CALL, secret: "sms" }, true))).toMatchObject({ ok: true, source: "text from 938763" });
   expect(fields).toEqual(typedCode(CODE));
 });
 

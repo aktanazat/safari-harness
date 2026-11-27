@@ -148,7 +148,31 @@ const LOOPS: Record<string, true> = { for: true, while: true, until: true, selec
 // Words before a command's own name: shell keywords, and wrappers that run
 // the command after them. A Set, as an object with a then key is thenable.
 const LEADS = new Set(["do", "then", "else", "elif", "if", "!", "{", "time", "command", "exec", "nohup"]);
-const DEV_NULL = /^(?:\d|&)?>>?\/dev\/null$|^>&\/dev\/null$/;
+const DEV_NULL = /^(?:1|&)?>>?\/dev\/null$|^>&\/dev\/null$/;
+const STDOUT_REDIR = /^(?:1|&)?>>?$|^>&$/;
+// Flags that take no value, so `--help` or `-h` right after them is still help.
+const HELP_SAFE_PREV = new Set(["--bg", "--keep", "--new", "--id", "--fresh", "--json", "--quiet", "--page", "--raw", "--full", "--diff", "--updates", "--interactive", "--all", "--append", "--front", "--changed", "--save", "--snapshot", "--annotate", "--live", "--tiles", "--deep", "--dry", "--list", "--close", "--confirm", "--end"]);
+const NO_QUIET: Record<string, true> = { serve: true, mcp: true };
+const ACTIONS_WITH_SNAPSHOT: Record<string, true> = {
+  goto: true, back: true, forward: true, reload: true, history: true,
+  click: true, clickat: true, type: true, press: true, refill: true,
+  select: true, hover: true, upload: true, wait: true,
+};
+const PIPE_HINTS: Record<string, string> = {
+  snapshot: "narrow it with --query or --root, or keep a long output whole with --save and read that file",
+  extract: "narrow it with --query or --selector, or keep a long output whole with --save and read that file",
+  map: "narrow each page with --query, --selector, or --root, or keep full outputs with --save and read those files",
+  eval: "take the value alone with --raw, or keep a long output whole with --save and read that file",
+  fetch: "keep a long output whole with --save and read that file",
+  read: "keep a long output whole with --save and read that file",
+  authenticated_read: "keep a long output whole with --save and read that file",
+  open: "take the tab's id alone with `browser open --id URL`, or narrow its snapshot with --snapshot=<words>",
+  data: "narrow it with --pick or --max",
+  tabs: "filter by site with --site",
+  repl: "return only what you need from the script or redirect to a file and read that file",
+  serve: "redirect to a log file instead of piping",
+  mcp: "run it without the pipe",
+};
 // A quoted word's text: the shell's words inside quotes are not commands.
 const QUOTED = "\u0000";
 const CARD_PIPE = "\"Read the whole output. Narrow with `query` or `root`, never `| head`, `| grep`, `sed`, or `>/dev/null`, which hide a failed call.\"";
@@ -217,6 +241,11 @@ function pipelinesOf(command: string): Command[][] {
       if (c === "\\") {
         if (next !== "\n") word += next ?? "";
         i += 2;
+      } else if (c === "$" && next === "'") {
+        word += QUOTED;
+        i += 2;
+        while (i < src.length && src[i] !== "'") i += src[i] === "\\" ? 2 : 1;
+        i++;
       } else if (c === "'") {
         const end = src.indexOf("'", i + 1);
         word += QUOTED;
@@ -267,6 +296,30 @@ function pipelinesOf(command: string): Command[][] {
   return out;
 }
 
+function isHelpOrGuide(own: Command): boolean {
+  const sub = own[1];
+  if (sub === "help" || sub === "guide") return true;
+  for (let i = 2; i < own.length; i++) {
+    if (own[i] !== "--help" && own[i] !== "-h") continue;
+    const prev = own[i - 1];
+    if (i === 2 || !(prev === "-j" || (prev.startsWith("--") && !prev.includes("=") && !HELP_SAFE_PREV.has(prev)))) return true;
+  }
+  return false;
+}
+
+function pipeAdvice(sub: string): string {
+  const tip = Object.hasOwn(PIPE_HINTS, sub) ? PIPE_HINTS[sub]
+    : Object.hasOwn(ACTIONS_WITH_SNAPSHOT, sub) ? "use -q if you do not need its output, or --snapshot=<words> to narrow its snapshot"
+    : !Object.hasOwn(NO_QUIET, sub) ? "use -q if you do not need its output"
+    : "run it without the pipe";
+  return Object.hasOwn(NO_QUIET, sub) ? `${tip}.` : `${tip}. A pipe into jq is fine.`;
+}
+
+function quietAdvice(sub: string): string {
+  if (Object.hasOwn(NO_QUIET, sub)) return `\`browser ${sub}\` sends its output to /dev/null, which hides a failed call. Run it without >/dev/null or redirect to a log file.`;
+  return `\`browser ${sub}\` sends its output to /dev/null, which hides a failed call. The card says: ${CARD_QUIET} Give \`browser ${sub}\` -q instead.`;
+}
+
 // Why a shell command is refused before it runs: it cuts or hides a browser
 // command's output, or runs a page at a time in a shell loop what one call
 // does. Each kind is named once, with the card's line and the right form.
@@ -283,14 +336,19 @@ function shellMisuse(command: string): string | undefined {
         own = ownWords(own.slice(1));
       } else if (own[0] === "done") depth = Math.max(0, depth - 1);
       const name = own[0] ?? "";
+      if (ran !== undefined && name === "jq") {
+        ran = undefined;
+        continue;
+      }
       if (ran !== undefined && Object.hasOwn(CUTS, name) && !found.has("pipe")) {
-        found.set("pipe", `\`browser ${ran}\` pipes its output into ${name}, which can hide a failed call. The card (browser guide) says: ${CARD_PIPE} Run it without the pipe: narrow a read with --query or --root, take a tab's id alone with browser open --id URL, or keep a long output whole with --save and read that file. A pipe into jq is fine.`);
+        found.set("pipe", `\`browser ${ran}\` pipes its output into ${name}, which can hide a failed call. The card (browser guide) says: ${CARD_PIPE} Run it without the pipe: ${pipeAdvice(ran)}`);
       }
       if (name !== "browser" || !/^[a-z][a-z_-]*$/.test(own[1] ?? "")) continue;
+      if (isHelpOrGuide(own)) continue;
       const sub = own[1];
       ran ??= sub;
-      if (!found.has("quiet") && own.some((w, i) => DEV_NULL.test(w) || (/^(?:\d|&)?>>?$/.test(w) && own[i + 1] === "/dev/null"))) {
-        found.set("quiet", `\`browser ${sub}\` sends its output to /dev/null, which hides a failed call. The card says: ${CARD_QUIET} Give it -q instead.`);
+      if (!found.has("quiet") && own.some((w, i) => DEV_NULL.test(w) || (STDOUT_REDIR.test(w) && own[i + 1] === "/dev/null"))) {
+        found.set("quiet", quietAdvice(sub));
       }
       if (depth > 0 && Object.hasOwn(LOOPED, sub) && !found.has("loop")) {
         found.set("loop", `a shell loop runs \`browser ${sub}\` a page at a time. The card says: ${CARD_LOOP} Read every address in one browser map call (--what eval --expression for a script on each page), take widths with one browser shots call, or put steps that must go page by page in one browser repl script.`);

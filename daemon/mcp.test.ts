@@ -172,7 +172,11 @@ import { TOOLS } from "./tools.ts";
 // imessage_wait_code's newest code (90) went in past the limit on 11-19 and
 // 11-20; dropping the text those tools' parameters and imessage_files
 // already say (-90) leaves it at 29,274.
-const TOOL_LIST_MAX_BYTES = 29_274;
+// The Browser Harness rename (+2 in Safari mode, +18 in Ladybird mode) and
+// listing open's fresh and type's sender (+272) bring it to 29,548 (Safari) /
+// 29,564 (Ladybird) on 11-27: agents hit bot-check walls after map and
+// unnamed 2FA SMS codes without seeing --fresh or --sender in --help.
+const TOOL_LIST_MAX_BYTES = 29_564;
 
 async function toolList(): Promise<unknown> {
   const server = Bun.spawn(["bun", `${import.meta.dir}/mcp.ts`], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
