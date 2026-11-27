@@ -225,6 +225,7 @@ const USAGE = `browser — drive the browser from the terminal: Safari or Ladybi
                                              (code from stdin when omitted, or --file path); without
                                              --session, in this agent's own session; see: browser guide repl
   browser repl --list | --close <name>       sessions still running; end one
+  browser repl <code>|--file path --close    run, then end the session it ran in
 
   browser do "<task>" [--tab N] [--steps 30] [--model m]
                                              run the agent loop (local model); prints its session
@@ -725,8 +726,12 @@ async function replCommand(argv: string[]) {
     for (const s of running) console.log(`${s.id}  on ${s.host}  last used ${s.lastUsed.slice(0, 16).replace("T", " ")}  ${s.tabs.length} tab(s)  ${s.pwd}`);
     return;
   }
+  // --close names a session to end, or, with no name after it, ends the
+  // session this run uses once it has run. A bare --close was dropped
+  // unheard until 11-27, leaving sessions open that two agents meant to end.
   const closing = flag("close", argv);
-  if (closing) return console.log(await closeSession(closing));
+  const closeAfter = argv.includes("--close") && (closing === undefined || closing.startsWith("--"));
+  if (closing && !closeAfter) return console.log(await closeSession(closing));
   // --file runs a script saved to disk: agents reached for it (01a0e50b).
   const file = flag("file", argv);
   const code = file !== undefined ? await Bun.file(resolve(file)).text() : argv.filter((a, i) => !a.startsWith("--") && !isFlagValue(i, argv)).join(" ") || (await readStdin());
@@ -740,8 +745,9 @@ async function replCommand(argv: string[]) {
   const name = session ?? (agent === undefined ? undefined : `agent-${agent}`);
   if (name !== undefined) {
     const r = await runInSession(name, code, { host: flag("host", argv), endsWith: agent });
-    if (r.started) console.error(`\x1b[2m(session ${name} started; it ends ${agent === undefined ? "" : "when this agent exits or "}after 30 min unused, or: browser repl --close ${name})\x1b[0m`);
+    if (r.started && !closeAfter) console.error(`\x1b[2m(session ${name} started; it ends ${agent === undefined ? "" : "when this agent exits or "}after 30 min unused, or: browser repl --close ${name})\x1b[0m`);
     if (r.hint !== undefined) console.error(`hint: ${r.hint}`);
+    if (closeAfter) console.error(await closeSession(name));
     result = r;
   } else {
     // No agent above this process (launchd ran it): one call, one session,
