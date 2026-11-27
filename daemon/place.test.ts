@@ -230,7 +230,7 @@ test("a sweep moves a window of only the user's tabs off the Agents display to t
   }
 });
 
-// 11-27: three of the user's Ladybird windows lay one on another on the
+// 11-27: five of the user's Safari windows lay one on another on the
 // Agents display, each its full size; no sweep could tell which was which
 // by size, so they stayed out of his sight.
 test.each([

@@ -90,8 +90,8 @@ function showingSpot(here: Here): Rect | undefined {
 // told. Windows of one size are told apart by where each is (left and top
 // from the display holding it, as the browser counts them); windows that
 // share the place too are one rect, and any of them is where it is: on
-// 11-27 three of the user's Ladybird windows lay one on another on the
-// Agents display, each its full size, and no sweep moved them off.
+// 11-27 five of the user's Safari windows lay one on another on the
+// Agents display, each its full size, where no sweep could tell them apart.
 async function onScreen(tab: number): Promise<Here | "hidden" | undefined> {
   const frame = (await bridge.request("windows.frame", [tab], FRAME_MS)) as { width?: unknown; height?: unknown; left?: unknown; top?: unknown; state?: unknown } | null | undefined;
   if (typeof frame?.width !== "number" || typeof frame.height !== "number") return undefined;
