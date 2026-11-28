@@ -217,15 +217,18 @@ The harness drives the user's everyday browser, so treat his tabs as his.
   closes it, except with its tab group as above.
 - Idle cleanup is strict: eligible unused pages close after 2 minutes, and
   each agent session keeps at most 4 tabs, a fifth closing its least
-  recently used eligible one. Existing protections for changed pages, unsent forms,
-  site-global tabs, kept pages, pending handoffs and the front tab still
-  apply to idle cleanup. A change, filled field, site-global tab or front
-  position alone does not protect a disposable agent tab at completion
-  or owner exit.
+  recently used eligible one. Site-global tabs, kept pages, pending handoffs
+  and the front tab still have their usual protections. An idle tab can
+  close with a site-prefilled form if neither the agent nor the user has
+  edited it. An unreadable embedded frame does not block an idle close
+  unless it has focus. The top frame must still answer, and changed forms
+  in readable frames are protected. A change, filled field, site-global
+  tab or front position alone does not protect a disposable agent tab at
+  completion or owner exit.
 - A close that fails, or that the browser refuses for an idle tab (a form, a
   page it cannot read), is asked again 1, 2 and 4 minutes later, then
-  every 15 minutes, until the tab closes or the browser no longer shows it. A
-  close the extension's reconnect cut off goes again once it connects. A
+  every 15 minutes. An unrelated call by the agent does not restart that
+  wait. A close the extension's reconnect cut off goes again when it connects. A
   web search tab still at its engine's results or robot check (Google's
   or Bing's /search, Google's /sorry/) and not in front closes after 2
   minutes unused without the unreadable-page check; on any other page of

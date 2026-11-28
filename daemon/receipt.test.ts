@@ -342,6 +342,46 @@ test.each(QUIET_ENDS)("a quiet wait ends 500 ms %s", (_name, changes, end) => {
   expect(endsAt(changes, inPage.QUIET_SPAN)).toBe(end);
 });
 
+test("an accessibility click reports after 300 ms from the click rather than the later receipt call", async () => {
+  const start = CONTENT.indexOf("  async function pressDone(");
+  const end = CONTENT.indexOf("  // Safari runs no extension script", start);
+  const pressDone = new Function("presses", "sleep", "performance", "hear", "RECEIPT_SPAN", "tabSaid", `${CONTENT.slice(start, end)}\nreturn pressDone;`);
+  let now = 240;
+  const presses = new Map([["mark", {
+    el: { classList: { remove() {} }, removeEventListener() {} },
+    heard: Promise.resolve(0), since: 0,
+  }]]);
+  const run = pressDone(presses, (ms: number) => {
+    if (ms === 500) return new Promise(() => {});
+    now += ms;
+    return Promise.resolve();
+  }, { now: () => now }, () => ({ errors: now >= 290 ? ["late page error"] : [] }), inPage.RECEIPT_SPAN, -1);
+  expect({ reply: await run("1", "mark", 500), settledAt: now }).toEqual({
+    reply: { errors: ["late page error"] }, settledAt: 300,
+  });
+});
+
+test.each([{ busy: false, settledAt: 300 }, { busy: true, settledAt: 540 }])(
+  "a native typing receipt with work pending=$busy settles at $settledAt ms",
+  async ({ busy, settledAt }) => {
+    const start = CONTENT.indexOf("  async function typeField(");
+    const end = CONTENT.indexOf("  // The Send button", start);
+    const typeField = new Function("realFields", "nativeInputAt", "whenPage", "keeps", "focusedNow", "RECEIPT_SPAN", "Date", "hear", "document",
+      `${CONTENT.slice(start, end)}\nreturn typeField;`);
+    let now = 240;
+    const el = { value: "words", classList: { remove() {} } };
+    const run = typeField(
+      new Map([["mark", { el, boxes: [], before: "", since: 0 }]]), new WeakMap([[el, 0]]),
+      async (_test: () => boolean, ms: number) => { now += ms; if (busy && now >= 400) el.value = "rejected"; },
+      Object.is, () => el, inPage.RECEIPT_SPAN, { now: () => now },
+      () => ({ pending: [], timers: busy && now < 400 ? [400] : [], loads: 0 }), { readyState: "complete" },
+    );
+    expect({ reply: await run(null, "mark", "words", false), settledAt: now }).toEqual({
+      reply: { kept: !busy, focused: true }, settledAt,
+    });
+  },
+);
+
 // ---------- through the tools ----------
 
 // Safari as the daemon sees it: a page op answers from answers[op], or

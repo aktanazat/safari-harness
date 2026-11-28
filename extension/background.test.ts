@@ -109,11 +109,14 @@ class Doc {
   readonly world: Record<string, unknown> = { document: { querySelectorAll: () => [] }, __safariHarnessFrame: crypto.randomUUID().replaceAll("-", ""), innerWidth: 800, innerHeight: 600 };
   readonly listeners: ((m: Msg) => Promise<Reply> | undefined)[] = [];
   readonly ran: string[] = [];
+  readonly input = new Hook<[{ isTrusted: boolean }]>();
+  readonly change = new Hook<[{ isTrusted: boolean }]>();
   held = false;
   stuck = false;
   slowMs = 0;
   // Safari lets the extension put no script in a blank tab, and says so.
   shut = false;
+  unreadable = false;
   // What Safari gives as the tab's title while it shows this document.
   title = "";
   // Safari may carry the report of the copy of content.js put in this
@@ -252,7 +255,11 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
       return Promise.resolve(reply);
     };
     const page = { addEventListener: () => {}, dispatchEvent: () => true };
-    new Function("window", "browser", "document", "addEventListener", START)(doc.world, { runtime: { sendMessage } }, page, () => {});
+    new Function("window", "browser", "document", "addEventListener", START)(doc.world, { runtime: { sendMessage } }, page,
+      (type: string, listener: (event: { isTrusted: boolean }) => void) => {
+        if (type === "input") doc.input.addListener(listener);
+        if (type === "change") doc.change.addListener(listener);
+      });
     return Promise.resolve(reply);
   }
 
@@ -361,7 +368,7 @@ async function start(local = new Map<string, unknown>(), unread?: { key: string;
             trips.push(`script ${m.op}`);
             if (doc.held) return never();
           }
-          const result = await new Function("window", "location", "innerWidth", "innerHeight", `return (${func})`)(doc.world, new URL(doc.url), doc.world.innerWidth, doc.world.innerHeight)(...args);
+          const result = doc.unreadable ? undefined : await new Function("window", "location", "innerWidth", "innerHeight", `return (${func})`)(doc.world, new URL(doc.url), doc.world.innerWidth, doc.world.innerHeight)(...args);
           // Safari may fail a script whose document went away while it ran.
           if (frameOf(frameId) !== doc) throw new Error("the frame's document went away");
           results.push({ frameId, result: result ?? null });
@@ -2044,6 +2051,59 @@ test("automatic cleanup closes an untouched select whose browser default is its 
   tab.doc.world.document = { querySelectorAll: () => [{ tagName: "SELECT", options: [{ selected: true, defaultSelected: false }, { selected: false, defaultSelected: false }] }] };
   expect(await b.request("tabs.close", [tab.id, "idle"])).toEqual({ value: { ok: true } });
   expect(((await b.request("tabs.list", [])).value as unknown[]).length).toBe(0);
+});
+
+test("idle cleanup closes a clean top frame despite an unreadable third-party frame", async () => {
+  const b = await start();
+  const tab = b.open("https://fixture.example/"); await b.own(tab);
+  b.frame(tab, 2, "https://other.example/frame").unreadable = true;
+  expect(await b.request("tabs.close", [tab.id, "idle"])).toEqual({ value: { ok: true } });
+  expect((await b.request("tabs.list", [])).value).toEqual([]);
+});
+
+test("idle cleanup still preserves a readable subframe's unsent form", async () => {
+  const b = await start();
+  const tab = b.open("https://fixture.example/"); await b.own(tab);
+  b.frame(tab, 2, "https://other.example/frame").world.document = {
+    querySelectorAll: () => [{ tagName: "INPUT", value: "draft", defaultValue: "" }],
+  };
+  expect(await b.request("tabs.close", [tab.id, "idle"])).toEqual({ value: { ok: false, protected: "form" } });
+});
+
+test("idle cleanup closes an untouched background tab whose site changed a form value", async () => {
+  const b = await start();
+  const tab = b.open("https://fixture.example/"); await b.own(tab);
+  await b.report(tab, tab.doc);
+  tab.doc.input.fire({ isTrusted: false });
+  tab.doc.world.document = { querySelectorAll: () => [{ tagName: "INPUT", value: "prefilled", defaultValue: "" }] };
+  expect(await b.request("tabs.close", [tab.id, "idle", false])).toEqual({ value: { ok: true } });
+  expect((await b.request("tabs.list", [])).value).toEqual([]);
+});
+
+test("idle cleanup preserves a real form edit in a tab the agent did not touch", async () => {
+  const b = await start();
+  const tab = b.open("https://fixture.example/"); await b.own(tab);
+  await b.report(tab, tab.doc);
+  tab.doc.world.document = { querySelectorAll: () => [{ tagName: "INPUT", value: "draft", defaultValue: "" }] };
+  tab.doc.input.fire({ isTrusted: true });
+  expect(await b.request("tabs.close", [tab.id, "idle", false])).toEqual({ value: { ok: false, protected: "form" } });
+});
+
+test("idle cleanup preserves a tab whose unreadable embedded frame has focus", async () => {
+  const b = await start();
+  const tab = b.open("https://fixture.example/"); await b.own(tab);
+  b.frame(tab, 2, "https://other.example/frame").unreadable = true;
+  tab.doc.world.document = { querySelectorAll: () => [], activeElement: { localName: "iframe" } };
+  expect(await b.request("tabs.close", [tab.id, "idle"])).toEqual({ value: { ok: false, protected: "unreadable" } });
+});
+
+test("an untouched idle tab still needs ownership and must not be in front", async () => {
+  const b = await start();
+  const tab = b.open("https://fixture.example/");
+  expect(await b.request("tabs.close", [tab.id, "idle", false])).toEqual({ value: { ok: false } });
+  await b.own(tab);
+  b.focus(tab);
+  expect(await b.request("tabs.close", [tab.id, "idle", false])).toEqual({ value: { ok: false, front: true } });
 });
 
 test("automatic cleanup preserves a page Safari will not let it inspect", async () => {

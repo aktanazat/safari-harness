@@ -9,6 +9,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path";
 import { failedValue, failureOf, type Failure } from "./failures.ts";
 import { affectsPage } from "./lanes.ts";
+import { mapCounts, type MapAnswer } from "./map.ts";
 import { pageHost } from "./notes.ts";
 import { taskParts } from "./owner.ts";
 
@@ -89,6 +90,7 @@ export function logCall(call: { t: number; ms: number; owner: number | undefined
     ms: call.ms,
     outcome,
     bytes: call.bytes,
+    ...(call.tool === "map" && Array.isArray(value?.pages) ? { pages: mapCounts(value as MapAnswer) } : {}),
     ...(value && (value.truncated === true || !!value.cut || value.incomplete !== undefined) ? { truncated: true } : {}),
     ...(host ? { host } : {}),
     ...(call.owner === undefined ? {} : { owner: call.owner }),

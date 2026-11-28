@@ -166,11 +166,13 @@ export async function resolveTab(tab: unknown, tabs: () => Promise<TabInfo[]> = 
   const mine = harnessTabs.get(now);
   if (mine) {
     const owner = currentOwner();
-    if (owner !== undefined && !mine.handoff && matchesTask(mine, owner, currentTask())) nameLatest(taskKey(owner, currentTask()), now);
+    const ours = owner !== undefined && matchesTask(mine, owner, currentTask());
+    if (ours && !mine.handoff) nameLatest(taskKey(owner, currentTask()), now);
     const call = calling.getStore();
     if (call?.live) {
       (mine.calls ??= new Set()).add(call.pending);
       call.tabs.add(mine);
+      if (ours && !mine.retry?.stuck) delete mine.retry;
     }
     // used counts in minutes (IDLE_MS), so the file is written only once
     // the time it holds for this tab is a minute behind
@@ -367,7 +369,10 @@ export async function closeTab(tab: number, why = "by a close call", only?: "idl
     return answer;
   } else if (res && typeof res === "object" && "protected" in res && res.protected === "form") {
     const mine = harnessTabs.get(id);
-    if (mine) mine.acted = true;
+    if (mine) {
+      mine.acted = true;
+      delete mine.untouched;
+    }
     save();
   }
   return res;
@@ -384,7 +389,8 @@ export async function closeTab(tab: number, why = "by a close call", only?: "idl
 // (sweepOnce); stuck: the last was Safari's own failure to close it, which
 // its agent's calls and turn ends do not end (closeLater). search: the
 // daemon's own tab for a web search engine's results (search-tabs.ts).
-type HarnessTab = { owner?: number; task?: string; used: number; calls?: Set<Promise<void>>; orphan?: true; done?: true; closing?: true; acted?: true; site?: true; handoff?: true; unsafe?: true; ambiguousRestore?: true; failed?: true; retry?: { tries: number; at: number; stuck?: true }; url?: string; seen?: number; search?: true };
+// untouched: no action seen since the tab was opened, not just on this URL.
+type HarnessTab = { owner?: number; task?: string; used: number; calls?: Set<Promise<void>>; orphan?: true; done?: true; closing?: true; acted?: true; untouched?: true; site?: true; handoff?: true; unsafe?: true; ambiguousRestore?: true; failed?: true; retry?: { tries: number; at: number; stuck?: true }; url?: string; seen?: number; search?: true };
 const harnessTabs = new Map<number, HarnessTab>();
 // Each agent task's tab it opened or named last (taskKey), which tab
 // "latest" names (resolveTab) even once the harness closed it, so its
@@ -615,8 +621,12 @@ export function loadTabs(path: string): void {
 const AGENT_TAB_CAP = 4;
 
 function own(tab: number, owner: number | undefined, task = currentTask()) {
+  const prior = harnessTabs.get(tab);
   remember(tab, owner, Date.now(), task);
-  if (owner !== undefined) nameLatest(taskKey(owner, task), tab);
+  if (owner !== undefined) {
+    if (!prior || prior.untouched) harnessTabs.get(tab)!.untouched = true;
+    nameLatest(taskKey(owner, task), tab);
+  }
   tabChanges++;
   save();
   if (owner !== undefined) void capTabs(owner, task, tab).catch(() => {});
@@ -1011,11 +1021,15 @@ async function closeTrackedTab(tab: number, t: HarnessTab, shown?: TabInfo, reas
     // tell counting as the user's (inFront in background.js).
     const unread = t.search === true && shown !== undefined && shown.partial === undefined && !shown.front && !shown.shown && onSearchEngine(shown.url);
     const completed = t.done || (t.orphan && t.owner !== undefined && !alive(t.owner)) || unread;
-    const res = (await bridge.request("tabs.close", completed ? [tab] : [tab, "idle"], 20000, { start: false })) as { ok?: boolean; front?: true; protected?: string; windowId?: number } | null;
+    const close = completed ? [tab] : t.untouched ? [tab, "idle", false] : [tab, "idle"];
+    const res = (await bridge.request("tabs.close", close, 20000, { start: false })) as { ok?: boolean; front?: true; protected?: string; windowId?: number } | null;
     if (res?.front) {
       t.used = Date.now();
     } else if (res?.ok !== true) {
-      if (res?.protected === "form") t.acted = true;
+      if (res?.protected === "form") {
+        t.acted = true;
+        delete t.untouched;
+      }
       closeLater(tab, t, `the extension kept it (${res?.protected ?? "not its tab"})`);
     } else {
       const why = reason ?? (t.orphan && t.owner !== undefined && !alive(t.owner) ? "once its agent exited" : t.done ? "as its agent's turn ended" : "after 2 minutes unused");
@@ -1077,7 +1091,7 @@ function save() {
   try {
     const tabs = Object.fromEntries([...harnessTabs].map(([tab, t]) => {
       const url = resumeAddress(t.url);
-      return [tab, { owner: t.owner ?? null, ...(t.task === undefined ? {} : { task: t.task }), used: t.used, ...(t.done ? { done: true } : {}), ...(t.acted ? { acted: true } : {}), ...(t.site ? { site: true } : {}), ...(t.handoff ? { handoff: true } : {}), ...(t.unsafe || (t.url !== undefined && url === undefined) ? { unsafe: true } : {}), ...(t.ambiguousRestore ? { ambiguousRestore: true } : {}), ...(t.orphan ? { orphan: true } : {}), ...(t.search ? { search: true } : {}), ...(t.seen === undefined ? {} : { seen: t.seen }), ...(url === undefined ? {} : { url }) }];
+      return [tab, { owner: t.owner ?? null, ...(t.task === undefined ? {} : { task: t.task }), used: t.used, ...(t.done ? { done: true } : {}), ...(t.acted ? { acted: true } : {}), ...(t.untouched ? { untouched: true } : {}), ...(t.site ? { site: true } : {}), ...(t.handoff ? { handoff: true } : {}), ...(t.unsafe || (t.url !== undefined && url === undefined) ? { unsafe: true } : {}), ...(t.ambiguousRestore ? { ambiguousRestore: true } : {}), ...(t.orphan ? { orphan: true } : {}), ...(t.search ? { search: true } : {}), ...(t.seen === undefined ? {} : { seen: t.seen }), ...(url === undefined ? {} : { url }) }];
     }));
     const closed = Object.fromEntries([...closedTabs].map(([tab, t]) => [tab, { ...t, url: resumeAddress(t.url) }]));
     const pending = `${tabsFile}.tmp`;
@@ -4012,7 +4026,16 @@ export const TOOLS: Record<string, Tool> = {
     params: { tab: TAB },
     required: ["tab"],
     hidden: true,
-    run: admitNativeAction,
+    run: async (a) => {
+      const permit = await admitNativeAction(a);
+      const t = harnessTabs.get(followTab(permit.tab));
+      if (t && (!t.acted || t.untouched)) {
+        t.acted = true;
+        delete t.untouched;
+        save();
+      }
+      return permit;
+    },
   },
   action_finish: {
     desc: "Finish the exact trusted-input permit without repeating the input.",
@@ -4969,7 +4992,6 @@ export async function callTool(name: string, args: Record<string, unknown> = {},
     if (!matchesTask(t, owner, task)) continue;
     if (t.done) resumed = true;
     delete t.done;
-    if (!t.retry?.stuck) delete t.retry;
   }
   turnResumed(owner, task);
   if (resumed) save();
@@ -5127,6 +5149,7 @@ async function revived(tool: string, args: Record<string, unknown>): Promise<unk
   const before = harnessTabs.get(tab);
   if (before && acts(tool, args)) {
     before.acted = true;
+    if (tool !== "goto") delete before.untouched;
     save();
   }
   try {
