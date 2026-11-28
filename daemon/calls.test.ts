@@ -28,3 +28,31 @@ test("the last day counts each call once, its failures by code, and the link's d
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("the call log counts a partial map without logging any page data", () => {
+  const dir = mkdtempSync(join(tmpdir(), "calls-"));
+  const path = join(dir, "calls.jsonl");
+  try {
+    openCalls(path);
+    const url = "https://map.example/private?query=do-not-log";
+    const unread = `${url}&part=unread`;
+    const pages = [
+      { url, ms: 10, ok: true, items: [
+        { url: `${url}&part=read`, ms: 3, ok: true, value: { text: "private page text" } },
+        { url: `${url}&part=wall`, ms: 4, ok: true, value: { pageState: { kind: "login_wall" } } },
+        { url: unread, ms: 3, ok: false, error: "private timeout detail" },
+      ] },
+      { url: `${url}&part=failed`, ms: 20, ok: false, error: "private error detail" },
+      { url: `${url}&part=in-flight`, ms: 30, ok: false, error: "unfinished when map's 50 s ran out; the action result is unknown" },
+    ];
+    logCall({ t: Date.now(), ms: 50, owner: undefined, task: undefined, tool: "map",
+      args: { urls: [url], query: "private search query" },
+      reply: { ok: true, value: { pages, urls: [unread, `${url}&part=past-max`] } }, bytes: 123 });
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
+      t: expect.any(String), tool: "map", ms: 50, outcome: "ok", bytes: 123,
+      pages: { read: 2, notContent: 1, failed: 1, unfinished: 3 },
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

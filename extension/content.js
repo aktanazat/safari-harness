@@ -860,7 +860,7 @@
     el.scrollIntoView({ block: "center", behavior: "instant" });
     const mark = `__sh_press_${Math.random().toString(36).slice(2, 10)}`;
     const heard = Promise.withResolvers();
-    const listen = (e) => { if (e.isTrusted) heard.resolve(); };
+    const listen = (e) => { if (e.isTrusted) heard.resolve(performance.now()); };
     el.classList.add(mark);
     el.addEventListener("click", listen, true);
     presses.set(mark, { el, heard: heard.promise, listen, since: Date.now() });
@@ -880,10 +880,13 @@
     const p = presses.get(mark);
     if (!p) return { error: missing(ref).error };
     presses.delete(mark);
-    const came = await Promise.race([p.heard.then(() => true), sleep(ms).then(() => false)]);
+    const clicked = await Promise.race([p.heard, sleep(ms).then(() => null)]);
     p.el.classList.remove(mark);
     p.el.removeEventListener("click", p.listen, true);
-    if (came) await sleep(RECEIPT_SPAN.min);
+    if (clicked !== null) {
+      const left = clicked + RECEIPT_SPAN.min - performance.now();
+      if (left > 0) await sleep(left);
+    }
     return { errors: hear(p.since)?.errors ?? [], ...(tabSaid >= p.since ? { tab: true } : {}) };
   }
 
@@ -1778,7 +1781,14 @@
   // each menu's checkbox, transparent, over its "Main menu" label, and a
   // click there does what the label's click does.
   function ownControl(el, hit) {
-    return el.localName === "label" && !!el.control && insideTarget(el.control, hit);
+    if (el.localName === "label") return !!el.control && insideTarget(el.control, hit);
+    if (!el.matches("input[type=checkbox], input[type=radio]")) return false;
+    const label = hit.closest("label");
+    if (label?.control !== el) return false;
+    for (let node = hit; node !== label; node = node.parentElement) {
+      if (isInteractive(node, undefined, true)) return false;
+    }
+    return true;
   }
 
   // A cover's way out: up to three shown controls in the dialog, or the
@@ -1921,7 +1931,7 @@
         const x = left + (right - left) * fx, y = top + (bottom - top) * fy;
         points += 1;
         const hit = deepPoint(x, y, el.ownerDocument);
-        const on = hit && (insideTarget(el, hit) ? hit : ownControl(el, hit) ? el : null);
+        const on = hit && (insideTarget(el, hit) ? hit : ownControl(el, hit) ? (el.localName === "label" ? el : hit) : null);
         if (on) {
           // the box's own transparent input laid over it takes the click
           const stopped = clickBlocked(standIn(on) === el ? el : on);
@@ -2901,6 +2911,10 @@
   // mark -> { el, before, boxes }: a code row's boxes are typed each under
   // its own mark while the row's is still to be checked
   const realFields = new Map();
+  const nativeInputAt = new WeakMap();
+  document.addEventListener("input", (e) => {
+    if (realFields.size && e.isTrusted) nativeInputAt.set(e.composedPath()[0], Date.now());
+  }, { capture: true, signal: life.signal });
   function typeMark(ref, text, append) {
     const el = ref === null ? focusedNow() : fieldOf(resolve(ref));
     if (!el && ref !== null) return missing(ref);
@@ -2915,7 +2929,7 @@
     const mark = `__sh_type_${Math.random().toString(36).slice(2, 10)}`;
     el.classList.add(mark);
     boxes.forEach((b, i) => b.classList.add(`${mark}_${i}`));
-    realFields.set(mark, { el, before: append ? textIn(el) : "", boxes });
+    realFields.set(mark, { el, before: append ? textIn(el) : "", boxes, since: Date.now() });
     for (const old of realFields.keys()) if (realFields.size > 16) realFields.delete(old);
     return { mark, width: outerWidth, height: outerHeight, boxes: boxes.length, multiline: el.localName !== "input", plain: !el.isContentEditable };
   }
@@ -2929,7 +2943,7 @@
   async function typeField(ref, mark, text, sent) {
     const field = realFields.get(mark);
     if (!field) return { error: missing(ref).error };
-    const { el, before, boxes } = field;
+    const { el, before, boxes, since } = field;
     el.classList.remove(mark);
     boxes.forEach((b, i) => b.classList.remove(`${mark}_${i}`));
     const flat = (t) => t.replace(/\s+/g, " ").trim();
@@ -2938,12 +2952,23 @@
       await whenPage(() => !holding(), 1000);
       return { sent: !holding() };
     }
-    await whenPage(() => false, RECEIPT_SPAN.min);
     const want = before + text;
-    const kept = boxes.length > 0 ? boxes.map((b) => b.value).join("") === text
+    const kept = () => boxes.length > 0 ? boxes.map((b) => b.value).join("") === text
       : el.isContentEditable ? flat(textIn(el)) === flat(want)
       : keeps(el.value, want);
-    return { kept, focused: focusedNow() === el };
+    const received = Date.now();
+    const typed = boxes.length ? undefined : nativeInputAt.get(el);
+    if (typed !== undefined && typed >= since && typed < received && kept()) {
+      const left = typed + RECEIPT_SPAN.min - received;
+      if (left > 0) await whenPage(() => false, left);
+      const heard = hear(since);
+      if (document.readyState === "complete" && heard?.pending?.length === 0 && heard.timers?.length === 0 && heard.loads === 0 && kept()) {
+        return { kept: true, focused: focusedNow() === el };
+      }
+    }
+    const left = received + RECEIPT_SPAN.min - Date.now();
+    if (left > 0) await whenPage(() => false, left);
+    return { kept: kept(), focused: focusedNow() === el };
   }
 
   // The Send button of the field marked for real typing, marked as the

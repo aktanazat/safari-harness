@@ -39,6 +39,13 @@
   if (!again) report();
   addEventListener("pageshow", (e) => { if (e.persisted && !window.__safariHarnessInjected) report(); });
 
+  if (!again) {
+    window.__safariHarnessEdited = false;
+    const edited = (event) => { if (event.isTrusted) window.__safariHarnessEdited = true; };
+    addEventListener("input", edited, true);
+    addEventListener("change", edited, true);
+  }
+
   // Safari gives a tab a page opens no opener, so the page says one is
   // coming (tabs a page opens, in background.js), as content.js does once
   // it is in: then a tab the user's page opens never goes to an agent

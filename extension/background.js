@@ -1754,28 +1754,36 @@ async function handle(msg) {
       return { id: tab.id, url: tab.url || url, ...(realTitle(tab) ? { title: tab.title } : {}), windowId: tab.windowId };
     }
     case "tabs.close": {
-      const [tabId, only] = args;
+      const [tabId, only, includePrefill] = args;
       if (only && !(await ownsTab(tabId))) return { ok: false };
       if (only && await inFront(tabId)) return { ok: false, front: true };
       if (only) {
-        // Inspect every frame without returning a field's value. If a page
-        // cannot be inspected, or does not answer within FORM_MS (a dialog
-        // holds it), automatic cleanup leaves it alone.
         const frames = await bounded(api.scripting.executeScript({
           target: { tabId, allFrames: true },
-          func: () => [...window.document.querySelectorAll("input, textarea, select, [contenteditable]")].some((field) => {
-            if (field.isContentEditable) return field.textContent.trim().length > 0;
-            if (field.tagName === "SELECT") {
-              const options = [...field.options];
-              const hasDefault = options.some((option) => option.defaultSelected);
-              return options.some((option, index) => option.selected !== (hasDefault ? option.defaultSelected : index === 0 && !field.multiple));
-            }
-            if (field.type === "checkbox" || field.type === "radio") return field.checked !== field.defaultChecked;
-            return field.value !== field.defaultValue;
-          }),
+          args: [only !== "idle" || includePrefill !== false],
+          func: (protectPrefill) => {
+            const doc = window.document;
+            const focus = doc.activeElement;
+            const opaqueFocus = (focus?.localName === "iframe" || focus?.localName === "frame") && !focus.contentDocument;
+            const dirty = (protectPrefill || window.__safariHarnessEdited !== false) &&
+              [...doc.querySelectorAll("input, textarea, select, [contenteditable]")].some((field) => {
+                if (field.isContentEditable) return field.textContent.trim().length > 0;
+                if (field.tagName === "SELECT") {
+                  const options = [...field.options];
+                  const hasDefault = options.some((option) => option.defaultSelected);
+                  return options.some((option, index) => option.selected !== (hasDefault ? option.defaultSelected : index === 0 && !field.multiple));
+                }
+                if (field.type === "checkbox" || field.type === "radio") return field.checked !== field.defaultChecked;
+                return field.value !== field.defaultValue;
+              });
+            return { opaqueFocus, dirty };
+          },
         }), "forms", Date.now() + FORM_MS).catch(() => []);
-        if (!frames.length || frames.some((frame) => typeof frame.result !== "boolean")) return { ok: false, protected: "unreadable" };
-        if (frames.some((frame) => frame.result)) return { ok: false, protected: "form" };
+        if (typeof frames.find((frame) => frame.frameId === 0)?.result?.dirty !== "boolean" ||
+            frames.some((frame) => only === "idle" ? frame.result?.opaqueFocus === true : typeof frame.result?.dirty !== "boolean")) {
+          return { ok: false, protected: "unreadable" };
+        }
+        if (frames.some((frame) => frame.result?.dirty === true)) return { ok: false, protected: "form" };
       }
       // resolve once Safari has dropped the tab, so a following list omits
       // it, with the window it was in: a print sheet a frame of the page

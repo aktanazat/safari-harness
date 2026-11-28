@@ -263,6 +263,7 @@ bytes, whether a read was cut, its page's host, and the agent, its lead's
 session, and its process. It has a line for each drop of the extension's
 link: why, its close code, and how many requests it failed. It keeps 7
 days and holds no arguments, page text, or full addresses.
+Map calls also log counts of read, non-content, failed, and unfinished pages.
 
 `turn-end/prepare` drains the requested task's active calls and returns exact
 owned tab IDs with a call-generation token; it never closes a page.

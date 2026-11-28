@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridge } from "./bridge.ts";
 import { connect } from "./fake-safari.ts";
+import { watched } from "./mission.ts";
 import { runAs } from "./owner.ts";
 import { callTool, endTurn, loadTabs } from "./tools.ts";
 
@@ -12,20 +13,23 @@ import { callTool, endTurn, loadTabs } from "./tools.ts";
 // closes as closing says; a call to a tab finds it gone, as the extension
 // says of a closed one.
 let listed: { id: number; url: string; windowId: number }[] = [];
-let closing: "fails" | "refuses" | "closes" = "closes";
+let closing: "fails" | "refuses" | "prefilled" | "closes" = "closes";
 const closes: number[] = [];
 function safari() {
   connect({
     send(data: string) {
       const { id, op, args } = JSON.parse(data) as { id: string; op: string; args: unknown[] };
+      const keptForm = op === "tabs.close" && closing === "prefilled" && args[1] === "idle" && args[2] !== false;
       if (op === "tabs.close") {
         const tab = Number(args[0]);
         closes.push(tab);
-        if (closing === "closes") listed = listed.filter((page) => page.id !== tab);
+        if (closing === "closes" || closing === "prefilled" && !keptForm) listed = listed.filter((page) => page.id !== tab);
       }
       const reply = op === "tabs.close" && closing === "fails" ? { error: "Safari did not answer in 20 s" }
         : op === "tabs.close" && closing === "refuses" ? { value: { ok: false, protected: "unreadable" } }
+        : keptForm ? { value: { ok: false, protected: "form" } }
         : op === "tabs.list" ? { value: listed }
+        : op === "relay" && args[1] === "click" ? { value: { ok: true, navigated: { url: "https://form.example/next" } } }
         : op === "relay" ? { error: "that tab is gone: it was closed at the end of your turn, after 20 minutes unused, or by the user" }
         : { value: { ok: true } };
       queueMicrotask(() => bridge.handleMessage(JSON.stringify({ id, ...reply })));
@@ -37,9 +41,9 @@ afterEach(() => setSystemTime());
 
 // The harness holds tab for owner, showing url, as a daemon that started
 // again reads it from its file.
-function holds(tab: number, owner: number, url?: string) {
+function holds(tab: number, owner: number, url?: string, untouched = true) {
   const file = join(mkdtempSync(join(tmpdir(), "tools-close-")), "tabs.json");
-  writeFileSync(file, JSON.stringify({ version: 2, tabs: { [tab]: { owner, used: Date.now(), ...(url === undefined ? {} : { url }) } } }));
+  writeFileSync(file, JSON.stringify({ version: 2, tabs: { [tab]: { owner, used: Date.now(), ...(untouched ? { untouched: true } : {}), ...(url === undefined ? {} : { url }) } } }));
   loadTabs(file);
 }
 
@@ -95,6 +99,70 @@ test("a tab whose idle close was refused closes as soon as its agent's turn ends
     agent.kill();
     await agent.exited;
   }
+});
+
+test("idle cleanup closes an agent's untouched tab even when the site prefilled its form", async () => {
+  safari();
+  closing = "prefilled";
+  const tab = 4404;
+  listed = [{ id: tab, url: "https://form.example/", windowId: 1 }];
+  holds(tab, process.pid);
+  await sweepAt(Date.now() + 2 * 60_000);
+  expect(listed.map((page) => page.id)).not.toContain(tab);
+});
+
+test("idle cleanup preserves a form after native input was admitted", async () => {
+  safari();
+  closing = "prefilled";
+  const tab = 4405;
+  listed = [{ id: tab, url: "https://form.example/", windowId: 1 }];
+  holds(tab, process.pid);
+  const as = (tool: string, args: Record<string, unknown>) => watched(process.pid, tool, args, () => runAs(process.pid, () => callTool(tool, args)));
+  const { permit } = await as("action_admit", { tab }) as { permit: string };
+  await as("action_finish", { tab, permit, uncertain: false, picture: false });
+  await sweepAt(Date.now() + 2 * 60_000);
+  expect(listed.map((page) => page.id)).toContain(tab);
+});
+
+test("idle cleanup preserves a form after a click changes its address in place", async () => {
+  safari();
+  closing = "prefilled";
+  const tab = 4407;
+  listed = [{ id: tab, url: "https://form.example/", windowId: 1 }];
+  holds(tab, process.pid, listed[0].url);
+  await expect(runAs(process.pid, () => callTool("click", { tab, ref: "1" }))).resolves.toMatchObject({
+    navigated: { url: "https://form.example/next" },
+  });
+  listed[0].url = "https://form.example/next";
+  await sweepAt(Date.now() + 2 * 60_000);
+  expect(listed.map((page) => page.id)).toContain(tab);
+});
+
+test("idle cleanup protects a restored form when the tab's action history is unknown", async () => {
+  safari();
+  closing = "prefilled";
+  const tab = 4408;
+  listed = [{ id: tab, url: "https://form.example/", windowId: 1 }];
+  holds(tab, process.pid, listed[0].url, false);
+  await sweepAt(Date.now() + 2 * 60_000);
+  expect(listed.map((page) => page.id)).toContain(tab);
+});
+
+test("unrelated calls by the same agent do not restart an idle tab's close backoff", async () => {
+  safari();
+  closing = "refuses";
+  closes.length = 0;
+  const tab = 4406;
+  listed = [{ id: tab, url: "https://a.example/", windowId: 1 }];
+  holds(tab, process.pid);
+  const idle = Date.now() + 2 * 60_000;
+  await sweepAt(idle);
+  await runAs(process.pid, () => callTool("tabs"));
+  await sweepAt(idle + 30_000);
+  expect(closes).toEqual([tab]);
+  await sweepAt(idle + 60_000);
+  await sweepAt(idle + 120_000);
+  expect(closes).toEqual([tab, tab]);
 });
 
 // On 10-16 no eBay, Depop, or Grailed search could open again after Safari

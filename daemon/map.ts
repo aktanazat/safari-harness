@@ -550,9 +550,10 @@ function listedOf(value: unknown): { links: string[]; next?: string } {
 }
 
 // A page map answered without: still being read, or not begun.
+const UNFINISHED_PAGE = "unfinished when map's ";
 function unfinished(url: string, began: number | undefined, effectful: boolean): Page {
   const ms = began === undefined ? 0 : Math.round(performance.now() - began);
-  const error = `unfinished when map's ${BUDGET_MS / 1000} s ran out; ${effectful ? "the action result is unknown; read the page before deciding whether to repeat it" : "map it again, in a call with fewer pages"}`;
+  const error = `${UNFINISHED_PAGE}${BUDGET_MS / 1000} s ran out; ${effectful ? "the action result is unknown; read the page before deciding whether to repeat it" : "map it again, in a call with fewer pages"}`;
   return { ok: false, error, failure: failureOf(new HarnessError("timeout", error, { effect: effectful ? "possibly_effected" : "none" })), url, ms };
 }
 
@@ -927,6 +928,31 @@ type Row = { page: Page | Listing; depth: number; head: string; body: string; se
 // from the pages it read. On 11-15 a map of three pages answered "3 read"
 // for a sign-in page and an empty one (LOCK#1865).
 const NOT_CONTENT: Partial<Record<PageKind, string>> = { login_wall: "sign-in", paywall: "paywall", region_block: "region block", consent: "consent", loading: "loading", empty: "empty", error: "error" };
+
+export function mapCounts(answer: MapAnswer): { read: number; notContent: number; failed: number; unfinished: number } {
+  const counts = { read: 0, notContent: 0, failed: 0, unfinished: 0 };
+  const left = new Map<string, boolean>();
+  for (const url of answer.urls ?? []) left.set(url, false);
+  const count = (pages: (Page | Listing)[]) => {
+    for (const page of pages) {
+      if (!page.ok) {
+        if (left.has(page.url)) {
+          left.set(page.url, true);
+          counts.unfinished++;
+        } else if (page.error.startsWith(UNFINISHED_PAGE)) counts.unfinished++;
+        else counts.failed++;
+        continue;
+      }
+      const state = stateOf(page);
+      if (state && Object.hasOwn(NOT_CONTENT, state.kind)) counts.notContent++;
+      else counts.read++;
+      if ("items" in page) count(page.items);
+    }
+  };
+  count(answer.pages);
+  for (const counted of left.values()) if (!counted) counts.unfinished++;
+  return counts;
+}
 
 // map's answer as text: a line counting its pages, then each page under
 // its title and address, as its read prints alone; a read that prints its
